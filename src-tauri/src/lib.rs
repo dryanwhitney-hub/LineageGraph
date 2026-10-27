@@ -347,6 +347,11 @@ fn get_person_details(state: State<AppState>, person_id: String) -> Result<Perso
 
     let mut children = Vec::new();
     for cid in children_ids { if let Some(c) = fetch_relative_person(&conn, &cid)? { children.push(c); } }
+    children.sort_by(|a, b| {
+        let ka = parse_birth_sort_key(a.birth_date.as_deref().unwrap_or(""));
+        let kb = parse_birth_sort_key(b.birth_date.as_deref().unwrap_or(""));
+        ka.cmp(&kb).then_with(|| a.id.cmp(&b.id))
+    });
 
     let mut stmt = conn.prepare("SELECT json_data FROM individuals WHERE id = ?1").map_err(|e| e.to_string())?;
     let json_str: String = stmt.query_row([&person_id], |row| row.get(0)).map_err(|e| e.to_string())?;
@@ -412,6 +417,81 @@ fn calculate_henry_codes_from_roots(state: State<AppState>) -> Result<(), String
     calculate_henry_codes_internal(&mut conn)
 }
 
+fn parse_birth_sort_key(date: &str) -> (i32, i32, i32) {
+    let s = date.trim().to_uppercase();
+    if s.is_empty() {
+        return (9999, 99, 99);
+    }
+
+    // 1. ISO-Format: YYYY-MM-DD oder YYYY/MM/DD
+    let parts_dash: Vec<&str> = s.split(|c| c == '-' || c == '/').collect();
+    if parts_dash.len() >= 2 && parts_dash[0].len() == 4 {
+        if let Ok(y) = parts_dash[0].parse::<i32>() {
+            let m = parts_dash.get(1).and_then(|v| v.parse::<i32>().ok()).unwrap_or(99);
+            let d = parts_dash.get(2).and_then(|v| v.split_whitespace().next()?.parse::<i32>().ok()).unwrap_or(99);
+            return (y, m, d);
+        }
+    }
+
+    // 2. Deutsches Format: DD.MM.YYYY
+    let parts_dot: Vec<&str> = s.split('.').collect();
+    if parts_dot.len() == 3 {
+        let y_str = parts_dot[2].split_whitespace().next().unwrap_or("");
+        if y_str.len() == 4 {
+            if let Ok(y) = y_str.parse::<i32>() {
+                let m = parts_dot[1].trim().parse::<i32>().unwrap_or(99);
+                let d = parts_dot[0].trim().parse::<i32>().unwrap_or(99);
+                return (y, m, d);
+            }
+        }
+    }
+
+    // 3. GEDCOM-Format (z.B. "20 MAY 1950", "ABT 1890")
+    let mut year = 9999;
+    let mut month = 99;
+    let mut day = 99;
+
+    for token in s.split(|c: char| !c.is_alphanumeric()) {
+        if token.is_empty() {
+            continue;
+        }
+        if token.len() == 4 && token.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(y) = token.parse::<i32>() {
+                year = y;
+                continue;
+            }
+        }
+        let m_val = match token {
+            "JAN" | "JANUAR" | "JANUARY" => Some(1),
+            "FEB" | "FEBRUAR" | "FEBRUARY" => Some(2),
+            "MAR" | "MÄR" | "MAER" | "MÄRZ" | "MARCH" => Some(3),
+            "APR" | "APRIL" => Some(4),
+            "MAY" | "MAI" => Some(5),
+            "JUN" | "JUNI" | "JUNE" => Some(6),
+            "JUL" | "JULI" | "JULY" => Some(7),
+            "AUG" | "AUGUST" => Some(8),
+            "SEP" | "SEPT" | "SEPTEMBER" => Some(9),
+            "OCT" | "OKT" | "OKTOBER" | "OCTOBER" => Some(10),
+            "NOV" | "NOVEMBER" => Some(11),
+            "DEC" | "DEZ" | "DEZEMBER" | "DECEMBER" => Some(12),
+            _ => None,
+        };
+        if let Some(m) = m_val {
+            month = m;
+            continue;
+        }
+        if token.len() <= 2 && token.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(d) = token.parse::<i32>() {
+                if (1..=31).contains(&d) && day == 99 {
+                    day = d;
+                }
+            }
+        }
+    }
+
+    (year, month, day)
+}
+
 fn calculate_henry_codes_internal(conn: &mut Connection) -> Result<(), String> {
     // 1. Geburtsdaten laden für die Sortierung der Geschwister
     let mut birth_dates: HashMap<String, String> = HashMap::new();
@@ -423,19 +503,6 @@ fn calculate_henry_codes_internal(conn: &mut Connection) -> Result<(), String> {
                 birth_dates.insert(id, bd);
             }
         }
-    }
-
-    // Hilfsfunktion: Isoliert das Jahr (4 Ziffern) aus einem GEDCOM Datumsstring
-    fn extract_year(date: &str) -> i32 {
-        let bytes = date.as_bytes();
-        for i in 0..bytes.len().saturating_sub(3) {
-            if bytes[i].is_ascii_digit() && bytes[i+1].is_ascii_digit() && bytes[i+2].is_ascii_digit() && bytes[i+3].is_ascii_digit() {
-                if let Ok(y) = std::str::from_utf8(&bytes[i..i+4]).unwrap().parse::<i32>() {
-                    return y;
-                }
-            }
-        }
-        9999 // Fallback: Unbekannte an den Schluss
     }
 
     let families_map: HashMap<String, (Option<String>, Option<String>, Vec<String>)> = {
@@ -463,6 +530,30 @@ fn calculate_henry_codes_internal(conn: &mut Connection) -> Result<(), String> {
     }
 
     for (proband_id, start_code) in roots {
+        // 1. Alle Nachkommen des gewählten Stammahnen ermitteln (Teil des Stammbaums dieses Stammahnen)
+        let mut tree_members = std::collections::HashSet::new();
+        let mut member_queue = std::collections::VecDeque::new();
+        tree_members.insert(proband_id.clone());
+        member_queue.push_back(proband_id.clone());
+
+        while let Some(curr) = member_queue.pop_front() {
+            for (_fam_id, (husband, wife, children)) in &families_map {
+                if husband.as_ref() == Some(&curr) || wife.as_ref() == Some(&curr) {
+                    for c in children {
+                        if c != &curr && !tree_members.contains(c) {
+                            tree_members.insert(c.clone());
+                            member_queue.push_back(c.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Henry-Codes vergeben:
+        // - Wenn der Vater Teil des Stammbaums des gewählten Stammahnen ist (auch wenn beide Eltern im Stammbaum sind),
+        //   werden die Linien patrilinear unter dem Vater weitergeführt.
+        // - Wenn der Vater NICHT Teil des Stammbaums des gewählten Stammahnen ist,
+        //   werden die Kinder unter der Mutter weitergeführt.
         let mut queue = std::collections::VecDeque::new();
         queue.push_back((proband_id.clone(), start_code, 1));
         let mut visited = std::collections::HashSet::new();
@@ -478,13 +569,18 @@ fn calculate_henry_codes_internal(conn: &mut Connection) -> Result<(), String> {
 
             let mut all_children = Vec::new();
             for (_fam_id, (husband, wife, children)) in &families_map {
-                // Korrigierte patrilineare Vererbungslogik:
-                // Prüft immer, ob curr_id tatsächlich Vater (oder bei Stammahnin/Single Mutter) DIESER Familie ist!
-                let is_father = husband.as_ref() == Some(&curr_id);
-                let is_mother_at_root = wife.as_ref() == Some(&curr_id) && curr_id == proband_id;
-                let is_mother_single = wife.as_ref() == Some(&curr_id) && husband.is_none();
+                let father_in_tree = husband.as_ref().map_or(false, |h| tree_members.contains(h));
+                let mother_in_tree = wife.as_ref().map_or(false, |w| tree_members.contains(w));
 
-                if is_father || is_mother_at_root || is_mother_single {
+                let should_continue_here = if father_in_tree {
+                    husband.as_ref() == Some(&curr_id)
+                } else if mother_in_tree {
+                    wife.as_ref() == Some(&curr_id)
+                } else {
+                    false
+                };
+
+                if should_continue_here {
                     for c in children { 
                         // Verhindert Zyklen, Rekursion und doppelte Aufnahme
                         if !visited.contains(c) && !all_children.contains(c) && c != &curr_id {
@@ -494,11 +590,11 @@ fn calculate_henry_codes_internal(conn: &mut Connection) -> Result<(), String> {
                 }
             }
             
-            // Kinder nach Geburtsjahr sortieren
+            // Kinder chronologisch nach Geburtsdatum sortieren (Jahr, Monat, Tag; mit ID als Tie-Breaker)
             all_children.sort_by(|a, b| {
-                let ya = extract_year(birth_dates.get(a).unwrap_or(&String::new()));
-                let yb = extract_year(birth_dates.get(b).unwrap_or(&String::new()));
-                ya.cmp(&yb)
+                let ka = parse_birth_sort_key(birth_dates.get(a).map(|s| s.as_str()).unwrap_or(""));
+                let kb = parse_birth_sort_key(birth_dates.get(b).map(|s| s.as_str()).unwrap_or(""));
+                ka.cmp(&kb).then_with(|| a.cmp(b))
             });
             
             for (idx, child_id) in all_children.iter().enumerate() {
@@ -679,7 +775,21 @@ fn add_person(
 #[tauri::command]
 fn update_person(state: State<AppState>, person: Person) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("UPDATE individuals SET given_name = ?1, surname = ?2, sex = ?3 WHERE id = ?4", rusqlite::params![person.given_name, person.surname, person.sex, person.id]).map_err(|e| e.to_string())?;
+    let json_str = serde_json::to_string(&person.gedcom_extra).unwrap_or_else(|_| "{}".to_string());
+    conn.execute(
+        "UPDATE individuals SET given_name = ?1, surname = ?2, sex = ?3, birth_date = ?4, birth_place = ?5, death_date = ?6, death_place = ?7, json_data = ?8 WHERE id = ?9",
+        rusqlite::params![
+            person.given_name,
+            person.surname,
+            person.sex,
+            person.birth_date,
+            person.birth_place,
+            person.death_date,
+            person.death_place,
+            json_str,
+            person.id
+        ],
+    ).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -849,5 +959,65 @@ mod tests {
         // Aufräumen
         drop(conn);
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_henry_code_matrilinear_when_father_not_in_tree_and_patrilinear_when_both_in_tree() {
+        let mut conn = db::init_in_memory_database().unwrap();
+
+        // Proband I1 (Vater)
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('I1', 'I1', 'Stamm', 'Ahne', 'M', '1850', '{}')", []).unwrap();
+        // Sohn I2 (11) und Tochter I3 (12)
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('I2', 'I2', 'Sohn', 'Ahne', 'M', '1880', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('I3', 'I3', 'Tochter', 'Ahne', 'F', '1882', '{}')", []).unwrap();
+        // Externer Ehemann I_EXT von Tochter I3 (NICHT Teil des Stammbaums von I1!)
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('I_EXT', 'I_EXT', 'Externer', 'Mann', 'M', '1880', '{}')", []).unwrap();
+        // Kind I4 von Tochter I3 und externem Mann I_EXT -> muss unter Mutter I3 als 121 weitergeführt werden!
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('I4', 'I4', 'Tochterkind', 'Mann', 'F', '1905', '{}')", []).unwrap();
+        // Kind I5 von Sohn I2 -> wird 111
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('I5', 'I5', 'Sohneskind', 'Ahne', 'M', '1904', '{}')", []).unwrap();
+        // Kind I6 von I5 (111, Vater im Baum) und I4 (121, Mutter im Baum) -> beide Eltern im Baum -> patrilinear unter Vater I5 als 1111!
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('I6', 'I6', 'Urenkel', 'Ahne', 'M', '1930', '{}')", []).unwrap();
+
+        // Familien anlegen
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F1', 'F1', 'I1', NULL, 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I2')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I3')", []).unwrap();
+
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F2', 'F2', 'I_EXT', 'I3', 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F2', 'I4')", []).unwrap();
+
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F3', 'F3', 'I2', NULL, 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F3', 'I5')", []).unwrap();
+
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F4', 'F4', 'I5', 'I4', 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F4', 'I6')", []).unwrap();
+
+        conn.execute("INSERT INTO root_ancestors (person_id, starting_code) VALUES ('I1', '1')", []).unwrap();
+        calculate_henry_codes_internal(&mut conn).unwrap();
+
+        let get_code = |pid: &str| -> Option<String> {
+            conn.query_row(
+                "SELECT henry_code FROM proband_henry_codes WHERE proband_id = 'I1' AND person_id = ?1",
+                [pid],
+                |r| r.get(0),
+            ).ok()
+        };
+
+        assert_eq!(get_code("I1"), Some("1".to_string()));
+        assert_eq!(get_code("I2"), Some("11".to_string()));
+        assert_eq!(get_code("I3"), Some("12".to_string()));
+        assert_eq!(get_code("I_EXT"), None);
+        assert_eq!(get_code("I4"), Some("121".to_string()), "Kind muss unter der Mutter weitergeführt werden, da Vater nicht im Stammbaum ist");
+        assert_eq!(get_code("I5"), Some("111".to_string()));
+        assert_eq!(get_code("I6"), Some("1111".to_string()), "Wenn beide Eltern im Stammbaum sind, muss die Linie patrilinear unter dem Vater weitergeführt werden");
+    }
+
+    #[test]
+    fn test_birth_date_sorting_of_descendants() {
+        assert!(parse_birth_sort_key("10 JAN 1950") < parse_birth_sort_key("20 MAY 1950"));
+        assert!(parse_birth_sort_key("05.03.1950") < parse_birth_sort_key("1950-03-12"));
+        assert!(parse_birth_sort_key("1948") < parse_birth_sort_key("01 JAN 1950"));
+        assert!(parse_birth_sort_key("1950") < parse_birth_sort_key(""));
     }
 }
