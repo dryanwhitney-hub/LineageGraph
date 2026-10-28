@@ -81,6 +81,15 @@ fn setup_schema(conn: Connection) -> Result<Connection> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_individuals_henry ON individuals(henry_code);
+
+        CREATE TABLE IF NOT EXISTS design_layouts (
+            id TEXT PRIMARY KEY,
+            proband_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            layout_data TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_layouts_proband ON design_layouts(proband_id);
     ")?;
 
     // Migration für Individuals-Tabelle (Lebensdaten)

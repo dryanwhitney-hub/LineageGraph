@@ -88,6 +88,15 @@ pub struct RootAncestorConfig {
     pub surname: Option<String>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct DesignLayoutEntry {
+    pub id: String,
+    pub proband_id: String,
+    pub name: String,
+    pub created_at: String,
+    pub layout_data: String,
+}
+
 pub struct AppState {
     pub db: Mutex<Connection>,
     pub app_dir: PathBuf,
@@ -853,6 +862,133 @@ fn export_latex_pdf(state: State<AppState>, output_dir: String) -> Result<String
     if output.status.success() { Ok(format!("{}/chronik.pdf", output_dir)) } else { Err(format!("LaTeX-Fehler:\n{}", String::from_utf8_lossy(&output.stdout))) }
 }
 
+#[tauri::command]
+fn save_design_layout(
+    state: State<'_, AppState>,
+    proband_id: String,
+    name: String,
+    created_at: String,
+    layout_data: String,
+    overwrite_id: Option<String>,
+) -> Result<DesignLayoutEntry, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    if let Some(ref oid) = overwrite_id {
+        if !oid.is_empty() {
+            conn.execute(
+                "UPDATE design_layouts SET name = ?1, created_at = ?2, layout_data = ?3 WHERE id = ?4",
+                [&name, &created_at, &layout_data, oid],
+            ).map_err(|e| e.to_string())?;
+            return Ok(DesignLayoutEntry {
+                id: oid.clone(),
+                proband_id,
+                name,
+                created_at,
+                layout_data,
+            });
+        }
+    }
+
+    let existing_id: Option<String> = conn.query_row(
+        "SELECT id FROM design_layouts WHERE proband_id = ?1 AND name = ?2 LIMIT 1",
+        [&proband_id, &name],
+        |r| r.get(0),
+    ).ok();
+
+    if let Some(eid) = existing_id {
+        conn.execute(
+            "UPDATE design_layouts SET created_at = ?1, layout_data = ?2 WHERE id = ?3",
+            [&created_at, &layout_data, &eid],
+        ).map_err(|e| e.to_string())?;
+        return Ok(DesignLayoutEntry {
+            id: eid,
+            proband_id,
+            name,
+            created_at,
+            layout_data,
+        });
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO design_layouts (id, proband_id, name, created_at, layout_data) VALUES (?1, ?2, ?3, ?4, ?5)",
+        [&id, &proband_id, &name, &created_at, &layout_data],
+    ).map_err(|e| e.to_string())?;
+    Ok(DesignLayoutEntry {
+        id,
+        proband_id,
+        name,
+        created_at,
+        layout_data,
+    })
+}
+
+#[tauri::command]
+fn get_design_layouts(
+    state: State<'_, AppState>,
+    proband_id: Option<String>,
+) -> Result<Vec<DesignLayoutEntry>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut list = Vec::new();
+    if let Some(pid) = proband_id {
+        if !pid.is_empty() {
+            let mut stmt = conn.prepare(
+                "SELECT id, proband_id, name, created_at, layout_data FROM design_layouts WHERE proband_id = ?1 ORDER BY created_at DESC"
+            ).map_err(|e| e.to_string())?;
+            let rows = stmt.query_map([&pid], |r| {
+                Ok(DesignLayoutEntry {
+                    id: r.get(0)?,
+                    proband_id: r.get(1)?,
+                    name: r.get(2)?,
+                    created_at: r.get(3)?,
+                    layout_data: r.get(4)?,
+                })
+            }).map_err(|e| e.to_string())?;
+            for row in rows.flatten() {
+                list.push(row);
+            }
+            return Ok(list);
+        }
+    }
+    let mut stmt = conn.prepare(
+        "SELECT id, proband_id, name, created_at, layout_data FROM design_layouts ORDER BY created_at DESC"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| {
+        Ok(DesignLayoutEntry {
+            id: r.get(0)?,
+            proband_id: r.get(1)?,
+            name: r.get(2)?,
+            created_at: r.get(3)?,
+            layout_data: r.get(4)?,
+        })
+    }).map_err(|e| e.to_string())?;
+    for row in rows.flatten() {
+        list.push(row);
+    }
+    Ok(list)
+}
+
+#[tauri::command]
+fn delete_design_layout(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM design_layouts WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn save_design_file(file_path: String, content: String) -> Result<(), String> {
+    fs::write(&file_path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_design_file(file_path: String) -> Result<String, String> {
+    fs::read_to_string(&file_path).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -894,7 +1030,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_trees, switch_tree, delete_tree, get_all_persons, get_person_details, find_relationship_path, export_latex_pdf,
             import_gedcom_file, update_person, update_person_parents, add_person, get_root_ancestors, add_root_ancestor,
-            remove_root_ancestor, calculate_henry_codes_from_roots
+            remove_root_ancestor, calculate_henry_codes_from_roots,
+            save_design_layout, get_design_layouts, delete_design_layout, save_design_file, read_design_file
         ])
         .run(tauri::generate_context!())
         .expect("Tauri Error");

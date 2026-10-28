@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import { useI18n } from 'vue-i18n';
 import TreeNode from './components/TreeNode.vue';
+import DesignTree from './components/DesignTree.vue';
 
 const { t, locale } = useI18n();
 
@@ -37,7 +38,7 @@ interface ColumnConfig { key: string; labelKey: string; visible: boolean; detail
 interface RootAncestorConfig { person_id: string; starting_code: string; given_name: string | null; surname: string | null; }
 interface ColumnFilter { text: string; dateOp: 'before' | 'after' | 'between'; date1: string; date2: string; }
 
-const currentView = ref<'table' | 'tree'>('table');
+const currentView = ref<'table' | 'tree' | 'design'>('table');
 const trees = ref<string[]>([]);
 const activeTree = ref<string>('');
 const newTreeName = ref<string>('');
@@ -96,6 +97,28 @@ const newRelDeathPlace = ref<string>('');
 
 const isEditing = ref<boolean>(false);
 const showSettings = ref<boolean>(false);
+const activeSettingsTab = ref<'general' | 'table_view' | 'tree_view' | 'design_mode'>('general');
+const designConfig = ref({
+  horizontalLaneGap: 16,
+  autoSubLanes: true,
+  enableLineBridges: true,
+  bridgeRadius: 8,
+  minimizeBridges: true,
+});
+
+try {
+  const savedDesignCfg = localStorage.getItem('stammbaum_design_config');
+  if (savedDesignCfg) {
+    designConfig.value = { ...designConfig.value, ...JSON.parse(savedDesignCfg) };
+  }
+} catch {}
+
+watch(designConfig, (newVal) => {
+  try {
+    localStorage.setItem('stammbaum_design_config', JSON.stringify(newVal));
+  } catch {}
+}, { deep: true });
+
 const showColDropdown = ref<boolean>(false);
 const showDetailAttrDropdown = ref<boolean>(false);
 const statusMessage = ref<string>('');
@@ -1508,6 +1531,7 @@ onMounted(async () => {
         <div class="view-toggle">
           <button @click="currentView = 'table'" :class="{ active: currentView === 'table' }">📋 {{ t('view_table') }}</button>
           <button @click="currentView = 'tree'" :class="{ active: currentView === 'tree' }">🌳 {{ t('view_tree') }}</button>
+          <button @click="currentView = 'design'" :class="{ active: currentView === 'design' }">📐 {{ t('view_design') }}</button>
         </div>
         <button class="btn-settings" @click="showSettings = true; loadRootAncestors()">⚙️ {{ t('settings') }}</button>
         <button @click="changeLanguage('de')" :class="{ active: locale === 'de' }">DE</button>
@@ -1536,12 +1560,14 @@ onMounted(async () => {
         :value="activeProbandTab ?? ''"
         @change="onProbandSelectChange(($event.target as HTMLSelectElement).value)"
       >
-        <option value="">{{ t('free_view_option') }}</option>
+        <option v-if="currentView !== 'design'" value="">{{ t('free_view_option') }}</option>
+        <option v-else value="" disabled>{{ t('please_select') }}</option>
         <option v-for="r in rootAncestors" :key="r.person_id" :value="r.person_id">
           [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }} ({{ r.person_id }})
         </option>
       </select>
       <button
+        v-if="currentView !== 'design'"
         class="btn-free-view"
         :class="{ active: currentView === 'tree' && !activeProbandTab }"
         @click="openFreeTreeView"
@@ -1601,93 +1627,244 @@ onMounted(async () => {
 
     <!-- Settings Modal -->
     <div class="modal-overlay" v-if="showSettings" @click.self="showSettings = false">
-      <div class="modal-content settings-modal-content">
-        <h2>⚙️ {{ t('settings') }}</h2>
-        
-        <div class="settings-section">
-          <h3>{{ t('table_col_config') }}</h3>
-          <div class="custom-multi-select">
-            <div class="select-header" @click="showColDropdown = !showColDropdown">
-              {{ t('select_table_cols') }} ({{ columns.filter(c => c.visible).length }} / {{ columns.length }}) <span style="float:right">▼</span>
-            </div>
-            <div class="select-dropdown" v-if="showColDropdown">
-              <div v-for="(col, index) in columns" :key="col.key" class="select-item">
-                <label>
-                  <input type="checkbox" v-model="col.visible" />
-                  {{ getColLabel(col) }}
-                  <small v-if="!col.editable" class="readonly-hint">(schreibgeschützt)</small>
-                </label>
-                <div class="order-btns">
-                  <button @click.stop="moveColumn(index, 'up')" :disabled="index === 0">▲</button>
-                  <button @click.stop="moveColumn(index, 'down')" :disabled="index === columns.length - 1">▼</button>
-                </div>
-              </div>
-            </div>
-          </div>
+      <div class="modal-content settings-modal-content settings-layout-split">
+        <div class="settings-modal-header-row">
+          <h2>⚙️ {{ t('settings') }}</h2>
+          <button class="btn-close-icon" @click="showSettings = false">✕</button>
         </div>
 
-        <div class="settings-section">
-          <h3>{{ t('detail_attr_config') }}</h3>
-          <div class="custom-multi-select">
-            <div class="select-header" @click="showDetailAttrDropdown = !showDetailAttrDropdown">
-              {{ t('select_detail_attrs') }} ({{ columns.filter(c => c.detailVisible).length }} / {{ columns.length }}) <span style="float:right">▼</span>
-            </div>
-            <div class="select-dropdown" v-if="showDetailAttrDropdown">
-              <div v-for="(col, index) in columns" :key="'det-cfg-' + col.key" class="select-item">
-                <label>
-                  <input type="checkbox" v-model="col.detailVisible" />
-                  {{ getColLabel(col) }}
-                  <small v-if="!col.editable" class="readonly-hint">(schreibgeschützt)</small>
-                </label>
-                <div class="order-btns">
-                  <button @click.stop="moveColumn(index, 'up')" :disabled="index === 0">▲</button>
-                  <button @click.stop="moveColumn(index, 'down')" :disabled="index === columns.length - 1">▼</button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="settings-section">
-          <h3>{{ t('tree_management') }}</h3>
-          <label>{{ t('active_tree') }}:</label>
-          <div v-if="trees.length > 0 && activeTree" class="d-flex align-items-center mb-1">
-            <select v-model="activeTree" @change="handleTreeSwitch" class="flex-grow">
-              <option v-for="tree in trees" :key="tree" :value="tree">{{ tree }}</option>
-            </select>
-            <button class="btn-danger btn-delete-tree" @click="startDeleteTree" :title="t('delete_tree')">
-              🗑️ {{ t('delete_tree') }}
+        <div class="settings-split-body">
+          <!-- Linker Bereich: Navigation / Auswahl der Bereiche -->
+          <div class="settings-nav-sidebar">
+            <button
+              class="settings-nav-item"
+              :class="{ active: activeSettingsTab === 'general' }"
+              @click="activeSettingsTab = 'general'"
+            >
+              🌐 {{ t('settings_tab_general') || 'Allgemein' }}
+            </button>
+            <button
+              class="settings-nav-item"
+              :class="{ active: activeSettingsTab === 'table_view' }"
+              @click="activeSettingsTab = 'table_view'"
+            >
+              📋 {{ t('settings_tab_table') || 'Tabellarische Ansicht' }}
+            </button>
+            <button
+              class="settings-nav-item"
+              :class="{ active: activeSettingsTab === 'tree_view' }"
+              @click="activeSettingsTab = 'tree_view'"
+            >
+              🌳 {{ t('settings_tab_tree') || 'Stammbaum Ansicht' }}
+            </button>
+            <button
+              class="settings-nav-item"
+              :class="{ active: activeSettingsTab === 'design_mode' }"
+              @click="activeSettingsTab = 'design_mode'"
+            >
+              📐 {{ t('settings_tab_design') || 'Stammbaum Design Mode' }}
             </button>
           </div>
-          <div v-else class="no-active-tree mb-1">
-            {{ t('no_active_tree') }}
+
+          <!-- Rechter Bereich: Inhalt des ausgewählten Bereichs -->
+          <div class="settings-main-pane">
+            <!-- 1. Allgemein -->
+            <div v-if="activeSettingsTab === 'general'" class="settings-tab-pane">
+              <div class="settings-section">
+                <h3>{{ t('tree_management') }}</h3>
+                <label>{{ t('active_tree') }}:</label>
+                <div v-if="trees.length > 0 && activeTree" class="d-flex align-items-center mb-1">
+                  <select v-model="activeTree" @change="handleTreeSwitch" class="flex-grow">
+                    <option v-for="tree in trees" :key="tree" :value="tree">{{ tree }}</option>
+                  </select>
+                  <button class="btn-danger btn-delete-tree" @click="startDeleteTree" :title="t('delete_tree')">
+                    🗑️ {{ t('delete_tree') }}
+                  </button>
+                </div>
+                <div v-else class="no-active-tree mb-1">
+                  {{ t('no_active_tree') }}
+                </div>
+                <label>{{ t('new_tree') }}:</label>
+                <div class="d-flex"><input v-model="newTreeName" :placeholder="t('new_tree_placeholder')" class="flex-grow" /><button @click="createNewTree">{{ t('create_btn') }}</button></div>
+              </div>
+            </div>
+
+            <!-- 2. Tabellarische Ansicht -->
+            <div v-if="activeSettingsTab === 'table_view'" class="settings-tab-pane">
+              <div class="settings-section">
+                <h3>{{ t('table_col_config') }}</h3>
+                <div class="custom-multi-select">
+                  <div class="select-header" @click="showColDropdown = !showColDropdown">
+                    {{ t('select_table_cols') }} ({{ columns.filter(c => c.visible).length }} / {{ columns.length }}) <span style="float:right">▼</span>
+                  </div>
+                  <div class="select-dropdown" v-if="showColDropdown">
+                    <div v-for="(col, index) in columns" :key="col.key" class="select-item">
+                      <label>
+                        <input type="checkbox" v-model="col.visible" />
+                        {{ getColLabel(col) }}
+                        <small v-if="!col.editable" class="readonly-hint">(schreibgeschützt)</small>
+                      </label>
+                      <div class="order-btns">
+                        <button @click.stop="moveColumn(index, 'up')" :disabled="index === 0">▲</button>
+                        <button @click.stop="moveColumn(index, 'down')" :disabled="index === columns.length - 1">▼</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="settings-section">
+                <h3>{{ t('detail_attr_config') }}</h3>
+                <div class="custom-multi-select">
+                  <div class="select-header" @click="showDetailAttrDropdown = !showDetailAttrDropdown">
+                    {{ t('select_detail_attrs') }} ({{ columns.filter(c => c.detailVisible).length }} / {{ columns.length }}) <span style="float:right">▼</span>
+                  </div>
+                  <div class="select-dropdown" v-if="showDetailAttrDropdown">
+                    <div v-for="(col, index) in columns" :key="'det-cfg-' + col.key" class="select-item">
+                      <label>
+                        <input type="checkbox" v-model="col.detailVisible" />
+                        {{ getColLabel(col) }}
+                        <small v-if="!col.editable" class="readonly-hint">(schreibgeschützt)</small>
+                      </label>
+                      <div class="order-btns">
+                        <button @click.stop="moveColumn(index, 'up')" :disabled="index === 0">▲</button>
+                        <button @click.stop="moveColumn(index, 'down')" :disabled="index === columns.length - 1">▼</button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 3. Stammbaum Ansicht -->
+            <div v-if="activeSettingsTab === 'tree_view'" class="settings-tab-pane">
+              <div class="settings-section">
+                <h3>{{ t('root_ancestor_config') }}</h3>
+                <div class="proband-list-box mb-1">
+                  <label><strong>{{ t('proband_list') }}:</strong></label>
+                  <ul v-if="rootAncestors.length > 0" class="proband-list">
+                    <li v-for="r in rootAncestors" :key="r.person_id">
+                      <span class="proband-info">[{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }} <small>({{ r.person_id }})</small></span>
+                      <button class="btn-sm btn-danger" @click="removeRootAncestor(r.person_id)">{{ t('remove') }}</button>
+                    </li>
+                  </ul>
+                  <div v-else class="sub-empty mt-1">{{ t('no_probands') }}</div>
+                </div>
+                <label><strong>{{ t('add_proband') }}:</strong></label>
+                <input v-model="rootSearchQuery" :placeholder="t('search_placeholder')" class="w-100 mt-1 mb-1" />
+                <select v-model="selectedRootId" class="w-100 mb-1" size="4"><option v-for="p in filteredPersons" :key="p.id" :value="p.id">{{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }})</option></select>
+                <div class="d-flex align-items-center mt-1">
+                  <input v-model="newRootCode" :placeholder="t('starting_code')" class="flex-grow" />
+                  <button @click="addRootAncestor" :disabled="!selectedRootId || !newRootCode">{{ t('add_btn') }}</button>
+                </div>
+                <button class="mt-1 btn-full btn-calculate" @click="calculateCodes" :disabled="rootAncestors.length === 0">{{ t('calc_codes_btn') }}</button>
+              </div>
+            </div>
+
+            <!-- 4. Stammbaum Design Mode -->
+            <div v-if="activeSettingsTab === 'design_mode'" class="settings-tab-pane">
+              <div class="settings-section">
+                <h3>{{ t('design_lines_config_title') || 'Verbindungslinien & Querlinien' }}</h3>
+                <p class="section-desc" style="color: #64748b; font-size: 0.82rem; margin-bottom: 1rem;">
+                  Konfiguration der Mindestabstände und automatischen Höhenstaffelung für die horizontale Querlinienführung im Design Mode.
+                </p>
+
+                <div class="config-field mb-2" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+                  <label class="d-block mb-1" style="font-size: 0.88rem;">
+                    <strong>{{ t('design_lane_gap_label') || 'Mindestabstand horizontaler Abschnitte (Querlinien):' }}</strong>
+                    <span class="badge-val" style="background: #2563eb; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;">{{ designConfig.horizontalLaneGap }} px</span>
+                  </label>
+                  <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
+                    <input
+                      type="range"
+                      min="10"
+                      max="36"
+                      step="2"
+                      v-model.number="designConfig.horizontalLaneGap"
+                      class="flex-grow"
+                    />
+                    <input
+                      type="number"
+                      min="10"
+                      max="50"
+                      v-model.number="designConfig.horizontalLaneGap"
+                      style="width: 65px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
+                    />
+                  </div>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px;">
+                    Definiert den vertikalen Abstand zwischen horizontalen Verbindungslinien verschiedener Geschwistergruppen.
+                  </small>
+                </div>
+
+                <div class="config-field" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
+                    <input type="checkbox" v-model="designConfig.autoSubLanes" style="cursor: pointer;" />
+                    <strong>{{ t('design_auto_sublanes_label') || 'Automatisch neue Ebenen für horizontale Querlinien hinzufügen' }}</strong>
+                  </label>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
+                    Wenn ausreichend vertikaler Platz zwischen den Generationen vorhanden ist, werden dynamisch weitere Höhenebenen bereitgestellt, damit Querlinien verschiedener Geschwistergruppen sich nicht überdecken.
+                  </small>
+                </div>
+
+                <!-- Bereich Linienbrücken & Kreuzungen -->
+                <h4 style="margin: 18px 0 10px 0; font-size: 0.95rem; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;">
+                  🌉 {{ t('design_bridges_config_title') || 'Linienbrücken & Kreuzungen' }}
+                </h4>
+
+                <div class="config-field" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
+                    <input type="checkbox" v-model="designConfig.enableLineBridges" style="cursor: pointer;" />
+                    <strong>{{ t('design_enable_bridges_label') || 'Linienbrücken bei Kreuzungen anzeigen' }}</strong>
+                  </label>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
+                    Zeigt an Kreuzungspunkten sichtbare Bogenbrücken, damit überkreuzende Verbindungslinien deutlich unterscheidbar bleiben.
+                  </small>
+                </div>
+
+                <div v-if="designConfig.enableLineBridges" class="config-field" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+                  <label class="d-block mb-1" style="font-size: 0.88rem;">
+                    <strong>{{ t('design_bridge_radius_label') || 'Linienbrücken-Bogenradius:' }}</strong>
+                    <span class="badge-val" style="background: #8e44ad; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;">{{ designConfig.bridgeRadius }} px</span>
+                  </label>
+                  <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
+                    <input
+                      type="range"
+                      min="4"
+                      max="20"
+                      step="1"
+                      v-model.number="designConfig.bridgeRadius"
+                      class="flex-grow"
+                    />
+                    <input
+                      type="number"
+                      min="4"
+                      max="24"
+                      v-model.number="designConfig.bridgeRadius"
+                      style="width: 65px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
+                    />
+                  </div>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px;">
+                    Bestimmt die Wölbungshöhe und Spannweite des Bogens an Linienkreuzungen.
+                  </small>
+                </div>
+
+                <div class="config-field" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
+                    <input type="checkbox" v-model="designConfig.minimizeBridges" style="cursor: pointer;" />
+                    <strong>{{ t('design_minimize_bridges_label') || 'Ebenen-Anordnung der Querlinien optimieren (Linienbrücken minimieren)' }}</strong>
+                  </label>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
+                    {{ t('design_minimize_bridges_hint') || 'Ordnet die horizontalen Abschnitte der Verbindungslinien automatisch so an, dass möglichst wenige Schnittpunkte mit vertikalen Verbindungslinien entstehen.' }}
+                  </small>
+                </div>
+              </div>
+            </div>
           </div>
-          <label>{{ t('new_tree') }}:</label>
-          <div class="d-flex"><input v-model="newTreeName" :placeholder="t('new_tree_placeholder')" class="flex-grow" /><button @click="createNewTree">{{ t('create_btn') }}</button></div>
         </div>
-        
-        <div class="settings-section">
-          <h3>{{ t('root_ancestor_config') }}</h3>
-          <div class="proband-list-box mb-1">
-            <label><strong>{{ t('proband_list') }}:</strong></label>
-            <ul v-if="rootAncestors.length > 0" class="proband-list">
-              <li v-for="r in rootAncestors" :key="r.person_id">
-                <span class="proband-info">[{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }} <small>({{ r.person_id }})</small></span>
-                <button class="btn-sm btn-danger" @click="removeRootAncestor(r.person_id)">{{ t('remove') }}</button>
-              </li>
-            </ul>
-            <div v-else class="sub-empty mt-1">{{ t('no_probands') }}</div>
-          </div>
-          <label><strong>{{ t('add_proband') }}:</strong></label>
-          <input v-model="rootSearchQuery" :placeholder="t('search_placeholder')" class="w-100 mt-1 mb-1" />
-          <select v-model="selectedRootId" class="w-100 mb-1" size="4"><option v-for="p in filteredPersons" :key="p.id" :value="p.id">{{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }})</option></select>
-          <div class="d-flex align-items-center mt-1">
-            <input v-model="newRootCode" :placeholder="t('starting_code')" class="flex-grow" />
-            <button @click="addRootAncestor" :disabled="!selectedRootId || !newRootCode">{{ t('add_btn') }}</button>
-          </div>
-          <button class="mt-1 btn-full btn-calculate" @click="calculateCodes" :disabled="rootAncestors.length === 0">{{ t('calc_codes_btn') }}</button>
+
+        <div class="settings-footer-row">
+          <button class="btn-close" @click="showSettings = false">{{ t('close') }}</button>
         </div>
-        <button class="btn-close" @click="showSettings = false">{{ t('close') }}</button>
       </div>
     </div>
 
@@ -1726,7 +1903,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div class="workspace" :class="{ 'tree-mode': currentView === 'tree' }">
+    <div class="workspace" :class="{ 'tree-mode': currentView === 'tree' || currentView === 'design' }">
       
       <!-- 1. Tabellen-Ansicht -->
       <div class="table-container" v-if="currentView === 'table'">
@@ -1910,8 +2087,28 @@ onMounted(async () => {
         </div>
       </div>
 
-      <!-- Rechte Spalte: Detailansicht -->
-      <div class="details-pane" :class="{ 'is-open': isDetailsOpen }">
+      <!-- 3. Stammbaum Design-Mode (Ursprung unten -> nach oben, Geschwistergruppen & Ebenen frei verschiebbar, Linienbrücken) -->
+      <DesignTree
+        v-if="currentView === 'design'"
+        :persons="persons"
+        :root-ancestors="rootAncestors"
+        :active-proband-id="activeProbandTab"
+        :selected-id="selectedPerson?.id || ''"
+        :highlighted-path-ids="highlightedPathIds"
+        :horizontal-lane-gap="designConfig.horizontalLaneGap"
+        :auto-sub-lanes="designConfig.autoSubLanes"
+        :enable-line-bridges="designConfig.enableLineBridges"
+        :bridge-radius="designConfig.bridgeRadius"
+        :minimize-bridges="designConfig.minimizeBridges"
+        @select="p => { selectedPerson = p; if (!p) activePartnerPath = []; }"
+        @clear-selection="() => { selectedPerson = null; activePartnerPath = []; }"
+        @select-proband="pid => setProbandTab(pid)"
+        @open-settings="showSettings = true; activeSettingsTab = 'design_mode'; loadRootAncestors()"
+        @jump-to="jumpToTreePerson"
+      />
+
+      <!-- Rechte Spalte: Detailansicht (im Design-Mode nicht angezeigt) -->
+      <div v-if="currentView !== 'design'" class="details-pane" :class="{ 'is-open': isDetailsOpen }">
         
         <button v-if="currentView === 'tree'" class="details-toggle-btn" @click="isDetailsOpen = !isDetailsOpen" title="Details ein/ausblenden">
           <span class="icon">{{ isDetailsOpen ? '▶' : '◀' }}</span>
@@ -2614,4 +2811,94 @@ tr.active { background-color: #e3f2fd !important; }
 .clickable-henry:hover { background: #e67e22; transform: scale(1.05); }
 .ml-1 { margin-left: 5px; }
 .marriage-info { font-size: 0.75rem; color: #7f8c8d; margin-top: 2px; }
+
+/* Settings Modal mit linker Navigationsleiste */
+.settings-modal-content.settings-layout-split {
+  width: 90vw;
+  max-width: 860px;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.settings-modal-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 20px;
+  background: #f8fafc;
+  border-bottom: 1px solid #cbd5e1;
+}
+.settings-modal-header-row h2 {
+  margin: 0;
+  font-size: 1.15rem;
+}
+.btn-close-icon {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.btn-close-icon:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.settings-split-body {
+  display: flex;
+  flex-grow: 1;
+  min-height: 420px;
+  overflow: hidden;
+}
+.settings-nav-sidebar {
+  width: 220px;
+  background: #f1f5f9;
+  border-right: 1px solid #cbd5e1;
+  display: flex;
+  flex-direction: column;
+  padding: 10px 8px;
+  gap: 4px;
+  flex-shrink: 0;
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #334155;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+.settings-nav-item:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+.settings-nav-item.active {
+  background: #ffffff;
+  color: #2563eb;
+  border-color: #cbd5e1;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+.settings-main-pane {
+  flex-grow: 1;
+  padding: 20px;
+  overflow-y: auto;
+  background: #ffffff;
+}
+.settings-footer-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 20px;
+  background: #f8fafc;
+  border-top: 1px solid #cbd5e1;
+}
 </style>
