@@ -97,6 +97,12 @@ pub struct DesignLayoutEntry {
     pub layout_data: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PersonUpdate {
+    pub original_id: String,
+    pub person: Person,
+}
+
 pub struct AppState {
     pub db: Mutex<Connection>,
     pub app_dir: PathBuf,
@@ -723,6 +729,64 @@ fn update_person_parents(
     Ok(())
 }
 
+fn format_person_name(given: Option<&str>, surname: Option<&str>) -> String {
+    match (given, surname) {
+        (Some(g), Some(s)) if !g.is_empty() && !s.is_empty() => format!("{} {}", g, s),
+        (Some(g), _) if !g.is_empty() => g.to_string(),
+        (_, Some(s)) if !s.is_empty() => s.to_string(),
+        _ => "N.N.".to_string(),
+    }
+}
+
+pub fn is_valid_gedcom_xref(id_str: &str) -> bool {
+    let s = id_str.trim();
+    if s.is_empty() {
+        return false;
+    }
+    let inner = if s.starts_with('@') && s.ends_with('@') && s.len() >= 3 {
+        &s[1..s.len() - 1]
+    } else if !s.starts_with('@') && !s.ends_with('@') {
+        s
+    } else {
+        return false;
+    };
+
+    if inner.is_empty() || inner.len() > 20 {
+        return false;
+    }
+
+    let mut chars = inner.chars();
+    let first = chars.next().unwrap();
+    // Erstes Zeichen muss alphanumerisch oder ein Unterstrich sein (nicht '#' oder sonstige Sonderzeichen)
+    if !(first.is_ascii_alphanumeric() || first == '_') {
+        return false;
+    }
+
+    // Nachfolgende Zeichen: alphanumerisch, Unterstrich, Doppelpunkt, Punkt, Bindestrich
+    for c in chars {
+        if !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == ':' || c == '-') {
+            return false;
+        }
+    }
+
+    true
+}
+
+pub fn normalize_gedcom_xref(id_str: &str) -> String {
+    let s = id_str.trim();
+    if s.starts_with('@') && s.ends_with('@') && s.len() >= 3 {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+#[tauri::command]
+fn get_next_person_id(state: State<AppState>) -> Result<String, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    crate::db::get_next_individual_id(&conn)
+}
+
 #[tauri::command]
 fn add_person(
     state: State<AppState>, 
@@ -734,10 +798,33 @@ fn add_person(
     birth_date: Option<String>, 
     birth_place: Option<String>,
     death_date: Option<String>, 
-    death_place: Option<String>
+    death_place: Option<String>,
+    custom_id: Option<String>,
 ) -> Result<String, String> {
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-    let new_id = format!("I{}", uuid::Uuid::new_v4().simple());
+
+    let new_id = if let Some(cid) = custom_id.filter(|s| !s.trim().is_empty()) {
+        let trimmed = cid.trim().to_string();
+        if !is_valid_gedcom_xref(&trimmed) {
+            return Err(format!("Ungültige XREF-ID '{}'. Entspricht nicht dem GEDCOM-Format.", trimmed));
+        }
+        let normalized = normalize_gedcom_xref(&trimmed);
+        let existing: Option<(Option<String>, Option<String>)> = conn
+            .query_row(
+                "SELECT given_name, surname FROM individuals WHERE id = ?1",
+                [&normalized],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        if let Some((g, s)) = existing {
+            let name = format_person_name(g.as_deref(), s.as_deref());
+            return Err(format!("Die ID '{}' wird bereits von '{}' verwendet.", normalized, name));
+        }
+        normalized
+    } else {
+        crate::db::get_next_individual_id(&conn)?
+    };
+
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     let name_val = format!("{} /{}//", given_name, surname);
@@ -781,25 +868,224 @@ fn add_person(
     Ok(new_id)
 }
 
-#[tauri::command]
-fn update_person(state: State<AppState>, person: Person) -> Result<(), String> {
-    let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let json_str = serde_json::to_string(&person.gedcom_extra).unwrap_or_else(|_| "{}".to_string());
+fn rename_person_references(
+    conn: &Connection,
+    from_id: &str,
+    to_id: &str,
+    update_xref: bool,
+) -> Result<(), String> {
+    if update_xref {
+        conn.execute(
+            "UPDATE individuals SET id = ?1, xref_id = ?1 WHERE id = ?2",
+            rusqlite::params![to_id, from_id],
+        ).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE individuals SET id = ?1 WHERE id = ?2",
+            rusqlite::params![to_id, from_id],
+        ).map_err(|e| e.to_string())?;
+    }
+
     conn.execute(
-        "UPDATE individuals SET given_name = ?1, surname = ?2, sex = ?3, birth_date = ?4, birth_place = ?5, death_date = ?6, death_place = ?7, json_data = ?8 WHERE id = ?9",
-        rusqlite::params![
-            person.given_name,
-            person.surname,
-            person.sex,
-            person.birth_date,
-            person.birth_place,
-            person.death_date,
-            person.death_place,
-            json_str,
-            person.id
-        ],
+        "UPDATE families SET husband_id = ?1 WHERE husband_id = ?2",
+        rusqlite::params![to_id, from_id],
     ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE families SET wife_id = ?1 WHERE wife_id = ?2",
+        rusqlite::params![to_id, from_id],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE parent_child SET child_id = ?1 WHERE child_id = ?2",
+        rusqlite::params![to_id, from_id],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE events SET owner_id = ?1 WHERE owner_id = ?2 AND owner_type = 'INDI'",
+        rusqlite::params![to_id, from_id],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE root_ancestors SET person_id = ?1 WHERE person_id = ?2",
+        rusqlite::params![to_id, from_id],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE proband_henry_codes SET person_id = ?1 WHERE person_id = ?2",
+        rusqlite::params![to_id, from_id],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE proband_henry_codes SET proband_id = ?1 WHERE proband_id = ?2",
+        rusqlite::params![to_id, from_id],
+    ).map_err(|e| e.to_string())?;
+
+    conn.execute(
+        "UPDATE design_layouts SET proband_id = ?1 WHERE proband_id = ?2",
+        rusqlite::params![to_id, from_id],
+    ).map_err(|e| e.to_string())?;
+
     Ok(())
+}
+
+fn update_persons_batch_internal(
+    conn: &mut Connection,
+    updates: Vec<PersonUpdate>,
+) -> Result<(), String> {
+    if updates.is_empty() {
+        return Ok(());
+    }
+
+    // 1. Pflichtfeld- und GEDCOM-Allowed-Values-Prüfung: Keine leere ID erlaubt und muss GEDCOM XREF entsprechen
+    for u in &updates {
+        let trimmed_new_id = u.person.id.trim();
+        let name = format_person_name(u.person.given_name.as_deref(), u.person.surname.as_deref());
+        if trimmed_new_id.is_empty() {
+            return Err(format!(
+                "Das Feld ID ist ein Pflichtfeld. Die ID von '{}' darf nicht leer sein.",
+                name
+            ));
+        }
+        if !is_valid_gedcom_xref(trimmed_new_id) {
+            return Err(format!(
+                "Ungültige XREF-ID '{}' für '{}'. Entspricht nicht dem GEDCOM-Format.",
+                trimmed_new_id, name
+            ));
+        }
+    }
+
+    // IDs normalisieren (z.B. @I123@ -> I123)
+    let mut updates = updates;
+    for u in &mut updates {
+        u.person.id = normalize_gedcom_xref(&u.person.id);
+    }
+
+    // 2. Gesamtheitliche Konsistenz: Duplikate innerhalb der geänderten Liste prüfen
+    let mut target_id_map: HashMap<String, String> = HashMap::new();
+    for u in &updates {
+        let new_id = u.person.id.clone();
+        let name = format_person_name(u.person.given_name.as_deref(), u.person.surname.as_deref());
+        if let Some(first_name) = target_id_map.get(&new_id) {
+            return Err(format!(
+                "Die ID '{}' wird mehrfach vergeben (an '{}' und '{}').",
+                new_id, first_name, name
+            ));
+        }
+        target_id_map.insert(new_id, name);
+    }
+
+    // 3. Gesamtheitliche Konsistenz: Kollision gegen bestehende, unberührte Personen in DB prüfen
+    let batch_orig_ids: std::collections::HashSet<String> = updates.iter().map(|u| u.original_id.clone()).collect();
+    for u in &updates {
+        let new_id = &u.person.id;
+        if new_id != &u.original_id {
+            // Wenn die Ziel-ID Teil der geänderten Gruppe ist, wird dieser Platz von einer anderen Person geräumt (z.B. Tausch/Zyklus)
+            if !batch_orig_ids.contains(new_id) {
+                let existing: Option<(Option<String>, Option<String>)> = conn
+                    .query_row(
+                        "SELECT given_name, surname FROM individuals WHERE id = ?1",
+                        [new_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .ok();
+                if let Some((g, s)) = existing {
+                    let name = format_person_name(g.as_deref(), s.as_deref());
+                    return Err(format!("Die ID '{}' wird bereits von '{}' verwendet.", new_id, name));
+                }
+            }
+        }
+    }
+
+    // 4. Durchführung der Änderungen mit 2-Phasen Rename (unter Deaktivierung der Fremdschlüssel-Prüfung)
+    conn.execute_batch("PRAGMA foreign_keys = OFF;").map_err(|e| e.to_string())?;
+
+    let res = (|| -> Result<(), String> {
+        let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+        // Phase 1: Vorübergehend auf eindeutige Temp-IDs umbenennen (verhindert Primary-Key-Konflikte bei Zyklen & Tausch)
+        let mut temp_renames: Vec<(&PersonUpdate, String)> = Vec::new();
+        for u in &updates {
+            let new_id = &u.person.id;
+            if new_id != &u.original_id {
+                let temp_id = format!("__TMP_ID_{}__", uuid::Uuid::new_v4().simple());
+                rename_person_references(&tx, &u.original_id, &temp_id, false)?;
+                temp_renames.push((u, temp_id));
+            }
+        }
+
+        // Phase 2: Von Temp-IDs auf endgültige neue IDs umbenennen
+        for (u, temp_id) in &temp_renames {
+            let new_id = &u.person.id;
+            rename_person_references(&tx, temp_id, new_id, true)?;
+        }
+
+        // Phase 3: Alle Datensatz-Felder der Personen aktualisieren
+        for u in &updates {
+            let target_id = &u.person.id;
+            let json_str = serde_json::to_string(&u.person.gedcom_extra).unwrap_or_else(|_| "{}".to_string());
+            tx.execute(
+                "UPDATE individuals SET given_name = ?1, surname = ?2, sex = ?3, birth_date = ?4, birth_place = ?5, death_date = ?6, death_place = ?7, json_data = ?8 WHERE id = ?9",
+                rusqlite::params![
+                    u.person.given_name,
+                    u.person.surname,
+                    u.person.sex,
+                    u.person.birth_date,
+                    u.person.birth_place,
+                    u.person.death_date,
+                    u.person.death_place,
+                    json_str,
+                    target_id
+                ],
+            ).map_err(|e| e.to_string())?;
+        }
+
+        // Phase 4: Layout-Referenzen in design_layouts JSON-Daten aktualisieren
+        for u in &updates {
+            let new_id = &u.person.id;
+            if new_id != &u.original_id {
+                let old_pat = format!("\"{}\"", u.original_id);
+                let new_pat = format!("\"{}\"", new_id);
+                let mut stmt = tx.prepare("SELECT id, layout_data FROM design_layouts").map_err(|e| e.to_string())?;
+                let rows: Vec<(String, String)> = stmt
+                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .map_err(|e| e.to_string())?
+                    .filter_map(Result::ok)
+                    .collect();
+
+                for (dl_id, ldata) in rows {
+                    if ldata.contains(&old_pat) {
+                        let updated = ldata.replace(&old_pat, &new_pat);
+                        tx.execute("UPDATE design_layouts SET layout_data = ?1 WHERE id = ?2", [&updated, &dl_id])
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            }
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    })();
+
+    let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    res?;
+
+    // Henry-Codes neu berechnen
+    let _ = calculate_henry_codes_internal(conn);
+    Ok(())
+}
+
+#[tauri::command]
+fn update_persons_batch(state: State<AppState>, updates: Vec<PersonUpdate>) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    update_persons_batch_internal(&mut conn, updates)
+}
+
+#[tauri::command]
+fn update_person(state: State<AppState>, person: Person, original_id: Option<String>) -> Result<(), String> {
+    let orig_id = original_id.unwrap_or_else(|| person.id.clone());
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    update_persons_batch_internal(&mut conn, vec![PersonUpdate { original_id: orig_id, person }])
 }
 
 #[tauri::command]
@@ -1029,7 +1315,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             get_trees, switch_tree, delete_tree, get_all_persons, get_person_details, find_relationship_path, export_latex_pdf,
-            import_gedcom_file, update_person, update_person_parents, add_person, get_root_ancestors, add_root_ancestor,
+            import_gedcom_file, update_person, update_persons_batch, get_next_person_id, update_person_parents, add_person, get_root_ancestors, add_root_ancestor,
             remove_root_ancestor, calculate_henry_codes_from_roots,
             save_design_layout, get_design_layouts, delete_design_layout, save_design_file, read_design_file
         ])
@@ -1156,5 +1442,234 @@ mod tests {
         assert!(parse_birth_sort_key("05.03.1950") < parse_birth_sort_key("1950-03-12"));
         assert!(parse_birth_sort_key("1948") < parse_birth_sort_key("01 JAN 1950"));
         assert!(parse_birth_sort_key("1950") < parse_birth_sort_key(""));
+    }
+
+    #[test]
+    fn test_get_next_individual_id() {
+        let conn = db::init_in_memory_database().unwrap();
+        // Leere DB -> I1
+        assert_eq!(crate::db::get_next_individual_id(&conn).unwrap(), "I1");
+
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'A', 'B', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I2', 'I2', 'C', 'D', 'F', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I10', 'I10', 'E', 'F', 'M', '{}')", []).unwrap();
+        assert_eq!(crate::db::get_next_individual_id(&conn).unwrap(), "I11");
+
+        // Höhere numerische ID
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I191141', 'I191141', 'G', 'H', 'M', '{}')", []).unwrap();
+        assert_eq!(crate::db::get_next_individual_id(&conn).unwrap(), "I191142");
+    }
+
+    #[test]
+    fn test_update_persons_batch_and_traceability() {
+        let mut conn = db::init_in_memory_database().unwrap();
+
+        // 1. Zwei Personen und eine Familie anlegen
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Vater', 'Ahne', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I2', 'I2', 'Kind', 'Ahne', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F1', 'F1', 'I1', NULL, 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I2')", []).unwrap();
+        conn.execute("INSERT INTO root_ancestors (person_id, starting_code) VALUES ('I1', '1')", []).unwrap();
+        calculate_henry_codes_internal(&mut conn).unwrap();
+
+        // 2. Prüfung auf leere ID (Pflichtfeld)
+        let empty_id_update = vec![PersonUpdate {
+            original_id: "I1".to_string(),
+            person: Person {
+                id: "   ".to_string(),
+                given_name: Some("Vater".to_string()),
+                surname: Some("Ahne".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: None,
+                birth_place: None,
+                death_date: None,
+                death_place: None,
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+                spouses: vec![],
+                parent_ids: vec![],
+            },
+        }];
+        let err_empty = update_persons_batch_internal(&mut conn, empty_id_update);
+        assert!(err_empty.is_err());
+        assert!(err_empty.unwrap_err().contains("Pflichtfeld"));
+
+        // 3. Prüfung auf Kollision mit existierender ID (Nennung von ID und Name)
+        let collision_update = vec![PersonUpdate {
+            original_id: "I2".to_string(),
+            person: Person {
+                id: "I1".to_string(), // I1 existiert bereits (Vater Ahne)
+                given_name: Some("Kind".to_string()),
+                surname: Some("Ahne".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: None,
+                birth_place: None,
+                death_date: None,
+                death_place: None,
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+                spouses: vec![],
+                parent_ids: vec![],
+            },
+        }];
+        let err_col = update_persons_batch_internal(&mut conn, collision_update);
+        assert!(err_col.is_err());
+        let msg = err_col.unwrap_err();
+        assert!(msg.contains("I1"));
+        assert!(msg.contains("Vater Ahne"));
+
+        // 4. Erfolgreiche ID-Änderung von I1 -> I100 (inklusive Referenzen)
+        let rename_update = vec![PersonUpdate {
+            original_id: "I1".to_string(),
+            person: Person {
+                id: "I100".to_string(),
+                given_name: Some("VaterNeu".to_string()),
+                surname: Some("Ahne".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: None,
+                birth_place: None,
+                death_date: None,
+                death_place: None,
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+                spouses: vec![],
+                parent_ids: vec![],
+            },
+        }];
+        update_persons_batch_internal(&mut conn, rename_update).unwrap();
+
+        // Überprüfen: individuals hat jetzt I100 und nicht mehr I1
+        let count_i1: i64 = conn.query_row("SELECT count(*) FROM individuals WHERE id = 'I1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_i1, 0);
+        let count_i100: i64 = conn.query_row("SELECT count(*) FROM individuals WHERE id = 'I100'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count_i100, 1);
+
+        // Überprüfen: families.husband_id wurde auf I100 aktualisiert
+        let husband: String = conn.query_row("SELECT husband_id FROM families WHERE id = 'F1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(husband, "I100");
+
+        // Überprüfen: root_ancestors wurde auf I100 aktualisiert
+        let root_p: String = conn.query_row("SELECT person_id FROM root_ancestors", [], |r| r.get(0)).unwrap();
+        assert_eq!(root_p, "I100");
+
+        // 5. Tausch zweier IDs (Swap) im Mass Edit: I100 <-> I2
+        let swap_updates = vec![
+            PersonUpdate {
+                original_id: "I100".to_string(),
+                person: Person {
+                    id: "I2".to_string(),
+                    given_name: Some("VaterNeu".to_string()),
+                    surname: Some("Ahne".to_string()),
+                    sex: Some("M".to_string()),
+                    birth_date: None,
+                    birth_place: None,
+                    death_date: None,
+                    death_place: None,
+                    proband_data: HashMap::new(),
+                    gedcom_extra: serde_json::json!({}),
+                    spouses: vec![],
+                    parent_ids: vec![],
+                },
+            },
+            PersonUpdate {
+                original_id: "I2".to_string(),
+                person: Person {
+                    id: "I100".to_string(),
+                    given_name: Some("Kind".to_string()),
+                    surname: Some("Ahne".to_string()),
+                    sex: Some("M".to_string()),
+                    birth_date: None,
+                    birth_place: None,
+                    death_date: None,
+                    death_place: None,
+                    proband_data: HashMap::new(),
+                    gedcom_extra: serde_json::json!({}),
+                    spouses: vec![],
+                    parent_ids: vec![],
+                },
+            },
+        ];
+        update_persons_batch_internal(&mut conn, swap_updates).unwrap();
+
+        // Vater hat jetzt I2
+        let vater_id: String = conn.query_row("SELECT id FROM individuals WHERE given_name = 'VaterNeu'", [], |r| r.get(0)).unwrap();
+        assert_eq!(vater_id, "I2");
+        // Kind hat jetzt I100
+        let kind_id: String = conn.query_row("SELECT id FROM individuals WHERE given_name = 'Kind'", [], |r| r.get(0)).unwrap();
+        assert_eq!(kind_id, "I100");
+        // Familie husband ist jetzt I2, child_id ist jetzt I100
+        let h: String = conn.query_row("SELECT husband_id FROM families WHERE id = 'F1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(h, "I2");
+        let c: String = conn.query_row("SELECT child_id FROM parent_child WHERE family_id = 'F1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(c, "I100");
+    }
+
+    #[test]
+    fn test_is_valid_gedcom_xref() {
+        // Gültige IDs
+        assert!(is_valid_gedcom_xref("I1"));
+        assert!(is_valid_gedcom_xref("@I1@"));
+        assert!(is_valid_gedcom_xref("191141"));
+        assert!(is_valid_gedcom_xref("@191141@"));
+        assert!(is_valid_gedcom_xref("INDI_1-2.3:4"));
+        assert!(is_valid_gedcom_xref("@INDI_1-2.3:4@"));
+        assert!(is_valid_gedcom_xref("_CUSTOM_ID"));
+        assert!(is_valid_gedcom_xref("@_CUSTOM_ID@"));
+        assert!(is_valid_gedcom_xref("12345678901234567890")); // Genau 20 Zeichen
+        assert!(is_valid_gedcom_xref("@12345678901234567890@")); // 20 Zeichen in @
+
+        // Ungültige IDs
+        assert!(!is_valid_gedcom_xref("")); // Leer
+        assert!(!is_valid_gedcom_xref("   ")); // Nur Whitespace
+        assert!(!is_valid_gedcom_xref("@")); // Nur ein @
+        assert!(!is_valid_gedcom_xref("@@")); // Leer in @
+        assert!(!is_valid_gedcom_xref("@I1")); // Fehlendes abschließendes @
+        assert!(!is_valid_gedcom_xref("I1@")); // Fehlendes führendes @
+        assert!(!is_valid_gedcom_xref("#I1")); // Darf nicht mit # beginnen
+        assert!(!is_valid_gedcom_xref("@#I1@")); // Darf nicht mit # beginnen
+        assert!(!is_valid_gedcom_xref("-I1")); // Darf nicht mit - beginnen
+        assert!(!is_valid_gedcom_xref(".I1")); // Darf nicht mit . beginnen
+        assert!(!is_valid_gedcom_xref(":I1")); // Darf nicht mit : beginnen
+        assert!(!is_valid_gedcom_xref("I 1")); // Leerzeichen nicht erlaubt
+        assert!(!is_valid_gedcom_xref("@I 1@")); // Leerzeichen nicht erlaubt
+        assert!(!is_valid_gedcom_xref("I@1")); // Internes @ nicht erlaubt
+        assert!(!is_valid_gedcom_xref("I!1")); // Sonderzeichen wie ! nicht erlaubt
+        assert!(!is_valid_gedcom_xref("123456789012345678901")); // 21 Zeichen (> 20)
+        assert!(!is_valid_gedcom_xref("@123456789012345678901@")); // > 20 Zeichen
+    }
+
+    #[test]
+    fn test_normalize_gedcom_xref() {
+        assert_eq!(normalize_gedcom_xref("I1"), "I1");
+        assert_eq!(normalize_gedcom_xref("@I1@"), "I1");
+        assert_eq!(normalize_gedcom_xref("  @I123@  "), "I123");
+        assert_eq!(normalize_gedcom_xref("  INDI_1  "), "INDI_1");
+    }
+
+    #[test]
+    fn test_update_persons_batch_rejects_invalid_xref() {
+        let mut conn = db::init_in_memory_database().unwrap();
+        let invalid_update = vec![
+            PersonUpdate {
+                original_id: "I1".to_string(),
+                person: Person {
+                    id: "Ungültige ID mit Leerzeichen!".to_string(),
+                    given_name: Some("Test".to_string()),
+                    surname: Some("Person".to_string()),
+                    sex: Some("M".to_string()),
+                    birth_date: None,
+                    birth_place: None,
+                    death_date: None,
+                    death_place: None,
+                    proband_data: HashMap::new(),
+                    gedcom_extra: serde_json::json!({}),
+                    spouses: vec![],
+                    parent_ids: vec![],
+                },
+            },
+        ];
+        let res = update_persons_batch_internal(&mut conn, invalid_update);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().contains("Ungültige XREF-ID"));
     }
 }

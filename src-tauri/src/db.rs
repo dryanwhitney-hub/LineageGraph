@@ -157,3 +157,46 @@ pub fn generate_next_henry_code(parent_code: &str, child_index: usize) -> String
         format!("{}{}", parent_code, suffix)
     }
 }
+
+/// Ermittelt die nächste freie/inkrementelle XREF-ID für eine Person basierend auf dem höchsten vorhandenen Wert
+pub fn get_next_individual_id(conn: &Connection) -> Result<String, String> {
+    let mut stmt = conn
+        .prepare("SELECT id FROM individuals")
+        .map_err(|e| e.to_string())?;
+    let ids: Vec<String> = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+
+    let mut max_num: Option<u64> = None;
+    let mut best_prefix = "I".to_string();
+
+    for id in &ids {
+        let trimmed = id.trim().trim_matches('@');
+        if let Some(digit_start) = trimmed.find(|c: char| c.is_ascii_digit()) {
+            let (prefix, rest) = trimmed.split_at(digit_start);
+            if rest.chars().all(|c| c.is_ascii_digit()) {
+                if let Ok(num) = rest.parse::<u64>() {
+                    match max_num {
+                        None => {
+                            max_num = Some(num);
+                            best_prefix = prefix.to_string();
+                        }
+                        Some(curr_max) if num > curr_max => {
+                            max_num = Some(num);
+                            best_prefix = prefix.to_string();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    match max_num {
+        Some(max) => Ok(format!("{}{}", best_prefix, max + 1)),
+        None => Ok("I1".to_string()),
+    }
+}
+

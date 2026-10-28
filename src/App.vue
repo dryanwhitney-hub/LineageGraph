@@ -84,6 +84,8 @@ const freeInitialRootId = ref<string | null>(null);
 
 // Modal-State für allgemeines Anlegen
 const showAddModal = ref<boolean>(false);
+const newRelId = ref<string>('');
+const addPersonError = ref<string>('');
 const newRelType = ref<string>('none');
 const newRelTarget = ref<string | null>(null);
 const newRelTargetName = ref<string>('');
@@ -96,6 +98,7 @@ const newRelDeathDate = ref<string>('');
 const newRelDeathPlace = ref<string>('');
 
 const isEditing = ref<boolean>(false);
+const saveErrorAlert = ref<string>('');
 const showSettings = ref<boolean>(false);
 const activeSettingsTab = ref<'general' | 'table_view' | 'tree_view' | 'design_mode'>('general');
 const designConfig = ref({
@@ -128,6 +131,49 @@ const expandedNodes = ref<Map<string, boolean>>(new Map());
 const expandedSideNodes = ref<Map<string, { spouses: boolean, parents: boolean }>>(new Map());
 const expandedFromChildMap = ref<Map<string, string>>(new Map());
 const isDetailsOpen = ref<boolean>(true);
+const activeIdField = ref<string | null>(null);
+
+function isValidGedcomXref(val: string | null | undefined): boolean {
+  if (!val) return false;
+  const s = val.trim();
+  if (!s) return false;
+  // GEDCOM XREF: 1-20 Zeichen (Buchstaben, Ziffern, Unterstrich, Bindestrich, Punkt, Doppelpunkt)
+  // Optional in @...@ eingefasst (3-22 Zeichen)
+  // Erstes Zeichen nach @ bzw. am Anfang: [A-Za-z0-9_] (darf nicht mit # oder Symbolen beginnen)
+  const regex = /^(?:@[A-Za-z0-9_][A-Za-z0-9_.:-]{0,19}@|[A-Za-z0-9_][A-Za-z0-9_.:-]{0,19})$/;
+  return regex.test(s);
+}
+
+function normalizeGedcomXref(val: string | null | undefined): string {
+  if (!val) return '';
+  const s = val.trim();
+  if (s.startsWith('@') && s.endsWith('@') && s.length >= 3) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+const hasInvalidEditedPerson = computed(() => {
+  if (!isEditing.value) return false;
+  for (const [origId, editedPerson] of editedPersons.value.entries()) {
+    const orig = persons.value.find(p => p.id === origId);
+    if (!orig) continue;
+    const isDifferent =
+      editedPerson.id !== orig.id ||
+      editedPerson.given_name !== orig.given_name ||
+      editedPerson.surname !== orig.surname ||
+      editedPerson.sex !== orig.sex ||
+      editedPerson.birth_date !== orig.birth_date ||
+      editedPerson.birth_place !== orig.birth_place ||
+      editedPerson.death_date !== orig.death_date ||
+      editedPerson.death_place !== orig.death_place ||
+      JSON.stringify(editedPerson.gedcom_extra || {}) !== JSON.stringify(orig.gedcom_extra || {});
+    if (isDifferent && !isValidGedcomXref(editedPerson.id)) {
+      return true;
+    }
+  }
+  return false;
+});
 
 // Canvas Panning & Zooming
 const pan = ref({ x: 0, y: 0 });
@@ -153,7 +199,7 @@ const columns = ref<ColumnConfig[]>([
   { key: 'death_date', labelKey: 'col_death', visible: true, detailVisible: true, editable: true, isDate: true },
   { key: 'death_place', labelKey: 'col_death_place', visible: true, detailVisible: true, editable: true },
   { key: 'sex', labelKey: 'col_sex', visible: false, detailVisible: true, editable: true },
-  { key: 'id', labelKey: 'col_id', visible: false, detailVisible: true, editable: false },
+  { key: 'id', labelKey: 'col_id', visible: true, detailVisible: true, editable: true },
   { key: 'chr_date', labelKey: 'col_chr_date', visible: false, detailVisible: true, editable: true, isDate: true },
   { key: 'chr_place', labelKey: 'col_chr_place', visible: false, detailVisible: true, editable: true },
   { key: 'buri_date', labelKey: 'col_buri_date', visible: false, detailVisible: true, editable: true, isDate: true },
@@ -210,13 +256,14 @@ function syncDynamicColumns(personList: Person[]) {
   extraKeys.forEach(colKey => {
     if (!columns.value.some(c => c.key === colKey)) {
       const rawTag = colKey.replace(/^ged_/, '');
+      const isUid = rawTag === '_UID' || rawTag === 'UID';
       columns.value.push({
         key: colKey,
         labelKey: colKey,
         customLabel: `GEDCOM: ${rawTag}`,
         visible: false,
         detailVisible: true,
-        editable: true
+        editable: !isUid
       });
     }
   });
@@ -301,6 +348,7 @@ function getPersonAttr(person: Person, key: string): any {
 function setPersonAttr(person: Person, key: string, value: string) {
   const valOrNull = value === '' ? null : value;
   switch (key) {
+    case 'id': person.id = value; break;
     case 'surname': person.surname = valOrNull; break;
     case 'given_name': person.given_name = valOrNull; break;
     case 'sex': person.sex = valOrNull; break;
@@ -319,6 +367,10 @@ function setPersonAttr(person: Person, key: string, value: string) {
     case 'note': writeGedcomSub(person, 'NOTE', '_val', value); break;
     case 'sour': writeGedcomSub(person, 'SOUR', '_val', value); break;
     default:
+      if (key === 'ged__UID' || key === 'ged_UID' || key.toLowerCase() === 'ged__uid') {
+        // Das Feld GEDCOM: _UID ist nicht editierbar
+        return;
+      }
       if (key.startsWith('ged_')) {
         const rawTag = key.slice(4);
         writeGedcomSub(person, rawTag, '_val', value);
@@ -1358,24 +1410,133 @@ async function handleImport() {
 }
 function toggleEditMode() {
   if (isEditing.value) {
+    saveErrorAlert.value = '';
     editedPersons.value = new Map(persons.value.map(p => [p.id, clonePerson(p)]));
   }
   isEditing.value = !isEditing.value;
   parentEditError.value = '';
+  saveErrorAlert.value = '';
 }
+
 async function saveChanges() {
+  saveErrorAlert.value = '';
+
+  // 1. Sammle alle geänderten Personen
+  const updates: { original_id: string; person: Person }[] = [];
+  for (const [origId, editedPerson] of editedPersons.value.entries()) {
+    const origPerson = persons.value.find(p => p.id === origId);
+    if (!origPerson) continue;
+
+    const isDifferent =
+      editedPerson.id !== origPerson.id ||
+      editedPerson.given_name !== origPerson.given_name ||
+      editedPerson.surname !== origPerson.surname ||
+      editedPerson.sex !== origPerson.sex ||
+      editedPerson.birth_date !== origPerson.birth_date ||
+      editedPerson.birth_place !== origPerson.birth_place ||
+      editedPerson.death_date !== origPerson.death_date ||
+      editedPerson.death_place !== origPerson.death_place ||
+      JSON.stringify(editedPerson.gedcom_extra || {}) !== JSON.stringify(origPerson.gedcom_extra || {});
+
+    if (isDifferent) {
+      updates.push({ original_id: origId, person: clonePerson(editedPerson) });
+    }
+  }
+
+  if (updates.length === 0) {
+    isEditing.value = false;
+    statusMessage.value = t('changes_saved');
+    return;
+  }
+
+  // 2. Gesamtheitliche Konsistenzprüfung vor dem Speichern
+  // a) Pflichtfeld: Leere ID prüfen und GEDCOM Allowed Values prüfen
+  for (const u of updates) {
+    const trimmedId = (u.person.id || '').trim();
+    const name = `${u.person.given_name || 'N.N.'} ${u.person.surname || ''}`.trim();
+    if (!trimmedId) {
+      const msg = t('id_required_for', { name });
+      saveErrorAlert.value = msg;
+      statusMessage.value = msg;
+      return;
+    }
+    if (!isValidGedcomXref(trimmedId)) {
+      const msg = t('xref_format_error', { id: trimmedId });
+      saveErrorAlert.value = msg;
+      statusMessage.value = msg;
+      return;
+    }
+  }
+
+  // IDs normalisieren (z.B. @I123@ -> I123)
+  for (const u of updates) {
+    u.person.id = normalizeGedcomXref(u.person.id);
+  }
+
+  // b) Duplikate innerhalb der geänderten Liste prüfen (Batch Duplicates)
+  const targetIdMap = new Map<string, string>();
+  for (const u of updates) {
+    const newId = u.person.id;
+    const name = `${u.person.given_name || 'N.N.'} ${u.person.surname || ''}`.trim();
+    if (targetIdMap.has(newId)) {
+      const first = targetIdMap.get(newId)!;
+      const msg = t('id_duplicate_in_batch', { id: newId, nameA: first, nameB: name });
+      saveErrorAlert.value = msg;
+      statusMessage.value = msg;
+      return;
+    }
+    targetIdMap.set(newId, name);
+  }
+
+  // c) Kollisionsprüfung gegen bestehende, unberührte Datensätze im Stammbaum
+  const batchOrigIds = new Set(updates.map(u => u.original_id));
+  for (const u of updates) {
+    const newId = u.person.id;
+    if (newId !== u.original_id) {
+      if (!batchOrigIds.has(newId)) {
+        const existing = persons.value.find(p => p.id === newId);
+        if (existing) {
+          const existingName = `${existing.given_name || 'N.N.'} ${existing.surname || ''}`.trim();
+          const msg = t('id_already_used', { id: newId, name: existingName });
+          saveErrorAlert.value = msg;
+          statusMessage.value = msg;
+          return;
+        }
+      }
+    }
+  }
+
+  // 3. Atomares Speichern über Backend
   try {
     isLoading.value = true;
-    for (const [_, person] of editedPersons.value.entries()) {
-      await invoke('update_person', { person });
+    await invoke('update_persons_batch', { updates });
+
+    // Referenzen im Frontend-State aktualisieren
+    for (const u of updates) {
+      const newId = u.person.id;
+      if (newId !== u.original_id) {
+        if (selectedPerson.value && selectedPerson.value.id === u.original_id) {
+          selectedPerson.value.id = newId;
+        }
+        if (activeProbandTab.value === u.original_id) {
+          activeProbandTab.value = newId;
+        }
+        if (currentTreeRootId.value === u.original_id) {
+          currentTreeRootId.value = newId;
+        }
+      }
     }
-    statusMessage.value = 'Gespeichert.';
+
+    statusMessage.value = t('changes_saved');
     isEditing.value = false;
+    saveErrorAlert.value = '';
     await loadPersons();
+    await loadRootAncestors();
     if (selectedPerson.value) {
       await loadDetails(selectedPerson.value.id);
     }
-  } catch (error) {
+  } catch (error: any) {
+    saveErrorAlert.value = String(error);
     statusMessage.value = `Fehler beim Speichern: ${error}`;
   } finally {
     isLoading.value = false;
@@ -1462,7 +1623,30 @@ async function confirmDeleteTree() {
   }
 }
 
-function openAddModal() {
+function calculateNextIdFromPersons(): string {
+  let maxNum: number | null = null;
+  let bestPrefix = 'I';
+  persons.value.forEach(p => {
+    const trimmed = (p.id || '').trim().replace(/^@+|@+$/g, '');
+    const match = trimmed.match(/^([^0-9]*)(\d+)$/);
+    if (match) {
+      const prefix = match[1];
+      const num = parseInt(match[2], 10);
+      if (!isNaN(num)) {
+        if (maxNum === null || num > maxNum) {
+          maxNum = num;
+          bestPrefix = prefix;
+        }
+      }
+    }
+  });
+  if (maxNum !== null) {
+    return `${bestPrefix}${maxNum + 1}`;
+  }
+  return 'I1';
+}
+
+async function openAddModal() {
   if (selectedPerson.value) {
     newRelTarget.value = selectedPerson.value.id;
     newRelTargetName.value = `${selectedPerson.value.given_name || 'N.N.'} ${selectedPerson.value.surname || ''}`;
@@ -1474,37 +1658,74 @@ function openAddModal() {
     newRelType.value = 'none';
     newRelSurname.value = '';
   }
-  newRelGiven.value = ''; newRelSex.value = 'M';
-  newRelBirthDate.value = ''; newRelBirthPlace.value = '';
-  newRelDeathDate.value = ''; newRelDeathPlace.value = '';
+  newRelGiven.value = '';
+  newRelSex.value = 'M';
+  newRelBirthDate.value = '';
+  newRelBirthPlace.value = '';
+  newRelDeathDate.value = '';
+  newRelDeathPlace.value = '';
+  addPersonError.value = '';
+
+  try {
+    newRelId.value = await invoke<string>('get_next_person_id');
+  } catch {
+    newRelId.value = calculateNextIdFromPersons();
+  }
   showAddModal.value = true;
 }
 
-async function handleAddPerson() { 
-  if (!newRelGiven.value) return; 
-  try { 
+async function handleAddPerson() {
+  addPersonError.value = '';
+  const trimmedId = newRelId.value.trim();
+  if (!trimmedId) {
+    addPersonError.value = t('id_required');
+    return;
+  }
+  if (!isValidGedcomXref(trimmedId)) {
+    addPersonError.value = t('xref_format_error', { id: trimmedId });
+    return;
+  }
+  const normalizedId = normalizeGedcomXref(trimmedId);
+  if (!newRelGiven.value.trim() && !newRelSurname.value.trim()) {
+    addPersonError.value = t('name_required');
+    return;
+  }
+
+  const existingPerson = persons.value.find(p => p.id === normalizedId);
+  if (existingPerson) {
+    const existingName = `${existingPerson.given_name || 'N.N.'} ${existingPerson.surname || ''}`.trim();
+    addPersonError.value = t('id_already_used', { id: normalizedId, name: existingName });
+    return;
+  }
+
+  try {
     isLoading.value = true;
     if (!activeTree.value) {
       activeTree.value = 'stammbaum';
       await invoke('switch_tree', { treeName: 'stammbaum' });
       await loadTrees();
     }
-    await invoke('add_person', { 
-      targetPersonId: newRelType.value === 'none' ? null : newRelTarget.value, 
-      relationType: newRelType.value === 'none' ? null : newRelType.value, 
-      givenName: newRelGiven.value, 
-      surname: newRelSurname.value, 
-      sex: newRelSex.value, 
-      birthDate: newRelBirthDate.value || null, 
+    await invoke('add_person', {
+      targetPersonId: newRelType.value === 'none' ? null : newRelTarget.value,
+      relationType: newRelType.value === 'none' ? null : newRelType.value,
+      givenName: newRelGiven.value,
+      surname: newRelSurname.value,
+      sex: newRelSex.value,
+      birthDate: newRelBirthDate.value || null,
       birthPlace: newRelBirthPlace.value || null,
-      deathDate: newRelDeathDate.value || null, 
-      deathPlace: newRelDeathPlace.value || null 
-    }); 
-    showAddModal.value = false; 
-    await loadPersons(); 
+      deathDate: newRelDeathDate.value || null,
+      deathPlace: newRelDeathPlace.value || null,
+      customId: normalizedId,
+    });
+    showAddModal.value = false;
+    await loadPersons();
     await loadRootAncestors();
-    if (newRelTarget.value) await loadDetails(newRelTarget.value); 
-  } catch (error) {} finally { isLoading.value = false; } 
+    if (newRelTarget.value) await loadDetails(newRelTarget.value);
+  } catch (error: any) {
+    addPersonError.value = String(error);
+  } finally {
+    isLoading.value = false;
+  }
 }
 
 // @ts-ignore
@@ -1543,7 +1764,7 @@ onMounted(async () => {
       <div class="actions">
         <button @click="handleImport" :disabled="isLoading">{{ t('import_btn') }}</button>
         <button @click="toggleEditMode" :class="{ active: isEditing }">{{ isEditing ? t('edit_toggle_off') : t('edit_toggle_on') }}</button>
-        <button v-if="isEditing" @click="saveChanges" class="btn-save" :disabled="isLoading">{{ t('save_changes') }}</button>
+        <button v-if="isEditing" @click="saveChanges" class="btn-save" :disabled="isLoading || hasInvalidEditedPerson">{{ t('save_changes') }}</button>
         
         <button @click="openAddModal" class="btn-add-rel">➕ Neue Person anlegen</button>
       </div>
@@ -1581,14 +1802,47 @@ onMounted(async () => {
       <div class="modal-content add-modal">
         <h2>{{ newRelTarget ? 'Verwandten anlegen' : 'Neue unabhängige Person anlegen' }}</h2>
         <div v-if="newRelTarget" style="margin-bottom:10px; font-size: 0.9rem; color:#7f8c8d;">Bezugsperson: <strong>{{ newRelTargetName }}</strong></div>
-        
-        <label>Verhältnis:</label>
-        <select v-model="newRelType" class="w-100 mt-1 mb-1">
-          <option value="none">Keine (Unabhängige Person)</option>
-          <option v-if="newRelTarget" value="child">Kind</option>
-          <option v-if="newRelTarget" value="parent">Elternteil</option>
-          <option v-if="newRelTarget" value="spouse">Ehepartner</option>
-        </select>
+
+        <div v-if="addPersonError" class="parent-error-alert mb-1">
+          ⚠️ {{ addPersonError }}
+        </div>
+
+        <div style="display: flex; gap: 10px;">
+          <div style="flex:1;">
+            <label><strong>ID (XREF-ID) *:</strong> <small style="color: #7f8c8d;">({{ t('field_required') }})</small></label>
+            <div class="xref-input-wrapper">
+              <input
+                v-model="newRelId"
+                @focus="activeIdField = 'modal'"
+                @blur="activeIdField = null"
+                :class="{ 'input-warning': !isValidGedcomXref(newRelId) }"
+                class="w-100 mt-1 mb-1"
+                placeholder="z.B. I191143"
+                required
+              />
+              <div v-if="activeIdField === 'modal'" class="xref-tooltip" @mousedown.prevent>
+                <div class="xref-tooltip-header">
+                  <span>📌 {{ t('xref_tooltip_title') }}</span>
+                  <span :class="isValidGedcomXref(newRelId) ? 'xref-badge-valid' : 'xref-badge-invalid'">
+                    {{ isValidGedcomXref(newRelId) ? '✓ ' + t('xref_valid') : '⚠️ ' + t('xref_invalid') }}
+                  </span>
+                </div>
+                <div class="xref-tooltip-body">
+                  {{ t('xref_tooltip_desc') }}
+                </div>
+              </div>
+            </div>
+          </div>
+          <div style="flex:1;">
+            <label>Verhältnis:</label>
+            <select v-model="newRelType" class="w-100 mt-1 mb-1">
+              <option value="none">Keine (Unabhängige Person)</option>
+              <option v-if="newRelTarget" value="child">Kind</option>
+              <option v-if="newRelTarget" value="parent">Elternteil</option>
+              <option v-if="newRelTarget" value="spouse">Ehepartner</option>
+            </select>
+          </div>
+        </div>
         
         <div style="display: flex; gap: 10px;">
           <div style="flex:1;">
@@ -1619,7 +1873,7 @@ onMounted(async () => {
         </div>
 
         <div class="d-flex mt-1">
-          <button @click="handleAddPerson" class="flex-grow">Anlegen</button>
+          <button @click="handleAddPerson" :disabled="!isValidGedcomXref(newRelId)" class="flex-grow">Anlegen</button>
           <button @click="showAddModal = false" class="btn-close-modal">Abbrechen</button>
         </div>
       </div>
@@ -1907,12 +2161,16 @@ onMounted(async () => {
       
       <!-- 1. Tabellen-Ansicht -->
       <div class="table-container" v-if="currentView === 'table'">
+        <div v-if="saveErrorAlert" class="save-error-banner" @click.stop>
+          <span>⚠️ {{ saveErrorAlert }}</span>
+          <button class="btn-close-sm" @click="saveErrorAlert = ''">✕</button>
+        </div>
         <table>
           <thead>
             <tr>
               <th v-for="col in activeTableColumns" :key="col.key">
                 <div class="th-header" @click="sortBy(col.key)">
-                  {{ getColLabel(col) }}
+                  {{ getColLabel(col) }}<span v-if="col.key === 'id'" style="color:#e74c3c;"> *</span>
                   <span class="sort-icon">{{ sortKey === col.key ? (sortAsc ? '▲' : '▼') : '↕' }}</span>
                 </div>
                 <div class="filter-controls" @click.stop v-if="columnFilters[col.key]">
@@ -1937,7 +2195,7 @@ onMounted(async () => {
                   <template v-if="!isEditing || !col.editable">
                     <span v-if="col.key === 'henry_code'"><strong>{{ getCode(person) || '-' }}</strong></span>
                     <span v-else-if="col.key === 'generation'">{{ getGen(person) ?? '-' }}</span>
-                    <span v-else-if="col.key === 'id'"><small>{{ person.id }}</small></span>
+                    <span v-else-if="col.key === 'id'"><small><strong>{{ person.id }}</strong></small></span>
                     <span v-else>{{ getPersonAttr(person, col.key) || (col.key === 'given_name' ? 'N.N.' : '-') }}</span>
                   </template>
                   <template v-else-if="editedPersons.get(person.id)">
@@ -1951,6 +2209,28 @@ onMounted(async () => {
                       <option value="F">F</option>
                       <option value="U">U</option>
                     </select>
+                    <div v-else-if="col.key === 'id'" class="xref-input-wrapper" @click.stop>
+                      <input
+                        :value="getPersonAttr(editedPersons.get(person.id)!, col.key) ?? ''"
+                        @input="setPersonAttr(editedPersons.get(person.id)!, col.key, ($event.target as HTMLInputElement).value)"
+                        @focus="activeIdField = 'table-' + person.id"
+                        @blur="activeIdField = null"
+                        :class="{ 'input-warning': !isValidGedcomXref(editedPersons.get(person.id)?.id) }"
+                        :placeholder="t('field_required')"
+                        class="w-100"
+                      />
+                      <div v-if="activeIdField === 'table-' + person.id" class="xref-tooltip" @mousedown.prevent>
+                        <div class="xref-tooltip-header">
+                          <span>📌 {{ t('xref_tooltip_title') }}</span>
+                          <span :class="isValidGedcomXref(editedPersons.get(person.id)?.id) ? 'xref-badge-valid' : 'xref-badge-invalid'">
+                            {{ isValidGedcomXref(editedPersons.get(person.id)?.id) ? '✓ ' + t('xref_valid') : '⚠️ ' + t('xref_invalid') }}
+                          </span>
+                        </div>
+                        <div class="xref-tooltip-body">
+                          {{ t('xref_tooltip_desc') }}
+                        </div>
+                      </div>
+                    </div>
                     <input
                       v-else
                       :value="getPersonAttr(editedPersons.get(person.id)!, col.key) ?? ''"
@@ -2124,11 +2404,17 @@ onMounted(async () => {
               <table class="detail-table">
                 <tbody>
                   <tr v-for="col in activeDetailColumns" :key="'det-' + col.key">
-                    <td><strong>{{ getColLabel(col) }}</strong></td>
+                    <td>
+                      <strong>
+                        {{ getColLabel(col) }}
+                        <span v-if="col.key === 'id'" style="color:#e74c3c;"> *</span>
+                      </strong>
+                    </td>
                     <td>
                       <template v-if="!isEditing || !col.editable">
                         <span v-if="col.key === 'henry_code'"><strong>{{ getCode(selectedPerson) || '-' }}</strong></span>
                         <span v-else-if="col.key === 'generation'">{{ getGen(selectedPerson) ?? '-' }}</span>
+                        <span v-else-if="col.key === 'id'"><small><strong>{{ selectedPerson.id }}</strong></small></span>
                         <span v-else>{{ getPersonAttr(selectedPerson, col.key) || '-' }}</span>
                       </template>
                       <template v-else-if="editedPersons.get(selectedPerson.id)">
@@ -2142,6 +2428,28 @@ onMounted(async () => {
                           <option value="F">F</option>
                           <option value="U">U</option>
                         </select>
+                        <div v-else-if="col.key === 'id'" class="xref-input-wrapper">
+                          <input
+                            :value="getPersonAttr(editedPersons.get(selectedPerson.id)!, col.key) ?? ''"
+                            @input="setPersonAttr(editedPersons.get(selectedPerson.id)!, col.key, ($event.target as HTMLInputElement).value)"
+                            @focus="activeIdField = 'detail-' + selectedPerson.id"
+                            @blur="activeIdField = null"
+                            :class="{ 'input-warning': !isValidGedcomXref(editedPersons.get(selectedPerson.id)?.id) }"
+                            :placeholder="t('field_required')"
+                            class="w-100"
+                          />
+                          <div v-if="activeIdField === 'detail-' + selectedPerson.id" class="xref-tooltip" @mousedown.prevent>
+                            <div class="xref-tooltip-header">
+                              <span>📌 {{ t('xref_tooltip_title') }}</span>
+                              <span :class="isValidGedcomXref(editedPersons.get(selectedPerson.id)?.id) ? 'xref-badge-valid' : 'xref-badge-invalid'">
+                                {{ isValidGedcomXref(editedPersons.get(selectedPerson.id)?.id) ? '✓ ' + t('xref_valid') : '⚠️ ' + t('xref_invalid') }}
+                              </span>
+                            </div>
+                            <div class="xref-tooltip-body">
+                              {{ t('xref_tooltip_desc') }}
+                            </div>
+                          </div>
+                        </div>
                         <input
                           v-else
                           :value="getPersonAttr(editedPersons.get(selectedPerson.id)!, col.key) ?? ''"
@@ -2153,7 +2461,10 @@ onMounted(async () => {
                   </tr>
                 </tbody>
               </table>
-              <button v-if="isEditing" class="btn-save w-100 mt-1" @click="saveChanges" :disabled="isLoading">
+              <div v-if="saveErrorAlert" class="parent-error-alert mt-1 mb-1">
+                ⚠️ {{ saveErrorAlert }}
+              </div>
+              <button v-if="isEditing" class="btn-save w-100 mt-1" @click="saveChanges" :disabled="isLoading || hasInvalidEditedPerson">
                 {{ t('save_changes') }}
               </button>
             </div>
@@ -2424,6 +2735,84 @@ button:disabled { background-color: #95a5a6; cursor-not-allowed: true; cursor: n
   margin-bottom: 10px;
   font-weight: bold;
   line-height: 1.4;
+}
+.save-error-banner {
+  background: #ffcdd2;
+  color: #b71c1c;
+  border: 1px solid #e57373;
+  padding: 10px 14px;
+  border-radius: 4px;
+  font-size: 0.95rem;
+  margin-bottom: 12px;
+  font-weight: bold;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.btn-close-sm {
+  background: transparent;
+  border: none;
+  font-size: 1rem;
+  cursor: pointer;
+  color: #b71c1c;
+  font-weight: bold;
+  padding: 0 4px;
+}
+.input-invalid {
+  border: 2px solid #e74c3c !important;
+  background-color: #fde8e7 !important;
+}
+.input-warning {
+  border: 2px solid #e67e22 !important;
+  box-shadow: 0 0 6px rgba(230, 126, 34, 0.4) !important;
+  background-color: #fffaf0 !important;
+}
+.xref-input-wrapper {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+.xref-tooltip {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 1000;
+  min-width: 290px;
+  max-width: 350px;
+  margin-top: 5px;
+  padding: 8px 12px;
+  background: #2c3e50;
+  color: #ecf0f1;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.28);
+  pointer-events: auto;
+  text-align: left;
+}
+.xref-tooltip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  font-weight: 600;
+}
+.xref-tooltip-body {
+  font-size: 0.74rem;
+  color: #bdc3c7;
+}
+.xref-badge-valid {
+  color: #2ecc71;
+  font-weight: bold;
+  font-size: 0.75rem;
+}
+.xref-badge-invalid {
+  color: #e67e22;
+  font-weight: bold;
+  font-size: 0.75rem;
 }
 .btn-save-parents {
   background-color: #27ae60 !important;
