@@ -1512,6 +1512,74 @@ const cardBoxByPersonId = computed<Map<string, CardBox>>(() => {
   return m;
 });
 
+// Ermittelt den übergeordneten reservierten Bereich für personId, falls personId verschachtelt ist
+function getParentReservedAreaId(personId: string): string | null {
+  const candidates: { id: string; level: number }[] = [];
+  branchWidths.value.forEach((_bw, otherId) => {
+    if (otherId === personId) return;
+    const descSet = getDescendantPersonIds(otherId);
+    if (descSet.has(personId)) {
+      const pos = getRawPersonPosition(otherId);
+      candidates.push({ id: otherId, level: pos ? pos.level : 1 });
+    }
+  });
+
+  if (candidates.length === 0) {
+    const targetBw = branchWidths.value.get(personId);
+    const pPos = getRawPersonPosition(personId);
+    const pLvl = pPos ? pPos.level : 1;
+    if (targetBw) {
+      branchWidths.value.forEach((otherBw, otherId) => {
+        if (otherId === personId) return;
+        const oPos = getRawPersonPosition(otherId);
+        const oLvl = oPos ? oPos.level : 1;
+        if (pLvl >= oLvl && targetBw.minX >= otherBw.minX - 4 && targetBw.maxX <= otherBw.maxX + 4) {
+          candidates.push({ id: otherId, level: oLvl });
+        }
+      });
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.level - a.level);
+  return candidates[0].id;
+}
+
+// Ermittelt alle untergeordneten (verschachtelten) reservierten Bereiche innerhalb von ancestorPersonId
+function getAllNestedReservedAreaIds(ancestorPersonId: string): string[] {
+  const res: string[] = [];
+  const descSet = getDescendantPersonIds(ancestorPersonId);
+  branchWidths.value.forEach((bw, otherId) => {
+    if (otherId === ancestorPersonId) return;
+    if (descSet.has(otherId)) {
+      res.push(otherId);
+    } else {
+      const parentBw = branchWidths.value.get(ancestorPersonId);
+      const posOther = getRawPersonPosition(otherId);
+      const posAnc = getRawPersonPosition(ancestorPersonId);
+      if (parentBw && posOther && posAnc && posOther.level >= posAnc.level) {
+        if (bw.minX >= parentBw.minX - 4 && bw.maxX <= parentBw.maxX + 4) {
+          res.push(otherId);
+        }
+      }
+    }
+  });
+  return res;
+}
+
+// Verschachtelungstiefe eines reservierten Bereiches ermitteln
+function getNestingDepth(personId: string): number {
+  let depth = 0;
+  let curr = getParentReservedAreaId(personId);
+  const visited = new Set<string>();
+  while (curr && !visited.has(curr)) {
+    visited.add(curr);
+    depth++;
+    curr = getParentReservedAreaId(curr);
+  }
+  return depth;
+}
+
 // Darstellungsdaten für alle aktiven Zweig-Breiten-Abgrenzungen
 const renderedBranchWidths = computed(() => {
   const list: {
@@ -1524,6 +1592,9 @@ const renderedBranchWidths = computed(() => {
     barY: number;
     corridorTopY: number;
     corridorHeight: number;
+    zIndex: number;
+    barZIndex: number;
+    isNested: boolean;
   }[] = [];
 
   branchWidths.value.forEach(bw => {
@@ -1538,6 +1609,11 @@ const renderedBranchWidths = computed(() => {
     // Der reservierte Bereich gilt auch für die Ebene auf der sich der ausgewählte Eintrag selbst befindet
     const corridorHeight = Math.max(0, bandBottom - CANVAS_PAD_TOP);
 
+    const nestingDepth = getNestingDepth(bw.personId);
+    // Spätere Generationen erhalten höhere z-Index-Werte: Bereich der späteren Generation liegt in der obersten Ebene!
+    const zIndex = Math.min(8, 3 + nestingDepth * 2);
+    const barZIndex = 28 + nestingDepth * 2;
+
     list.push({
       personId: bw.personId,
       personName: `${person.given_name || 'N.N.'} ${person.surname || ''}`.trim(),
@@ -1548,7 +1624,19 @@ const renderedBranchWidths = computed(() => {
       barY,
       corridorTopY,
       corridorHeight,
+      zIndex,
+      barZIndex,
+      isNested: nestingDepth > 0,
     });
+  });
+
+  // Sortierung: Bereiche früherer Generationen / geringere Verschachtelung zuerst, spätere Generationen danach
+  // Dadurch wird der Bereich der späteren Generation im DOM und in der Ebenenhierarchie obenauf abgelegt.
+  list.sort((a, b) => {
+    const depthA = getNestingDepth(a.personId);
+    const depthB = getNestingDepth(b.personId);
+    if (depthA !== depthB) return depthA - depthB;
+    return a.level - b.level;
   });
 
   return list;
@@ -1564,6 +1652,7 @@ let bwDragStartMaxX = 0;
 let bwDragMinDx = 0;
 let bwDragMaxDx = 0;
 let draggingAreaGroups: { group: DesignSiblingGroup; startX: number }[] = [];
+let draggingNestedBwItems: { id: string; startMinX: number; startMaxX: number }[] = [];
 
 // Ermittelt alle Einträge, die sich innerhalb des reservierten Bereichs befinden
 function getGroupsInReservedArea(personId: string): DesignSiblingGroup[] {
@@ -1572,6 +1661,7 @@ function getGroupsInReservedArea(personId: string): DesignSiblingGroup[] {
   const descSet = getDescendantPersonIds(personId);
   const pPos = getRawPersonPosition(personId);
   const pLevel = pPos ? pPos.level : 1;
+  const parentAreaId = getParentReservedAreaId(personId);
 
   const res: DesignSiblingGroup[] = [];
   siblingGroups.value.forEach(g => {
@@ -1585,13 +1675,20 @@ function getGroupsInReservedArea(personId: string): DesignSiblingGroup[] {
       res.push(g);
       return;
     }
-    // 3. Auf Ebene >= pLevel und befindet sich räumlich innerhalb des reservierten Bereichs
-    if (g.level >= pLevel) {
+    // 3. Wenn personId kein Sub-Bereich eines anderen Bereichs ist,
+    // auch räumlich innerhalb des reservierten Bereichs liegende Gruppen erfassen
+    if (!parentAreaId && g.level >= pLevel) {
       const w = getGroupWidth(g.memberIds.length);
       const left = g.x - w / 2;
       const right = g.x + w / 2;
       if (left >= bw.minX - 8 && right <= bw.maxX + 8) {
-        res.push(g);
+        const belongsToOther = Array.from(branchWidths.value.keys()).some(otherId => {
+          if (otherId === personId) return false;
+          return getDescendantPersonIds(otherId).has(g.memberIds[0]);
+        });
+        if (!belongsToOther) {
+          res.push(g);
+        }
       }
     }
   });
@@ -1617,8 +1714,22 @@ function calculateBranchMoveBounds(personId: string, areaGroups: DesignSiblingGr
   const startMinX = bw.minX;
   const startMaxX = bw.maxX;
 
-  // Linke Grenze initial: Canvas-Seitenleiste
+  // Linke und rechte Grenze initial
   let minDx = (LEVEL_SIDEBAR_W + 16) - startMinX;
+  let maxDx = Infinity;
+
+  // Wenn dieser Bereich innerhalb eines übergeordneten Bereichs verschachtelt ist:
+  // Die Grenzen des übergeordneten Bereichs strikt einhalten
+  const parentAreaId = getParentReservedAreaId(personId);
+  if (parentAreaId) {
+    const parentBw = branchWidths.value.get(parentAreaId);
+    if (parentBw) {
+      const parentMinLimit = (parentBw.minX + 8) - startMinX;
+      if (parentMinLimit > minDx) minDx = parentMinLimit;
+      const parentMaxLimit = (parentBw.maxX - 8) - startMaxX;
+      if (parentMaxLimit < maxDx) maxDx = parentMaxLimit;
+    }
+  }
 
   // Auch alle Gruppen im Bereich dürfen nicht hinter die linke Seitenleiste rutschen
   for (const g of areaGroups) {
@@ -1628,12 +1739,17 @@ function calculateBranchMoveBounds(personId: string, areaGroups: DesignSiblingGr
     if (gMinDx > minDx) minDx = gMinDx;
   }
 
-  // Rechte Grenze initial unbegrenzt
-  let maxDx = Infinity;
+  let maxDxVal = maxDx;
+
+  // Verschachtelte Kind-Bereiche erfassen: Diese bewegen sich MIT personId und sind keine Hindernisse
+  const nestedChildAreaIds = new Set(getAllNestedReservedAreaIds(personId));
 
   // 1. Andere reservierte Bereiche prüfen
   branchWidths.value.forEach((otherBw, otherId) => {
     if (otherId === personId) return;
+    if (nestedChildAreaIds.has(otherId)) return; // Bewegt sich mit
+    if (otherId === parentAreaId) return; // Bereits oben als übergeordnete Grenze berücksichtigt
+
     const otherPos = getRawPersonPosition(otherId);
     const otherLevel = otherPos ? otherPos.level : 1;
     const otherMinLvl = otherLevel;
@@ -1648,7 +1764,7 @@ function calculateBranchMoveBounds(personId: string, areaGroups: DesignSiblingGr
     } else if (otherBw.minX >= startMaxX - 2) {
       // otherBw liegt rechts von unserem reservierten Bereich
       const limitDx = (otherBw.minX - OBSTACLE_GAP) - startMaxX;
-      if (limitDx < maxDx) maxDx = limitDx;
+      if (limitDx < maxDxVal) maxDxVal = limitDx;
     }
   });
 
@@ -1667,7 +1783,7 @@ function calculateBranchMoveBounds(personId: string, areaGroups: DesignSiblingGr
       if (limitDx > minDx) minDx = limitDx;
     } else if (otherLeft >= startMaxX - 2) {
       const limitDx = (otherLeft - OBSTACLE_GAP) - startMaxX;
-      if (limitDx < maxDx) maxDx = limitDx;
+      if (limitDx < maxDxVal) maxDxVal = limitDx;
     }
 
     // B) Direkte Kollision von Gruppen auf derselben Ebene
@@ -1682,16 +1798,16 @@ function calculateBranchMoveBounds(personId: string, areaGroups: DesignSiblingGr
         if (limitDx > minDx) minDx = limitDx;
       } else if (otherLeft >= gRight - 2) {
         const limitDx = (otherLeft - OBSTACLE_GAP) - gRight;
-        if (limitDx < maxDx) maxDx = limitDx;
+        if (limitDx < maxDxVal) maxDxVal = limitDx;
       }
     }
   }
 
   // Grenzen gegen Vorzustände absichern
   minDx = Math.min(0, minDx);
-  maxDx = Math.max(0, maxDx);
+  maxDxVal = Math.max(0, maxDxVal);
 
-  return { minDx, maxDx };
+  return { minDx, maxDx: maxDxVal };
 }
 
 function startBranchWidthDrag(e: MouseEvent, personId: string) {
@@ -1712,6 +1828,14 @@ function startBranchWidthDrag(e: MouseEvent, personId: string) {
   bwDragMaxDx = bounds.maxDx;
   draggingAreaGroups = areaGroups.map(g => ({ group: g, startX: g.x }));
 
+  const nestedIds = getAllNestedReservedAreaIds(personId);
+  draggingNestedBwItems = nestedIds
+    .map(id => {
+      const b = branchWidths.value.get(id);
+      return b ? { id, startMinX: b.minX, startMaxX: b.maxX } : null;
+    })
+    .filter((x): x is { id: string; startMinX: number; startMaxX: number } => x !== null);
+
   document.body.style.cursor = 'grabbing';
   window.addEventListener('mousemove', onWindowBranchWidthDragMove);
   window.addEventListener('mouseup', onWindowBranchWidthDragEnd);
@@ -1728,6 +1852,15 @@ function onWindowBranchWidthDragMove(e: MouseEvent) {
   bw.minX = Math.round(bwDragStartMinX + effectiveDx);
   bw.maxX = Math.round(bwDragStartMaxX + effectiveDx);
 
+  // Verschachtelte Kind-Bereiche in gleicher Weise mitführen
+  draggingNestedBwItems.forEach(item => {
+    const nbw = branchWidths.value.get(item.id);
+    if (nbw) {
+      nbw.minX = Math.round(item.startMinX + effectiveDx);
+      nbw.maxX = Math.round(item.startMaxX + effectiveDx);
+    }
+  });
+
   // Alle aneinander/darin befindlichen Einträge gemeinsam verschieben (Anordnung bleibt exakt erhalten)
   draggingAreaGroups.forEach(item => {
     item.group.x = Math.round(item.startX + effectiveDx);
@@ -1737,17 +1870,88 @@ function onWindowBranchWidthDragMove(e: MouseEvent) {
 function onWindowBranchWidthDragEnd() {
   draggingBwId.value = null;
   draggingAreaGroups = [];
+  draggingNestedBwItems = [];
   document.body.style.cursor = '';
   window.removeEventListener('mousemove', onWindowBranchWidthDragMove);
   window.removeEventListener('mouseup', onWindowBranchWidthDragEnd);
 }
 
+// ----------------------------------------------------
 // Anpassung der Grenzen eines reservierten Bereichs per Mausziehgriff
+// ----------------------------------------------------
 let resizingBwId: string | null = null;
 let resizingBwSide: 'left' | 'right' | null = null;
 let bwResizeStartMouseX = 0;
 let bwResizeStartMinX = 0;
 let bwResizeStartMaxX = 0;
+let activeResizeBounds = {
+  minAllowedLeft: LEVEL_SIDEBAR_W + 16,
+  maxAllowedLeft: 0,
+  minAllowedRight: 0,
+  maxAllowedRight: Infinity,
+};
+
+function calculateBranchResizeBounds(personId: string): {
+  minAllowedLeft: number;
+  maxAllowedLeft: number;
+  minAllowedRight: number;
+  maxAllowedRight: number;
+} {
+  const bw = branchWidths.value.get(personId);
+  if (!bw) {
+    return {
+      minAllowedLeft: LEVEL_SIDEBAR_W + 16,
+      maxAllowedLeft: 0,
+      minAllowedRight: 0,
+      maxAllowedRight: Infinity,
+    };
+  }
+
+  let minAllowedLeft = LEVEL_SIDEBAR_W + 16;
+  let maxAllowedLeft = bw.maxX - 100;
+  let minAllowedRight = bw.minX + 100;
+  let maxAllowedRight = Infinity;
+
+  // 1. Übergeordneter Bereich (falls verschachtelt)
+  const parentId = getParentReservedAreaId(personId);
+  if (parentId) {
+    const parentBw = branchWidths.value.get(parentId);
+    if (parentBw) {
+      minAllowedLeft = Math.max(minAllowedLeft, parentBw.minX + 8);
+      maxAllowedRight = Math.min(maxAllowedRight, parentBw.maxX - 8);
+    }
+  }
+
+  // 2. Untergeordnete Bereiche (dürfen nicht abgeschnitten werden)
+  const nestedChildIds = getAllNestedReservedAreaIds(personId);
+  if (nestedChildIds.length > 0) {
+    const childMinX = Math.min(...nestedChildIds.map(id => branchWidths.value.get(id)!.minX));
+    const childMaxX = Math.max(...nestedChildIds.map(id => branchWidths.value.get(id)!.maxX));
+    maxAllowedLeft = Math.min(maxAllowedLeft, childMinX - 8);
+    minAllowedRight = Math.max(minAllowedRight, childMaxX + 8);
+  }
+
+  // 3. Andere unabhängige / benachbarte reservierte Bereiche auf überlappenden Ebenen einhalten
+  const pPos = getRawPersonPosition(personId);
+  const pLevel = pPos ? pPos.level : 1;
+  const nestedSet = new Set(nestedChildIds);
+
+  branchWidths.value.forEach((otherBw, otherId) => {
+    if (otherId === personId || otherId === parentId || nestedSet.has(otherId)) return;
+    const otherPos = getRawPersonPosition(otherId);
+    const otherLevel = otherPos ? otherPos.level : 1;
+    const levelsOverlap = Math.max(pLevel, otherLevel) <= totalLevels.value;
+    if (!levelsOverlap) return;
+
+    if (otherBw.maxX <= bw.minX + 2) {
+      minAllowedLeft = Math.max(minAllowedLeft, otherBw.maxX + 12);
+    } else if (otherBw.minX >= bw.maxX - 2) {
+      maxAllowedRight = Math.min(maxAllowedRight, otherBw.minX - 12);
+    }
+  });
+
+  return { minAllowedLeft, maxAllowedLeft, minAllowedRight, maxAllowedRight };
+}
 
 function startBranchWidthResize(e: MouseEvent, personId: string, side: 'left' | 'right') {
   if (e.button !== 0) return;
@@ -1760,6 +1964,7 @@ function startBranchWidthResize(e: MouseEvent, personId: string, side: 'left' | 
   bwResizeStartMouseX = e.clientX;
   bwResizeStartMinX = bw.minX;
   bwResizeStartMaxX = bw.maxX;
+  activeResizeBounds = calculateBranchResizeBounds(personId);
   window.addEventListener('mousemove', onWindowBranchWidthResizeMove);
   window.addEventListener('mouseup', onWindowBranchWidthResizeEnd);
 }
@@ -1770,15 +1975,11 @@ function onWindowBranchWidthResizeMove(e: MouseEvent) {
   if (!bw) return;
   const dxCanvas = (e.clientX - bwResizeStartMouseX) / zoom.value;
   if (resizingBwSide === 'left') {
-    const newMinX = Math.round(bwResizeStartMinX + dxCanvas);
-    if (newMinX < bw.maxX - 100 && newMinX >= LEVEL_SIDEBAR_W + 16) {
-      bw.minX = newMinX;
-    }
+    const rawMinX = Math.round(bwResizeStartMinX + dxCanvas);
+    bw.minX = Math.max(activeResizeBounds.minAllowedLeft, Math.min(activeResizeBounds.maxAllowedLeft, rawMinX));
   } else {
-    const newMaxX = Math.round(bwResizeStartMaxX + dxCanvas);
-    if (newMaxX > bw.minX + 100) {
-      bw.maxX = newMaxX;
-    }
+    const rawMaxX = Math.round(bwResizeStartMaxX + dxCanvas);
+    bw.maxX = Math.min(activeResizeBounds.maxAllowedRight, Math.max(activeResizeBounds.minAllowedRight, rawMaxX));
   }
 
   // Wird der reservierte Bereich verkleinert und eine Eintragsgruppe ragt über den neuen Bereich heraus,
@@ -1793,9 +1994,6 @@ function onWindowBranchWidthResizeEnd() {
     const currentBw = branchWidths.value.get(personId);
     if (currentBw) {
       const currentWidth = currentBw.maxX - currentBw.minX;
-      // Bei jeder Änderung der Breite des reservierten Bereichs (in mehreren Schritten)
-      // die Aufteilung der Generationengruppen jeweils für jeden Teilschritt neu berechnen
-      // mit der Annahme, dass die ursprünglich vorhandene Gruppe noch zusammengehört:
       if (Math.abs(currentWidth - initialWidth) > 2) {
         handleBranchWidthRecalculate(personId);
       }
@@ -2000,9 +2198,27 @@ function handleBranchWidthRecalculate(personId: string) {
   const availableWidth = bw.maxX - bw.minX;
   const capacity = Math.max(1, Math.floor(availableWidth / CARD_WIDTH));
 
-  // 1. Alle Nachkommen von personId nach ihrer Generation sammeln
-  // Annahme: Die Generationengruppen gehören ursprünglich zusammen!
+  // 1. Verschachtelte Kind-Bereiche erfassen: Deren interne Gruppenaufteilung bleibt geschützt!
+  const nestedChildAreaIds = new Set(getAllNestedReservedAreaIds(personId));
+  const nestedChildDescSet = new Set<string>();
+  nestedChildAreaIds.forEach(cId => {
+    nestedChildDescSet.add(cId);
+    for (const d of getDescendantPersonIds(cId)) {
+      nestedChildDescSet.add(d);
+    }
+  });
+
+  // Alle Nachkommen von personId nach ihrer Generation sammeln (ohne Nachkommen von verschachtelten Kind-Bereichen)
   const byGen = getDescendantsByGeneration(personId);
+  for (const [gen, members] of byGen.entries()) {
+    const filtered = members.filter(id => !nestedChildDescSet.has(id));
+    if (filtered.length === 0) {
+      byGen.delete(gen);
+    } else {
+      byGen.set(gen, filtered);
+    }
+  }
+
   const sortedGens = Array.from(byGen.keys()).sort((a, b) => a - b);
   if (sortedGens.length === 0) return;
 
@@ -2070,39 +2286,27 @@ function handleBranchWidthRecalculate(personId: string) {
     curAssignedLevel += alloc.levelsNeeded;
   }
 
-  // 4. Nicht-Nachkommen-Gruppen oberhalb von pLevel erfassen
-  const nonDescendantGroups: DesignSiblingGroup[] = [];
+  // 4. Nicht neu zu berechnende Gruppen erfassen:
+  // WICHTIG: Die Aufteilung von Einträgen in anderen reservierten Bereichen wird NICHT geändert!
+  const untouchedGroups: DesignSiblingGroup[] = [];
 
   siblingGroups.value.forEach(g => {
-    if (g.level <= pLevel) {
-      nonDescendantGroups.push(g);
-      return;
-    }
-
-    const isDescGroup = g.memberIds.some(id => descSet.has(id));
-    if (isDescGroup) {
-      const nonDescMembers = g.memberIds.filter(id => !descSet.has(id));
-      if (nonDescMembers.length > 0) {
-        const firstM = personById.value.get(nonDescMembers[0]);
-        const mGen = firstM?.proband_data[props.activeProbandId || '']?.generation || g.generation;
-        const targetLvl = baseLevelForGen.get(mGen) || g.level;
-        nonDescendantGroups.push({
+    // Wenn Gruppe Nachkommen enthält, die gerade neu aufgeteilt werden:
+    const hasRecomputedDesc = g.memberIds.some(id => descSet.has(id) && !nestedChildDescSet.has(id));
+    if (hasRecomputedDesc) {
+      const remainingMembers = g.memberIds.filter(id => !descSet.has(id) || nestedChildDescSet.has(id));
+      if (remainingMembers.length > 0) {
+        untouchedGroups.push({
           ...g,
-          level: targetLvl,
-          memberIds: nonDescMembers,
-          isUngrouped: nonDescMembers.length === 1,
+          memberIds: remainingMembers,
+          isUngrouped: remainingMembers.length === 1,
         });
       }
       return;
     }
 
-    const firstM = personById.value.get(g.memberIds[0]);
-    const mGen = firstM?.proband_data[props.activeProbandId || '']?.generation || g.generation;
-    const targetLvl = baseLevelForGen.get(mGen) || curAssignedLevel++;
-    nonDescendantGroups.push({
-      ...g,
-      level: targetLvl,
-    });
+    // Alle anderen Gruppen (auch Gruppen anderer reservierter Bereiche) bleiben exakt unverändert!
+    untouchedGroups.push(g);
   });
 
   // 5. Die neu berechneten Chunks als Gruppen auf den jeweiligen Ebenen einsetzen
@@ -2152,7 +2356,7 @@ function handleBranchWidthRecalculate(personId: string) {
   }
 
   // 6. Gesamt-Ebenenanzahl und Ebenen-Höhen aktualisieren
-  const allUpdatedGroups = [...nonDescendantGroups, ...newDescendantGroups];
+  const allUpdatedGroups = [...untouchedGroups, ...newDescendantGroups];
   const maxLvl = Math.max(1, ...allUpdatedGroups.map(g => g.level));
 
   const nextHeights: Record<number, number> = {};
@@ -2176,8 +2380,9 @@ function handleBranchWidthRecalculate(personId: string) {
     }
   }
 
-  // 8. Überlappungen auf allen Ebenen auflösen
-  for (let l = 1; l <= totalLevels.value; l++) {
+  // 8. Überlappungen auf den betroffenen Ebenen auflösen, ohne andere reservierte Bereiche zu verletzen
+  const newLevels = new Set(newDescendantGroups.map(g => g.level));
+  for (const l of newLevels) {
     expandAndResolveLevelOverlaps(l);
   }
 }
@@ -2469,6 +2674,64 @@ function groupDescendantsByLevel(personId: string) {
     }
   });
 
+  // 6b. Verschachtelte Erstellung: Wenn personId innerhalb eines bestehenden reservierten Bereiches liegt
+  const parentAreaId = getParentReservedAreaId(personId);
+  if (parentAreaId) {
+    const parentBw = branchWidths.value.get(parentAreaId)!;
+    // Sicherstellen, dass parentBw groß genug ist für den neuen geschachtelten Bereich
+    if (reservedMinX < parentBw.minX + 8) {
+      const expandLeft = (parentBw.minX + 8) - reservedMinX;
+      parentBw.minX -= expandLeft;
+    }
+    if (reservedMaxX > parentBw.maxX - 8) {
+      const expandRight = reservedMaxX - (parentBw.maxX - 8);
+      parentBw.maxX += expandRight;
+    }
+
+    // Andere Gruppen innerhalb von parentBw (die nicht zu personId gehören) nach außen ausrücken
+    // Priorität auf späteren Generationen: Sortiere nach Ebene absteigend (spätere Generationen zuerst)
+    const parentDescSet = getDescendantPersonIds(parentAreaId);
+    const nestedGroups = updatedGroups.filter(g =>
+      !newDescGroupIds.includes(g.id) &&
+      !g.memberIds.includes(personId) &&
+      g.memberIds.some(id => parentDescSet.has(id) || id === parentAreaId)
+    );
+
+    nestedGroups.sort((a, b) => b.level - a.level);
+    for (const g of nestedGroups) {
+      const w = getGroupWidth(g.memberIds.length);
+      if (g.x <= pCenterX) {
+        if (g.x + w / 2 > reservedMinX - 12) {
+          g.x = Math.round(reservedMinX - 12 - w / 2);
+        }
+      } else {
+        if (g.x - w / 2 < reservedMaxX + 12) {
+          g.x = Math.round(reservedMaxX + 12 + w / 2);
+        }
+      }
+    }
+
+    nestedGroups.forEach(g => {
+      const w = getGroupWidth(g.memberIds.length);
+      const l = g.x - w / 2;
+      const r = g.x + w / 2;
+      if (l < parentBw.minX + 8) parentBw.minX = l - 8;
+      if (r > parentBw.maxX - 8) parentBw.maxX = r + 8;
+    });
+
+    branchWidths.value.set(personId, {
+      personId,
+      minX: reservedMinX,
+      maxX: reservedMaxX,
+    });
+
+    siblingGroups.value = updatedGroups;
+    for (let l = pLevel; l <= totalLevels.value; l++) {
+      expandAndResolveLevelOverlaps(l);
+    }
+    return;
+  }
+
   // 7. Weitere reservierte Bereiche (bestehende branchWidths) berücksichtigen
   const MIN_GAP = 20;
   const existingOtherBws: BranchWidthConstraint[] = [];
@@ -2501,6 +2764,14 @@ function groupDescendantsByLevel(personId: string) {
     leftOtherBws.forEach(bw => {
       bw.minX -= shiftLeft;
       bw.maxX -= shiftLeft;
+      const nested = getAllNestedReservedAreaIds(bw.personId);
+      nested.forEach(nId => {
+        const nBw = branchWidths.value.get(nId);
+        if (nBw) {
+          nBw.minX -= shiftLeft;
+          nBw.maxX -= shiftLeft;
+        }
+      });
     });
   }
 
@@ -2524,6 +2795,14 @@ function groupDescendantsByLevel(personId: string) {
     rightOtherBws.forEach(bw => {
       bw.minX += shiftRight;
       bw.maxX += shiftRight;
+      const nested = getAllNestedReservedAreaIds(bw.personId);
+      nested.forEach(nId => {
+        const nBw = branchWidths.value.get(nId);
+        if (nBw) {
+          nBw.minX += shiftRight;
+          nBw.maxX += shiftRight;
+        }
+      });
     });
   }
 
@@ -4667,6 +4946,7 @@ function onViewportClick(e: MouseEvent) {
     target.closest('.design-zoom-controls') ||
     target.closest('.group-floating-controls') ||
     target.closest('.branch-width-bar') ||
+    target.closest('.branch-corridor-zone') ||
     target.closest('.design-proband-prompt')
   ) {
     return;
@@ -5576,21 +5856,30 @@ function formatDateStr(iso: string): string {
           <template v-for="bw in renderedBranchWidths" :key="'bw-' + bw.personId">
             <div
               class="branch-corridor-zone"
-              :class="{ 'is-dragging': draggingBwId === bw.personId }"
+              :class="{
+                'is-dragging': draggingBwId === bw.personId,
+                'is-nested': bw.isNested,
+              }"
               :style="{
                 left: bw.minX + 'px',
                 top: bw.corridorTopY + 'px',
                 width: bw.width + 'px',
                 height: bw.corridorHeight + 'px',
+                zIndex: bw.zIndex,
               }"
+              @mousedown="startBranchWidthDrag($event, bw.personId)"
             ></div>
             <div
               class="branch-width-bar"
-              :class="{ 'is-dragging': draggingBwId === bw.personId }"
+              :class="{
+                'is-dragging': draggingBwId === bw.personId,
+                'is-nested': bw.isNested,
+              }"
               :style="{
                 left: bw.minX + 'px',
                 top: bw.barY + 'px',
                 width: bw.width + 'px',
+                zIndex: bw.barZIndex,
               }"
               @mousedown="startBranchWidthDrag($event, bw.personId)"
             >
@@ -6761,15 +7050,28 @@ function formatDateStr(iso: string): string {
   background: rgba(142, 68, 173, 0.055);
   border-left: 2px dashed rgba(142, 68, 173, 0.65);
   border-right: 2px dashed rgba(142, 68, 173, 0.65);
-  pointer-events: none;
+  pointer-events: auto;
+  cursor: grab;
   z-index: 3;
   box-sizing: border-box;
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .branch-corridor-zone.is-dragging {
+  cursor: grabbing;
   background: rgba(142, 68, 173, 0.12);
   border-left: 2.5px dashed #8e44ad;
   border-right: 2.5px dashed #8e44ad;
+}
+.branch-corridor-zone.is-nested {
+  background: rgba(39, 174, 96, 0.065);
+  border-left-color: rgba(39, 174, 96, 0.75);
+  border-right-color: rgba(39, 174, 96, 0.75);
+}
+.branch-corridor-zone.is-nested.is-dragging {
+  cursor: grabbing;
+  background: rgba(39, 174, 96, 0.15);
+  border-left: 2.5px dashed #27ae60;
+  border-right: 2.5px dashed #27ae60;
 }
 .branch-width-bar {
   position: absolute;
@@ -6799,6 +7101,25 @@ function formatDateStr(iso: string): string {
   border-left-color: #6c3483;
   border-right-color: #6c3483;
   box-shadow: 0 4px 14px rgba(142, 68, 173, 0.45);
+}
+.branch-width-bar.is-nested {
+  background: rgba(39, 174, 96, 0.18);
+  border-top-color: #27ae60;
+  border-left-color: #27ae60;
+  border-right-color: #27ae60;
+}
+.branch-width-bar.is-nested:hover {
+  background: rgba(39, 174, 96, 0.28);
+  box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
+}
+.branch-width-bar.is-nested.is-dragging {
+  background: rgba(39, 174, 96, 0.38);
+  border-top-color: #1e8449;
+  border-left-color: #1e8449;
+  border-right-color: #1e8449;
+}
+.branch-width-bar.is-nested .bw-handle {
+  background: #27ae60;
 }
 .bw-handle {
   width: 18px;
