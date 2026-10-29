@@ -5,6 +5,8 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { useI18n } from 'vue-i18n';
 import TreeNode from './components/TreeNode.vue';
 import DesignTree from './components/DesignTree.vue';
+import ExportView from './components/ExportView.vue';
+import { DEFAULT_CARD_CONFIG, computeCardHeight, formatLocalizedDate, type DesignCardConfig } from './types/design';
 
 const { t, locale } = useI18n();
 
@@ -38,7 +40,7 @@ interface ColumnConfig { key: string; labelKey: string; visible: boolean; detail
 interface RootAncestorConfig { person_id: string; starting_code: string; given_name: string | null; surname: string | null; }
 interface ColumnFilter { text: string; dateOp: 'before' | 'after' | 'between'; date1: string; date2: string; }
 
-const currentView = ref<'table' | 'tree' | 'design'>('table');
+const currentView = ref<'table' | 'tree' | 'design' | 'export'>('table');
 const trees = ref<string[]>([]);
 const activeTree = ref<string>('');
 const newTreeName = ref<string>('');
@@ -107,12 +109,21 @@ const designConfig = ref({
   enableLineBridges: true,
   bridgeRadius: 8,
   minimizeBridges: true,
+  cardConfig: { ...DEFAULT_CARD_CONFIG } as DesignCardConfig,
 });
 
 try {
   const savedDesignCfg = localStorage.getItem('stammbaum_design_config');
   if (savedDesignCfg) {
-    designConfig.value = { ...designConfig.value, ...JSON.parse(savedDesignCfg) };
+    const parsed = JSON.parse(savedDesignCfg);
+    designConfig.value = {
+      ...designConfig.value,
+      ...parsed,
+      cardConfig: {
+        ...DEFAULT_CARD_CONFIG,
+        ...(parsed.cardConfig || {}),
+      },
+    };
   }
 } catch {}
 
@@ -463,9 +474,48 @@ const displayPersons = computed(() => {
 });
 
 const treeSearchResults = computed(() => {
-  const query = treeSearchQuery.value.toLowerCase().trim(); if (!query) return [];
-  const pList = activeProbandTab.value ? persons.value.filter(p => p.proband_data[activeProbandTab.value!]) : persons.value;
-  return pList.filter(p => p.id.toLowerCase().includes(query) || (p.surname || '').toLowerCase().includes(query) || (p.given_name || '').toLowerCase().includes(query)).slice(0, 10);
+  const rawQuery = treeSearchQuery.value.toLowerCase().trim();
+  if (!rawQuery) return [];
+  const cleanQuery = rawQuery.replace(/[\[\]]/g, '').trim();
+
+  const pList = activeProbandTab.value
+    ? persons.value.filter(p => p.proband_data[activeProbandTab.value!])
+    : persons.value;
+
+  return pList.filter(p => {
+    // 1. Namen (Vorname, Nachname und kombinierter Name)
+    const given = (p.given_name || '').toLowerCase();
+    const surname = (p.surname || '').toLowerCase();
+    const fullName = `${given} ${surname}`.trim();
+    const reversedName = `${surname} ${given}`.trim();
+    if (given.includes(rawQuery) || surname.includes(rawQuery) || fullName.includes(rawQuery) || reversedName.includes(rawQuery)) {
+      return true;
+    }
+
+    // 2. ID
+    if (p.id.toLowerCase().includes(rawQuery) || (cleanQuery && p.id.toLowerCase().includes(cleanQuery))) {
+      return true;
+    }
+
+    // 3. Henry-Code (im aktiven Stammahn oder über alle Probanden)
+    const activeHenry = activeProbandTab.value ? p.proband_data[activeProbandTab.value]?.henry_code : null;
+    if (activeHenry) {
+      const hLower = activeHenry.toLowerCase();
+      if (hLower.includes(cleanQuery) || `[${hLower}]`.includes(rawQuery)) {
+        return true;
+      }
+    }
+    for (const pb of Object.values(p.proband_data || {})) {
+      if (pb.henry_code) {
+        const hLower = pb.henry_code.toLowerCase();
+        if (hLower.includes(cleanQuery) || `[${hLower}]`.includes(rawQuery)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }).slice(0, 15);
 });
 
 function parseBirthSortKey(dateStr: string | null | undefined): [number, number, number] {
@@ -1055,7 +1105,6 @@ function jumpToTreePerson(personId: string) {
   selectedPerson.value = target;
   treeSearchQuery.value = '';
   currentView.value = 'tree';
-  pan.value = { x: 0, y: 0 };
 
   expandedNodes.value.clear();
   expandedSideNodes.value.clear();
@@ -1126,6 +1175,51 @@ function jumpToTreePerson(personId: string) {
       freeInitialRootId.value = target.id;
     }
   }
+
+  // Bildschirmausschnitt so setzen, dass der neu markierte Eintrag zentriert/fokussiert wird
+  centerTreeOnPerson(target.id);
+}
+
+function centerTreeOnPerson(personId: string) {
+  function doCenter() {
+    const viewportEl = document.querySelector('.tree-viewport') as HTMLElement | null;
+    if (!viewportEl) return;
+
+    let targetEl = viewportEl.querySelector(`[data-person-id="${personId}"]`) as HTMLElement | null;
+    if (!targetEl) {
+      targetEl = viewportEl.querySelector('.node-card.active') as HTMLElement | null;
+    }
+    if (!targetEl) return;
+
+    const vRect = viewportEl.getBoundingClientRect();
+    const tRect = targetEl.getBoundingClientRect();
+
+    const vCenterX = vRect.left + vRect.width / 2;
+    const vCenterY = vRect.top + vRect.height / 2;
+
+    const tCenterX = tRect.left + tRect.width / 2;
+    const tCenterY = tRect.top + tRect.height / 2;
+
+    const deltaX = vCenterX - tCenterX;
+    const deltaY = vCenterY - tCenterY;
+
+    if (Math.abs(deltaX) > 1 || Math.abs(deltaY) > 1) {
+      pan.value.x = Math.round(pan.value.x + deltaX);
+      pan.value.y = Math.round(pan.value.y + deltaY);
+    }
+  }
+
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      doCenter();
+      setTimeout(() => {
+        doCenter();
+      }, 60);
+      setTimeout(() => {
+        doCenter();
+      }, 180);
+    });
+  });
 }
 
 function loadParentGeneration(rootNode: TreeNodeData) {
@@ -1158,16 +1252,17 @@ function loadParentGeneration(rootNode: TreeNodeData) {
     expandedSideNodes.value.set(parentIdToLoad, currentSide);
     pan.value = { x: 0, y: 0 };
 
-    // Nur die Eltern und deren direkte Kinder (sowie ggf. bereits nach oben aufgeklappte Vorfahrenpfade) anzeigen, NICHT noch die Kindeskinder!
+    // Nachkommengenerationen des ausgewählten Eintrags bleiben im Zustand wie zuvor; nur Geschwisterkinder einklappen
     const children = persons.value.filter(p => p.parent_ids.includes(parentIdToLoad!));
     children.forEach(c => {
-      if (c.id === originChildId && expandedFromChildMap.value.has(originChildId)) {
-        expandedNodes.value.set(originChildId, true);
-      } else {
-        collapseDescendantsOf(c.id);
+      if (c.id === originChildId) {
+        // Zustand der Nachkommen des gewählten Eintrags unverändert beibehalten
+        return;
       }
+      collapseDescendantsOf(c.id);
     });
-    // Auch falls die Kinder über den Henry-Code zugeordnet sind, deren Nachkommen einklappen
+
+    // Auch falls Kinder über den Henry-Code zugeordnet sind: Nachkommen des gewählten Eintrags unberührt lassen
     if (pid) {
       const parentObj = persons.value.find(p => p.id === parentIdToLoad);
       const pCode = parentObj?.proband_data[pid]?.henry_code;
@@ -1175,15 +1270,17 @@ function loadParentGeneration(rootNode: TreeNodeData) {
         persons.value.forEach(p => {
           const cCode = p.proband_data[pid]?.henry_code;
           if (cCode && getParentHenryCode(cCode, startCode) === pCode) {
-            if (p.id === originChildId && expandedFromChildMap.value.has(originChildId)) {
-              expandedNodes.value.set(originChildId, true);
-            } else {
-              collapseDescendantsOf(p.id);
+            if (p.id === originChildId) {
+              return;
             }
+            collapseDescendantsOf(p.id);
           }
         });
       }
     }
+
+    // Fokus auf dem ausgewählten Eintrag beibehalten
+    centerTreeOnPerson(originChildId);
   }
 }
 
@@ -1753,6 +1850,7 @@ onMounted(async () => {
           <button @click="currentView = 'table'" :class="{ active: currentView === 'table' }">📋 {{ t('view_table') }}</button>
           <button @click="currentView = 'tree'" :class="{ active: currentView === 'tree' }">🌳 {{ t('view_tree') }}</button>
           <button @click="currentView = 'design'" :class="{ active: currentView === 'design' }">📐 {{ t('view_design') }}</button>
+          <button @click="currentView = 'export'" :class="{ active: currentView === 'export' }">📦 {{ t('view_export') }}</button>
         </div>
         <button class="btn-settings" @click="showSettings = true; loadRootAncestors()">⚙️ {{ t('settings') }}</button>
         <button @click="changeLanguage('de')" :class="{ active: locale === 'de' }">DE</button>
@@ -1771,7 +1869,7 @@ onMounted(async () => {
       <span class="status">{{ statusMessage }}</span>
     </div>
 
-    <div class="proband-selector-bar" v-if="rootAncestors.length > 0 || persons.length > 0">
+    <div class="proband-selector-bar" v-if="currentView !== 'export' && (rootAncestors.length > 0 || persons.length > 0)">
       <label for="proband-view-select" class="proband-select-label">
         🌳 <strong>{{ t('proband_view_label') }}:</strong>
       </label>
@@ -2018,6 +2116,348 @@ onMounted(async () => {
             <!-- 4. Stammbaum Design Mode -->
             <div v-if="activeSettingsTab === 'design_mode'" class="settings-tab-pane">
               <div class="settings-section">
+                <!-- Bereich: Konfigurierbare Kachel-Informationen -->
+                <h3>🗂️ {{ t('design_card_config_title') || 'Kachel-Informationen & Zeilenformatierung' }}</h3>
+                <p class="section-desc" style="color: #64748b; font-size: 0.82rem; margin-bottom: 1rem;">
+                  {{ t('design_card_config_subtitle') || 'Definieren Sie, welche Angaben in den Kacheln der Einträge im Design Mode abgebildet werden, und formatieren Sie jede Zeile individuell.' }}
+                </p>
+
+                <div class="card-config-wrapper" style="display: flex; gap: 20px; align-items: flex-start; margin-bottom: 24px; flex-wrap: wrap;">
+                  <!-- Linke Spalte: Zeilen #1 bis #5 Konfiguration -->
+                  <div class="card-config-lines" style="flex: 1; min-width: 280px; display: flex; flex-direction: column; gap: 10px;">
+                    
+                    <!-- Zeile #1: Henry-Identifikation -->
+                    <div class="line-config-card">
+                      <div class="line-config-header">
+                        <span class="line-title">#1 {{ t('design_line_1_title') }}</span>
+                        <div class="format-toggles">
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line1Bold }"
+                            @click="designConfig.cardConfig.line1Bold = !designConfig.cardConfig.line1Bold"
+                            :title="t('design_format_bold')"
+                          ><b>B</b></button>
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line1Italic }"
+                            @click="designConfig.cardConfig.line1Italic = !designConfig.cardConfig.line1Italic"
+                            :title="t('design_format_italic')"
+                          ><i>I</i></button>
+                        </div>
+                      </div>
+                      <div class="line-config-options line-grid-2col">
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showHenryId" />
+                          <span>{{ t('design_cfg_henry') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showGeneration" />
+                          <span>{{ t('design_cfg_generation') }}</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <!-- Zeile #2: Name (mandatory) -->
+                    <div class="line-config-card">
+                      <div class="line-config-header">
+                        <span class="line-title">#2 {{ t('design_line_2_title') }}</span>
+                        <div class="format-toggles">
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line2Bold }"
+                            @click="designConfig.cardConfig.line2Bold = !designConfig.cardConfig.line2Bold"
+                            :title="t('design_format_bold')"
+                          ><b>B</b></button>
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line2Italic }"
+                            @click="designConfig.cardConfig.line2Italic = !designConfig.cardConfig.line2Italic"
+                            :title="t('design_format_italic')"
+                          ><i>I</i></button>
+                        </div>
+                      </div>
+                      <div class="line-config-options">
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" checked disabled />
+                          <span><strong>{{ t('design_cfg_name') }}</strong></span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <!-- Zeile #3: Lebensdaten & Orte -->
+                    <div class="line-config-card">
+                      <div class="line-config-header">
+                        <span class="line-title">#3 {{ t('design_line_3_title') }}</span>
+                        <div class="format-toggles">
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line3Bold }"
+                            @click="designConfig.cardConfig.line3Bold = !designConfig.cardConfig.line3Bold"
+                            :title="t('design_format_bold')"
+                          ><b>B</b></button>
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line3Italic }"
+                            @click="designConfig.cardConfig.line3Italic = !designConfig.cardConfig.line3Italic"
+                            :title="t('design_format_italic')"
+                          ><i>I</i></button>
+                        </div>
+                      </div>
+                      <!-- Layout-Wahl: In eine Zeile vs. einzelne Zeilen -->
+                      <div class="layout-mode-selector mb-1" style="display: flex; align-items: center; gap: 14px; font-size: 0.78rem; background: #ffffff; padding: 5px 8px; border-radius: 4px; border: 1px solid #e2e8f0;">
+                        <span style="font-weight: 600; color: #475569;">{{ t('design_cfg_life_layout') }}</span>
+                        <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                          <input type="radio" value="single" v-model="designConfig.cardConfig.lifeDatesLayout" />
+                          <span>{{ t('design_cfg_life_single') }}</span>
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+                          <input type="radio" value="multi" v-model="designConfig.cardConfig.lifeDatesLayout" />
+                          <span>{{ t('design_cfg_life_multi') }}</span>
+                        </label>
+                      </div>
+                      <div class="line-config-options line-grid-2col">
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showBirthDate" @change="!designConfig.cardConfig.showBirthDate && (designConfig.cardConfig.showBirthPlace = false)" />
+                          <span>{{ t('design_cfg_birth_date') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label" :style="{ opacity: designConfig.cardConfig.showBirthDate ? 1 : 0.45, cursor: designConfig.cardConfig.showBirthDate ? 'pointer' : 'not-allowed' }">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showBirthPlace" :disabled="!designConfig.cardConfig.showBirthDate" />
+                          <span>{{ t('design_cfg_birth_place') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showChrDate" @change="!designConfig.cardConfig.showChrDate && (designConfig.cardConfig.showChrPlace = false)" />
+                          <span>{{ t('design_cfg_chr_date') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label" :style="{ opacity: designConfig.cardConfig.showChrDate ? 1 : 0.45, cursor: designConfig.cardConfig.showChrDate ? 'pointer' : 'not-allowed' }">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showChrPlace" :disabled="!designConfig.cardConfig.showChrDate" />
+                          <span>{{ t('design_cfg_chr_place') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showDeathDate" @change="!designConfig.cardConfig.showDeathDate && (designConfig.cardConfig.showDeathPlace = false)" />
+                          <span>{{ t('design_cfg_death_date') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label" :style="{ opacity: designConfig.cardConfig.showDeathDate ? 1 : 0.45, cursor: designConfig.cardConfig.showDeathDate ? 'pointer' : 'not-allowed' }">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showDeathPlace" :disabled="!designConfig.cardConfig.showDeathDate" />
+                          <span>{{ t('design_cfg_death_place') }}</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <!-- Zeile #4: Ehe & Partner (Zähler wird automatisch angezeigt, wenn > 1 Ehe) -->
+                    <div class="line-config-card">
+                      <div class="line-config-header">
+                        <span class="line-title">#4 {{ t('design_line_4_title') }}</span>
+                        <div class="format-toggles">
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line4Bold }"
+                            @click="designConfig.cardConfig.line4Bold = !designConfig.cardConfig.line4Bold"
+                            :title="t('design_format_bold')"
+                          ><b>B</b></button>
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line4Italic }"
+                            @click="designConfig.cardConfig.line4Italic = !designConfig.cardConfig.line4Italic"
+                            :title="t('design_format_italic')"
+                          ><i>I</i></button>
+                        </div>
+                      </div>
+                      <div class="line-config-options line-grid-2col">
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showMarriageCounter" />
+                          <span>{{ t('design_cfg_marriage_counter') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showMarriageDate" />
+                          <span>{{ t('design_cfg_marriage_date') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label" style="grid-column: span 2;">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showSpouseName" />
+                          <span>{{ t('design_cfg_spouse_name') }}</span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <!-- Zeile #5: Partner-Details & Scheidung -->
+                    <div class="line-config-card">
+                      <div class="line-config-header">
+                        <span class="line-title">#5 {{ t('design_line_5_title') }}</span>
+                        <div class="format-toggles">
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line5Bold }"
+                            @click="designConfig.cardConfig.line5Bold = !designConfig.cardConfig.line5Bold"
+                            :title="t('design_format_bold')"
+                          ><b>B</b></button>
+                          <button
+                            type="button"
+                            class="fmt-btn"
+                            :class="{ active: designConfig.cardConfig.line5Italic }"
+                            @click="designConfig.cardConfig.line5Italic = !designConfig.cardConfig.line5Italic"
+                            :title="t('design_format_italic')"
+                          ><i>I</i></button>
+                        </div>
+                      </div>
+                      <div class="line-config-options line-grid-2col">
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showSpouseBirthDate" @change="!designConfig.cardConfig.showSpouseBirthDate && (designConfig.cardConfig.showSpouseBirthPlace = false)" />
+                          <span>{{ t('design_cfg_spouse_birth_date') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label" :style="{ opacity: designConfig.cardConfig.showSpouseBirthDate ? 1 : 0.45, cursor: designConfig.cardConfig.showSpouseBirthDate ? 'pointer' : 'not-allowed' }">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showSpouseBirthPlace" :disabled="!designConfig.cardConfig.showSpouseBirthDate" />
+                          <span>{{ t('design_cfg_spouse_birth_place') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showSpouseDeathDate" @change="!designConfig.cardConfig.showSpouseDeathDate && (designConfig.cardConfig.showSpouseDeathPlace = false)" />
+                          <span>{{ t('design_cfg_spouse_death_date') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label" :style="{ opacity: designConfig.cardConfig.showSpouseDeathDate ? 1 : 0.45, cursor: designConfig.cardConfig.showSpouseDeathDate ? 'pointer' : 'not-allowed' }">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showSpouseDeathPlace" :disabled="!designConfig.cardConfig.showSpouseDeathDate" />
+                          <span>{{ t('design_cfg_spouse_death_place') }}</span>
+                        </label>
+                        <label class="cfg-checkbox-label" style="grid-column: span 2;">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showDivorce" />
+                          <span>{{ t('design_cfg_divorce') }}</span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Rechte Spalte: Live Preview Kachel -->
+                  <div class="card-preview-pane" style="width: 200px; display: flex; flex-direction: column; align-items: center; gap: 8px;">
+                    <div style="font-weight: bold; font-size: 0.85rem; color: #1e293b;">
+                      {{ t('design_preview_title') }}
+                    </div>
+                    <div class="preview-tile-container" :style="{ width: '150px', minHeight: computeCardHeight(designConfig.cardConfig, 2) + 'px' }">
+                      <!-- #1 -->
+                      <div v-if="designConfig.cardConfig.showHenryId || designConfig.cardConfig.showGeneration"
+                           class="preview-line-1"
+                           :style="{ fontWeight: designConfig.cardConfig.line1Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line1Italic ? 'italic' : 'normal', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }">
+                        <span v-if="designConfig.cardConfig.showHenryId" class="d-henry-badge">[121]</span>
+                        <span v-else></span>
+                        <span v-if="designConfig.cardConfig.showGeneration" class="d-gen-badge">Gen. 3</span>
+                      </div>
+                      <!-- #2 Name (max 1 Umbruch) -->
+                      <div class="preview-line-2 preview-card-name" :style="{ fontWeight: designConfig.cardConfig.line2Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line2Italic ? 'italic' : 'normal' }">
+                        Maximilian Mustermann
+                      </div>
+                      <!-- #3 Life (single line vs multi line) -->
+                      <div v-if="designConfig.cardConfig.showBirthDate || designConfig.cardConfig.showChrDate || designConfig.cardConfig.showDeathDate"
+                           class="preview-line-3"
+                           :class="{ 'is-single-line': designConfig.cardConfig.lifeDatesLayout === 'single' }"
+                           :style="{ fontWeight: designConfig.cardConfig.line3Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line3Italic ? 'italic' : 'normal' }">
+                        <span v-if="designConfig.cardConfig.showBirthDate" class="preview-date-item">
+                          * {{ formatLocalizedDate('1875-05-12', locale) }}<span v-if="designConfig.cardConfig.showBirthPlace"> (Berlin)</span>
+                        </span>
+                        <span v-if="designConfig.cardConfig.showChrDate" class="preview-date-item">
+                          ~ {{ formatLocalizedDate('1875-05-20', locale) }}<span v-if="designConfig.cardConfig.showChrPlace"> (Berlin)</span>
+                        </span>
+                        <span v-if="designConfig.cardConfig.showDeathDate" class="preview-date-item">
+                          † {{ formatLocalizedDate('1942-11-03', locale) }}<span v-if="designConfig.cardConfig.showDeathPlace"> (Hamburg)</span>
+                        </span>
+                      </div>
+                      <!-- #4 & #5 Marriage (Status-Icon, Name, Hochzeitsdatum, Scheidungsdatum, Geburtsdatum, Todesdatum) -->
+                      <div v-if="designConfig.cardConfig.showMarriageCounter || designConfig.cardConfig.showMarriageDate || designConfig.cardConfig.showSpouseName || designConfig.cardConfig.showSpouseBirthDate || designConfig.cardConfig.showSpouseDeathDate || designConfig.cardConfig.showDivorce"
+                           class="preview-marriages-block">
+                        <div class="preview-marriage-entry">
+                          <!-- Linke Spalte: Status-Icon & Zähler -->
+                          <div class="preview-spouse-status-col">
+                            <span v-if="designConfig.cardConfig.showMarriageCounter" class="d-marriage-counter">(1)</span>
+                            <span class="preview-spouse-status-icon" :class="designConfig.cardConfig.showDivorce ? 'is-divorced' : 'is-married'" :title="designConfig.cardConfig.showDivorce ? t('divorced') : t('married')">
+                              {{ designConfig.cardConfig.showDivorce ? '⚮' : '⚭' }}
+                            </span>
+                          </div>
+
+                          <!-- Rechte Spalte: Name, Hochzeits/Scheidungsdatum, Geburts/Todesdatum eingerückt auf gleicher Höhe -->
+                          <div class="preview-spouse-details-col">
+                            <!-- Zeile 1: Name Ehepartner [Henry ID] -->
+                            <div v-if="designConfig.cardConfig.showSpouseName || designConfig.cardConfig.showHenryId"
+                                 class="preview-spouse-name-row"
+                                 :style="{ fontWeight: designConfig.cardConfig.line4Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line4Italic ? 'italic' : 'normal' }">
+                              <span v-if="designConfig.cardConfig.showSpouseName" class="d-spouse-name">Anna Schmidt</span>
+                              <span v-if="designConfig.cardConfig.showHenryId" class="d-spouse-henry">[214]</span>
+                            </div>
+
+                            <!-- Zeile 2: Hochzeits-, Scheidungs-, Geburts- und Todesdatum (in einer Zeile bei single layout) -->
+                            <div v-if="designConfig.cardConfig.showMarriageDate || designConfig.cardConfig.showDivorce || designConfig.cardConfig.showSpouseBirthDate || designConfig.cardConfig.showSpouseDeathDate"
+                                 class="preview-spouse-dates-row"
+                                 :class="{ 'preview-spouse-dates-multi': designConfig.cardConfig.lifeDatesLayout === 'multi' }">
+                              <span v-if="designConfig.cardConfig.showMarriageDate"
+                                    class="nowrap-date preview-marriage-date"
+                                    :style="{ fontWeight: designConfig.cardConfig.line4Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line4Italic ? 'italic' : 'normal' }">
+                                oo {{ formatLocalizedDate('1901-08-20', locale) }}<span v-if="designConfig.cardConfig.lifeDatesLayout === 'single' && (designConfig.cardConfig.showDivorce || designConfig.cardConfig.showSpouseBirthDate || designConfig.cardConfig.showSpouseDeathDate)">, </span>
+                              </span>
+                              <span v-if="designConfig.cardConfig.showDivorce"
+                                    class="d-divorce-badge nowrap-date"
+                                    :style="{ fontWeight: designConfig.cardConfig.line4Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line4Italic ? 'italic' : 'normal' }">
+                                o|o {{ formatLocalizedDate('1920', locale) }}<span v-if="designConfig.cardConfig.lifeDatesLayout === 'single' && (designConfig.cardConfig.showSpouseBirthDate || designConfig.cardConfig.showSpouseDeathDate)">, </span>
+                              </span>
+                              <span v-if="designConfig.cardConfig.showSpouseBirthDate"
+                                    class="nowrap-date"
+                                    :style="{ fontWeight: designConfig.cardConfig.line5Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line5Italic ? 'italic' : 'normal' }">
+                                * {{ formatLocalizedDate('1878-03-15', locale) }}<span v-if="designConfig.cardConfig.showSpouseBirthPlace"> (Potsdam)</span><span v-if="designConfig.cardConfig.lifeDatesLayout === 'single' && designConfig.cardConfig.showSpouseDeathDate">, </span>
+                              </span>
+                              <span v-if="designConfig.cardConfig.showSpouseDeathDate"
+                                    class="nowrap-date"
+                                    :style="{ fontWeight: designConfig.cardConfig.line5Bold ? 'bold' : 'normal', fontStyle: designConfig.cardConfig.line5Italic ? 'italic' : 'normal' }">
+                                † {{ formatLocalizedDate('1955-01-22', locale) }}<span v-if="designConfig.cardConfig.showSpouseDeathPlace"> (Hamburg)</span>
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                    <small style="color: #64748b; font-size: 0.72rem; text-align: center;">
+                      {{ designConfig.cardConfig.customCardHeightEnabled ? (t('design_cfg_custom_height_active') || 'Manuelle Höhe:') : (t('design_cfg_custom_height_auto') || 'Berechnete Standardhöhe:') }} {{ computeCardHeight(designConfig.cardConfig, 1) }} px
+                    </small>
+                  </div>
+                </div>
+
+                <!-- Option: Manuelle Kachelhöhe -->
+                <div class="config-field mb-3" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
+                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
+                    <input type="checkbox" v-model="designConfig.cardConfig.customCardHeightEnabled" style="cursor: pointer;" />
+                    <strong>{{ t('design_cfg_custom_height_label') || 'Kachelhöhe manuell definieren' }}</strong>
+                  </label>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 4px; padding-left: 22px;">
+                    {{ t('design_cfg_custom_height_hint') || 'Definiert eine feste Höhe für alle Kacheln. Ist die Option deaktiviert, passt sich die Höhe automatisch den Inhalten an.' }}
+                  </small>
+                  <div v-if="designConfig.cardConfig.customCardHeightEnabled" style="margin-top: 10px; padding-left: 22px;">
+                    <label class="d-block mb-1" style="font-size: 0.85rem; color: #334155;">
+                      <strong>{{ t('design_cfg_custom_height_val') || 'Manuelle Kachelhöhe:' }}</strong>
+                      <span class="badge-val" style="background: #0284c7; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;">
+                        {{ designConfig.cardConfig.customCardHeight || 180 }} px
+                      </span>
+                    </label>
+                    <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
+                      <input
+                        type="range"
+                        min="70"
+                        max="350"
+                        step="5"
+                        v-model.number="designConfig.cardConfig.customCardHeight"
+                        class="flex-grow"
+                      />
+                      <input
+                        type="number"
+                        min="60"
+                        max="500"
+                        v-model.number="designConfig.cardConfig.customCardHeight"
+                        style="width: 70px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 <h3>{{ t('design_lines_config_title') || 'Verbindungslinien & Querlinien' }}</h3>
                 <p class="section-desc" style="color: #64748b; font-size: 0.82rem; margin-bottom: 1rem;">
                   Konfiguration der Mindestabstände und automatischen Höhenstaffelung für die horizontale Querlinienführung im Design Mode.
@@ -2157,7 +2597,7 @@ onMounted(async () => {
       </div>
     </div>
 
-    <div class="workspace" :class="{ 'tree-mode': currentView === 'tree' || currentView === 'design' }">
+    <div class="workspace" :class="{ 'tree-mode': currentView === 'tree' || currentView === 'design' || currentView === 'export' }">
       
       <!-- 1. Tabellen-Ansicht -->
       <div class="table-container" v-if="currentView === 'table'">
@@ -2252,7 +2692,11 @@ onMounted(async () => {
         <div class="tree-tools" @mousedown.stop v-if="activeProbandTab || currentTreeRootId">
           <div class="tree-tools-left">
             <div class="tree-search-wrapper">
-              <input v-model="treeSearchQuery" :placeholder="t('tree_search_placeholder')" />
+              <input
+                v-model="treeSearchQuery"
+                :placeholder="t('tree_search_placeholder')"
+                @keydown.enter="treeSearchResults.length > 0 && jumpToTreePerson(treeSearchResults[0].id)"
+              />
               <ul v-if="treeSearchQuery && treeSearchResults.length > 0" class="search-dropdown">
                 <li v-for="res in treeSearchResults" :key="'s-'+res.id" @click="jumpToTreePerson(res.id)">
                   {{ res.surname || 'N.N.' }}, {{ res.given_name || 'N.N.' }}
@@ -2277,7 +2721,7 @@ onMounted(async () => {
                 <span
                   class="path-step-chip"
                   :class="{ 'is-selected': selectedPerson?.id === stepPerson.id }"
-                  @click="selectedPerson = stepPerson"
+                  @click="jumpToTreePerson(stepPerson.id)"
                 >
                   {{ stepPerson.given_name || 'N.N.' }} {{ stepPerson.surname || '' }}
                   <strong v-if="getCode(stepPerson)">[{{ getCode(stepPerson) }}]</strong>
@@ -2380,6 +2824,7 @@ onMounted(async () => {
         :enable-line-bridges="designConfig.enableLineBridges"
         :bridge-radius="designConfig.bridgeRadius"
         :minimize-bridges="designConfig.minimizeBridges"
+        :card-config="designConfig.cardConfig"
         @select="p => { selectedPerson = p; if (!p) activePartnerPath = []; }"
         @clear-selection="() => { selectedPerson = null; activePartnerPath = []; }"
         @select-proband="pid => setProbandTab(pid)"
@@ -2387,8 +2832,17 @@ onMounted(async () => {
         @jump-to="jumpToTreePerson"
       />
 
-      <!-- Rechte Spalte: Detailansicht (im Design-Mode nicht angezeigt) -->
-      <div v-if="currentView !== 'design'" class="details-pane" :class="{ 'is-open': isDetailsOpen }">
+      <!-- 4. Interaktiver HTML-Export & Browser-Vorschau -->
+      <ExportView
+        v-if="currentView === 'export'"
+        :persons="persons"
+        :root-ancestors="rootAncestors"
+        :active-proband-id="activeProbandTab"
+        @select-proband="pid => setProbandTab(pid)"
+      />
+
+      <!-- Rechte Spalte: Detailansicht (im Design-Mode und Export-Bereich nicht angezeigt) -->
+      <div v-if="currentView !== 'design' && currentView !== 'export'" class="details-pane" :class="{ 'is-open': isDetailsOpen }">
         
         <button v-if="currentView === 'tree'" class="details-toggle-btn" @click="isDetailsOpen = !isDetailsOpen" title="Details ein/ausblenden">
           <span class="icon">{{ isDetailsOpen ? '▶' : '◀' }}</span>
@@ -2543,7 +2997,7 @@ onMounted(async () => {
                     🔗
                   </span>
                   <div class="marriage-info">(* {{ sp.partner_birth || '?' }}<span v-if="sp.partner_death"> - † {{ sp.partner_death }}</span>)</div>
-                  <div class="marriage-info">💍 {{ t('wedding_date') }}: {{ sp.marriage_date || '-' }} <span v-if="sp.is_divorced || sp.divorce_date"> | 💔 {{ t('divorce_date') }}: {{ sp.divorce_date || 'Ja' }}</span></div>
+                  <div class="marriage-info">⚭ {{ t('wedding_date') }}: {{ sp.marriage_date || '-' }} <span v-if="sp.is_divorced || sp.divorce_date"> | ⚮ {{ t('divorce_date') }}: {{ sp.divorce_date || 'Ja' }}</span></div>
                 </li>
               </ul><p v-else class="sub-empty">-</p>
 
@@ -2617,7 +3071,7 @@ h1 { font-size: 1.8rem; margin: 0; color: #2c3e50; }
 .actions { display: flex; gap: 1rem; }
 button { padding: 0.5rem 1rem; background-color: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
 button:hover:not(:disabled) { background-color: #2980b9; }
-button:disabled { background-color: #95a5a6; cursor-not-allowed: true; cursor: not-allowed; }
+button:disabled { background-color: #95a5a6; cursor: not-allowed; }
 .btn-save { background-color: #2ecc71 !important; }
 
 .proband-selector-bar {
@@ -3289,5 +3743,184 @@ tr.active { background-color: #e3f2fd !important; }
   padding: 12px 20px;
   background: #f8fafc;
   border-top: 1px solid #cbd5e1;
+}
+
+/* Konfiguration Kachelinhalte im Design-Mode */
+.line-config-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.line-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 4px;
+}
+.line-title {
+  font-weight: 700;
+  font-size: 0.84rem;
+  color: #1e293b;
+}
+.format-toggles {
+  display: flex;
+  gap: 4px;
+}
+.fmt-btn {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  font-size: 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 3px;
+  background: #ffffff;
+  color: #475569;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s ease;
+}
+.fmt-btn:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+.fmt-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #1d4ed8;
+}
+.line-config-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+.line-grid-2col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 12px;
+}
+.cfg-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #334155;
+  cursor: pointer;
+}
+.cfg-checkbox-label input {
+  cursor: pointer;
+}
+.preview-tile-container {
+  background: #ffffff;
+  border: 2px solid #1e293b;
+  border-bottom: 3px solid #2980b9;
+  border-radius: 4px;
+  padding: 5px 6px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 2px;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+}
+.preview-line-1 {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.65rem;
+  min-height: 16px;
+}
+.preview-card-name {
+  font-size: 0.78rem;
+  color: #1e293b;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: break-word;
+  text-align: center;
+  line-height: 1.25;
+  margin: 3px 0;
+}
+.preview-line-3 {
+  font-size: 0.64rem;
+  color: #475569;
+  text-align: center;
+  line-height: 1.2;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.preview-marriages-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  border-top: 1px dashed #cbd5e1;
+  padding-top: 2px;
+}
+.preview-marriage-entry {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 4px;
+  line-height: 1.2;
+}
+.preview-spouse-status-col {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+.preview-spouse-status-icon {
+  font-size: 0.78rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #475569;
+  user-select: none;
+}
+.preview-spouse-status-icon.is-divorced {
+  color: #c0392b;
+}
+.preview-spouse-details-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  flex-grow: 1;
+  min-width: 0;
+  text-align: left;
+}
+.preview-spouse-name-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  font-size: 0.66rem;
+  color: #1e293b;
+  line-height: 1.2;
+}
+.preview-spouse-dates-row {
+  font-size: 0.65rem;
+  color: #475569;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  line-height: 1.2;
+}
+.preview-spouse-dates-row.preview-spouse-dates-multi {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+.d-divorce-badge {
+  color: #c0392b;
 }
 </style>

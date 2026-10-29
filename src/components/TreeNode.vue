@@ -522,13 +522,13 @@ watch(
     <div v-if="node.side_branch_type === 'spouse'" class="marriage-label-slot">
       <div v-if="hasMarriageInfo" class="marriage-label">
         <div v-if="marriageDatePlaceText" class="mar-line">
-          💍 {{ marriageDatePlaceText }}
+          ⚭ {{ marriageDatePlaceText }}
         </div>
         <div v-if="node.person.death_date" class="mar-line">
           † {{ node.person.death_date }}
         </div>
         <div v-if="divorceText" class="mar-line">
-          💔 {{ divorceText }}
+          ⚮ {{ divorceText }}
         </div>
       </div>
     </div>
@@ -561,6 +561,7 @@ watch(
           <div
             ref="mainCardRef"
             class="node-card"
+            :data-person-id="node.person.id"
             :class="{
               'main-person-card': !node.is_side_branch,
               'active': selectedId === node.person.id,
@@ -842,7 +843,11 @@ li.is-side-branch-node {
   transition: border-color 0.2s ease, background-color 0.2s ease;
 }
 .node-card:hover { border-color: #3498db; }
-.node-card.active { border-color: #2980b9; background: #e3f2fd; }
+.node-card.active {
+  border-color: #2980b9;
+  background: #e3f2fd;
+  box-shadow: 0 0 0 3px rgba(41, 128, 185, 0.4), 0 4px 12px rgba(0, 0, 0, 0.12);
+}
 
 .side-branch-card {
   background-color: #fcfcfc;
