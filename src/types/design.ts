@@ -43,6 +43,25 @@ export interface DesignCardConfig {
   customCardHeight?: number;
 }
 
+export interface DesignBackgroundConfig {
+  visible: boolean;
+  scale: number; // in Prozent, z. B. 100 für 100%
+  opacity: number; // in Prozent, z. B. 45 für 45%
+  x: number; // Horizontale Position auf dem Canvas in Pixel
+  y: number; // Vertikale Position auf dem Canvas in Pixel
+  naturalWidth?: number;
+  naturalHeight?: number;
+  fileName?: string;
+}
+
+export const DEFAULT_BACKGROUND_CONFIG: DesignBackgroundConfig = {
+  visible: true,
+  scale: 100,
+  opacity: 45,
+  x: 0,
+  y: 0,
+};
+
 export const DEFAULT_CARD_CONFIG: DesignCardConfig = {
   line1Bold: false,
   line1Italic: false,
@@ -85,15 +104,15 @@ export function computeCardHeight(cfg: DesignCardConfig, maxSpouseCount: number 
     return Math.max(60, Math.min(500, cfg.customCardHeight));
   }
 
-  let h = 12; // padding top 5px + bottom 5px + 2px safety
+  let h = 16; // padding top 6px + bottom 6px + 4px safety buffer
 
   // Line #1: Henry ID & Gen badge row
   if (cfg.showHenryId || cfg.showGeneration) {
-    h += 18;
+    h += 20;
   }
 
   // Line #2: Name (mandatory - accommodates up to 2 wrapped lines with line-height 1.25 and vertical margins)
-  h += 34;
+  h += 40;
 
   // Line #3: Lebensdaten
   const hasBirth = cfg.showBirthDate;
@@ -103,9 +122,9 @@ export function computeCardHeight(cfg: DesignCardConfig, maxSpouseCount: number 
 
   if (activeDatesCount > 0) {
     if (cfg.lifeDatesLayout === 'single') {
-      h += 18;
+      h += 20;
     } else {
-      h += activeDatesCount * 16;
+      h += activeDatesCount * 18;
     }
   }
 
@@ -114,18 +133,19 @@ export function computeCardHeight(cfg: DesignCardConfig, maxSpouseCount: number 
 
   if (hasMarriage && maxSpouseCount > 0) {
     let perMarriage = 0;
-    // Spouse Name: allow 28px to comfortably accommodate 2-line wrapped spouse names
-    if (cfg.showSpouseName || cfg.showMarriageCounter) perMarriage += 28;
+    // Spouse Name: allow 34px to comfortably accommodate 2-line wrapped spouse names
+    if (cfg.showSpouseName || cfg.showMarriageCounter) perMarriage += 34;
 
     const hasAnyMarriageDate = cfg.showMarriageDate || cfg.showDivorce;
     const hasAnyLifeDate = cfg.showSpouseBirthDate || cfg.showSpouseDeathDate;
 
     if (cfg.lifeDatesLayout === 'single') {
       if (hasAnyMarriageDate && hasAnyLifeDate) {
-        // Both marriage and life dates active -> may wrap to 2 lines in compact tile width
-        perMarriage += 32;
+        // Both marriage and life dates active -> wraps to 2 lines
+        perMarriage += 36;
       } else if (hasAnyMarriageDate || hasAnyLifeDate) {
-        perMarriage += 18;
+        // Marriage date and divorce date together may also need 2 lines if long
+        perMarriage += (cfg.showMarriageDate && cfg.showDivorce) ? 34 : 20;
       }
     } else {
       const activeSpouseDatesCount = [
@@ -134,14 +154,14 @@ export function computeCardHeight(cfg: DesignCardConfig, maxSpouseCount: number 
         cfg.showSpouseBirthDate,
         cfg.showSpouseDeathDate,
       ].filter(Boolean).length;
-      perMarriage += activeSpouseDatesCount * 16;
+      perMarriage += activeSpouseDatesCount * 18;
     }
 
-    // 6px divider + (perMarriage + 4px entry gap) per spouse
-    h += 6 + (perMarriage + 4) * Math.min(4, maxSpouseCount);
+    // 8px divider + (perMarriage + 6px entry gap) per spouse
+    h += 8 + (perMarriage + 6) * Math.min(4, maxSpouseCount);
   }
 
-  return Math.max(40, h);
+  return Math.max(50, h);
 }
 
 export function computeCardWidthForPerson(name: string): number {

@@ -3,7 +3,19 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { DEFAULT_CARD_CONFIG, computeCardHeight, formatLocalizedDate, type DesignCardConfig } from '../types/design';
+import {
+  DEFAULT_CARD_CONFIG,
+  DEFAULT_BACKGROUND_CONFIG,
+  computeCardHeight,
+  formatLocalizedDate,
+  type DesignCardConfig,
+  type DesignBackgroundConfig,
+} from '../types/design';
+import {
+  saveBackgroundImageToDB,
+  loadBackgroundImageFromDB,
+  deleteBackgroundImageFromDB,
+} from '../utils/designBgStorage';
 
 const { t, locale } = useI18n();
 
@@ -94,9 +106,62 @@ const maxVisibleSpouses = computed(() => {
   return Math.max(1, max);
 });
 
-// Dynamische Kachelhöhe, angepasst an die ausgewählten Inhalte
+// Dynamische Kachelhöhe, angepasst an die ausgewählten Inhalte und maximale Inhaltslänge
 const currentCardHeight = computed(() => {
-  return computeCardHeight(activeCardConfig.value, maxVisibleSpouses.value);
+  const cfg = activeCardConfig.value;
+  if (cfg.customCardHeightEnabled && typeof cfg.customCardHeight === 'number' && cfg.customCardHeight > 0) {
+    return Math.max(60, Math.min(500, cfg.customCardHeight));
+  }
+
+  const baseHeight = computeCardHeight(cfg, maxVisibleSpouses.value);
+
+  // Sichtbare Einträge prüfen, um auch bei mehrzeiligen langen Namen und mehrzeiligen Partnern Überläufe sicher auszuschließen
+  let maxNeeded = baseHeight;
+  visibleSiblingGroups.value.forEach(g => {
+    g.memberIds.forEach(id => {
+      const p = personById.value.get(id);
+      if (!p) return;
+      let needed = 16;
+      if (cfg.showHenryId || cfg.showGeneration) needed += 20;
+
+      // Name: Bei langen Namen (>= 22 Zeichen) 2 Zeilen einplanen
+      const name = `${p.given_name || ''} ${p.surname || ''}`.trim();
+      needed += name.length >= 22 ? 40 : 24;
+
+      // Lebensdaten
+      if (cfg.showBirthDate && p.birth_date) needed += 20;
+      else if (cfg.showDeathDate && p.death_date) needed += 20;
+
+      // Ehen
+      if (p.spouses && p.spouses.length > 0 && (cfg.showSpouseName || cfg.showMarriageDate || cfg.showDivorce || cfg.showMarriageCounter)) {
+        needed += 8; // Divider + Margin
+        p.spouses.forEach(sp => {
+          let spH = 0;
+          if (cfg.showSpouseName || cfg.showMarriageCounter) {
+            const spPerson = personById.value.get(sp.id);
+            const spName = spPerson ? `${spPerson.given_name || ''} ${spPerson.surname || ''}`.trim() : '';
+            spH += spName.length >= 20 ? 34 : 18;
+          }
+          let datesCount = 0;
+          if (cfg.showMarriageDate && sp.date) datesCount++;
+          if (cfg.showDivorce && (sp.is_divorced || sp.divorce_date)) datesCount++;
+          if (cfg.lifeDatesLayout === 'single') {
+            if (datesCount > 1) spH += 34;
+            else if (datesCount === 1) spH += 20;
+          } else {
+            spH += datesCount * 18;
+          }
+          needed += Math.max(24, spH) + 6;
+        });
+      }
+
+      if (needed > maxNeeded) {
+        maxNeeded = needed;
+      }
+    });
+  });
+
+  return maxNeeded;
 });
 
 interface DesignSiblingGroup {
@@ -783,6 +848,7 @@ function fitToScreen() {
 
 watch(() => [props.activeProbandId, props.persons.length], () => {
   buildInitialDesignLayout();
+  loadProbandBackground(props.activeProbandId);
 }, { immediate: true });
 
 onMounted(() => {
@@ -791,6 +857,9 @@ onMounted(() => {
     viewportRef.value.addEventListener('wheel', handleWheelZoom, { passive: false });
   }
   window.addEventListener('keydown', onGlobalKeyDown);
+
+  // Hintergrundbild und Konfiguration für aktiven Probanden initial laden
+  loadProbandBackground(props.activeProbandId);
 });
 
 onUnmounted(() => {
@@ -802,6 +871,8 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', onWindowBranchWidthDragEnd);
   window.removeEventListener('mousemove', onWindowBranchWidthResizeMove);
   window.removeEventListener('mouseup', onWindowBranchWidthResizeEnd);
+  window.removeEventListener('mousemove', onBgMouseMove);
+  window.removeEventListener('mouseup', onBgMouseUp);
 });
 
 // Kumulative Ebenen-Geometrie mit individuell definierbarer Höhe pro Ebene
@@ -861,6 +932,273 @@ const canvasWidth = computed<number>(() => {
   });
   return maxRight;
 });
+
+// ----------------------------------------------------
+// Hintergrundbild für den Design-Modus
+// ----------------------------------------------------
+const bgImageData = ref<string | null>(null);
+const bgConfig = ref<DesignBackgroundConfig>({ ...DEFAULT_BACKGROUND_CONFIG });
+const isBgPopoverOpen = ref<boolean>(false);
+const bgFileInputRef = ref<HTMLInputElement | null>(null);
+const isBgDraggingOnCanvas = ref<boolean>(false);
+const isBgMoving = ref<boolean>(false);
+
+function getProbandBgKey(probandId: string | null | undefined): string {
+  return `proband_${probandId || 'default'}`;
+}
+
+function getProbandConfigKey(probandId: string | null | undefined): string {
+  return `stammbaum_design_bg_config_${probandId || 'default'}`;
+}
+
+async function loadProbandBackground(probandId: string | null | undefined) {
+  if (!probandId) {
+    bgImageData.value = null;
+    bgConfig.value = { ...DEFAULT_BACKGROUND_CONFIG };
+    return;
+  }
+
+  // 1. Config aus localStorage laden (proband-spezifisch)
+  try {
+    const savedCfg = localStorage.getItem(getProbandConfigKey(probandId));
+    if (savedCfg) {
+      bgConfig.value = { ...DEFAULT_BACKGROUND_CONFIG, ...JSON.parse(savedCfg) };
+    } else {
+      bgConfig.value = { ...DEFAULT_BACKGROUND_CONFIG };
+    }
+  } catch {
+    bgConfig.value = { ...DEFAULT_BACKGROUND_CONFIG };
+  }
+
+  // 2. Bild aus IndexedDB laden (proband-spezifisch)
+  try {
+    const res = await loadBackgroundImageFromDB(getProbandBgKey(probandId));
+    if (res && res.dataUrl) {
+      bgImageData.value = res.dataUrl;
+      if (res.fileName && !bgConfig.value.fileName) {
+        bgConfig.value.fileName = res.fileName;
+      }
+    } else {
+      bgImageData.value = null;
+      bgConfig.value.fileName = undefined;
+    }
+  } catch (err) {
+    console.warn('Failed to load background image for proband', probandId, err);
+    bgImageData.value = null;
+  }
+}
+
+function saveProbandBg(probandId: string | null | undefined, dataUrl: string, config: DesignBackgroundConfig) {
+  const pId = probandId || 'default';
+  try {
+    localStorage.setItem(getProbandConfigKey(pId), JSON.stringify(config));
+  } catch {}
+  saveBackgroundImageToDB(
+    dataUrl,
+    config.fileName || 'background_image',
+    'image/png',
+    0,
+    getProbandBgKey(pId)
+  );
+}
+
+function deleteProbandBg(probandId: string | null | undefined) {
+  const pId = probandId || 'default';
+  try {
+    localStorage.removeItem(getProbandConfigKey(pId));
+  } catch {}
+  deleteBackgroundImageFromDB(getProbandBgKey(pId));
+}
+
+watch(
+  bgConfig,
+  newVal => {
+    try {
+      if (props.activeProbandId) {
+        localStorage.setItem(getProbandConfigKey(props.activeProbandId), JSON.stringify(newVal));
+      }
+    } catch {}
+  },
+  { deep: true }
+);
+
+const bgDisplayWidth = computed<number>(() => {
+  const base = bgConfig.value.naturalWidth || 1200;
+  return Math.max(20, Math.round(base * (bgConfig.value.scale / 100)));
+});
+
+const bgDisplayHeight = computed<number>(() => {
+  const base = bgConfig.value.naturalHeight || 800;
+  return Math.max(20, Math.round(base * (bgConfig.value.scale / 100)));
+});
+
+const bgContainerStyle = computed(() => {
+  return {
+    position: 'absolute' as const,
+    left: bgConfig.value.x + 'px',
+    top: bgConfig.value.y + 'px',
+    width: bgDisplayWidth.value + 'px',
+    height: bgDisplayHeight.value + 'px',
+    opacity: isBgDraggingOnCanvas.value
+      ? Math.max(0.4, Math.min(bgConfig.value.opacity / 100, 0.85))
+      : bgConfig.value.opacity / 100,
+    pointerEvents: isBgDraggingOnCanvas.value ? ('auto' as const) : ('none' as const),
+    userSelect: 'none' as const,
+    zIndex: isBgDraggingOnCanvas.value ? 70 : 0,
+    cursor: isBgDraggingOnCanvas.value ? (isBgMoving.value ? 'grabbing' : 'grab') : 'default',
+  };
+});
+
+const bgImageStyle = computed(() => {
+  return {
+    width: '100%',
+    height: '100%',
+    objectFit: 'contain' as const,
+    display: 'block',
+    pointerEvents: 'none' as const,
+  };
+});
+
+function triggerBgUpload() {
+  bgFileInputRef.value?.click();
+}
+
+function onBgFileSelected(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file) return;
+  processBgFile(file);
+  input.value = '';
+}
+
+function processBgFile(file: File) {
+  const validTypes = ['image/jpeg', 'image/png', 'image/svg+xml', 'image/webp'];
+  const isSvgOrImg = validTypes.includes(file.type) || file.name.match(/\.(jpg|jpeg|png|svg|webp)$/i);
+  if (!isSvgOrImg) {
+    alert('Bitte eine Bilddatei im Format JPG, PNG, SVG oder WebP auswählen.');
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = e => {
+    const dataUrl = e.target?.result as string;
+    if (!dataUrl) return;
+
+    bgImageData.value = dataUrl;
+    bgConfig.value.fileName = file.name;
+    bgConfig.value.visible = true;
+
+    const img = new Image();
+    img.onload = () => {
+      bgConfig.value.naturalWidth = img.naturalWidth || 1200;
+      bgConfig.value.naturalHeight = img.naturalHeight || 800;
+
+      // Wenn das Bild neu geladen wurde oder noch keine Position hat, im Canvas zentrieren
+      if (bgConfig.value.x === 0 && bgConfig.value.y === 0) {
+        centerBgImage();
+      }
+
+      saveProbandBg(props.activeProbandId, dataUrl, bgConfig.value);
+    };
+    img.src = dataUrl;
+  };
+  reader.readAsDataURL(file);
+}
+
+function onViewportFileDrop(e: DragEvent) {
+  const file = e.dataTransfer?.files?.[0];
+  if (file && (file.type.startsWith('image/') || file.name.match(/\.(jpg|jpeg|png|svg|webp)$/i))) {
+    processBgFile(file);
+    isBgPopoverOpen.value = true;
+  }
+}
+
+function onBgImageLoaded(e: Event) {
+  const img = e.target as HTMLImageElement;
+  if (img && img.naturalWidth && (!bgConfig.value.naturalWidth || !bgConfig.value.naturalHeight)) {
+    bgConfig.value.naturalWidth = img.naturalWidth;
+    bgConfig.value.naturalHeight = img.naturalHeight;
+    if (bgConfig.value.x === 0 && bgConfig.value.y === 0) {
+      centerBgImage();
+    }
+  }
+}
+
+function centerBgImage() {
+  bgConfig.value.x = Math.round((canvasWidth.value - bgDisplayWidth.value) / 2);
+  bgConfig.value.y = Math.round((canvasHeight.value - bgDisplayHeight.value) / 2);
+}
+
+function alignBottomCenterBgImage() {
+  bgConfig.value.x = Math.round((canvasWidth.value - bgDisplayWidth.value) / 2);
+  bgConfig.value.y = Math.max(CANVAS_PAD_TOP, Math.round(canvasHeight.value - bgDisplayHeight.value - CANVAS_PAD_BOTTOM));
+}
+
+function alignTopLeftBgImage() {
+  bgConfig.value.x = LEVEL_SIDEBAR_W + 16;
+  bgConfig.value.y = CANVAS_PAD_TOP;
+}
+
+function fitBgToWidth() {
+  if (bgConfig.value.naturalWidth) {
+    const availableW = Math.max(400, canvasWidth.value - LEVEL_SIDEBAR_W - 40);
+    bgConfig.value.scale = Math.max(10, Math.min(500, Math.round((availableW / bgConfig.value.naturalWidth) * 100)));
+    centerBgImage();
+  }
+}
+
+function fitBgToHeight() {
+  if (bgConfig.value.naturalHeight) {
+    const availableH = Math.max(300, canvasHeight.value - CANVAS_PAD_TOP - CANVAS_PAD_BOTTOM);
+    bgConfig.value.scale = Math.max(10, Math.min(500, Math.round((availableH / bgConfig.value.naturalHeight) * 100)));
+    centerBgImage();
+  }
+}
+
+function resetBgScale() {
+  bgConfig.value.scale = 100;
+  centerBgImage();
+}
+
+function removeBgImage() {
+  if (confirm(t('design_bg_image_delete_confirm') || 'Möchten Sie das Hintergrundbild wirklich entfernen?')) {
+    bgImageData.value = null;
+    bgConfig.value.fileName = undefined;
+    deleteProbandBg(props.activeProbandId);
+  }
+}
+
+let bgDragStartMouseX = 0;
+let bgDragStartMouseY = 0;
+let bgDragInitialX = 0;
+let bgDragInitialY = 0;
+
+function onBgMouseDown(e: MouseEvent) {
+  if (!isBgDraggingOnCanvas.value) return;
+  if (e.button !== 0) return;
+  e.stopPropagation();
+  e.preventDefault();
+  isBgMoving.value = true;
+  bgDragStartMouseX = e.clientX;
+  bgDragStartMouseY = e.clientY;
+  bgDragInitialX = bgConfig.value.x;
+  bgDragInitialY = bgConfig.value.y;
+  window.addEventListener('mousemove', onBgMouseMove);
+  window.addEventListener('mouseup', onBgMouseUp);
+}
+
+function onBgMouseMove(e: MouseEvent) {
+  const dx = (e.clientX - bgDragStartMouseX) / zoom.value;
+  const dy = (e.clientY - bgDragStartMouseY) / zoom.value;
+  bgConfig.value.x = Math.round(bgDragInitialX + dx);
+  bgConfig.value.y = Math.round(bgDragInitialY + dy);
+}
+
+function onBgMouseUp() {
+  isBgMoving.value = false;
+  window.removeEventListener('mousemove', onBgMouseMove);
+  window.removeEventListener('mouseup', onBgMouseUp);
+}
 
 const levelsTopToBottom = computed(() => {
   const list: {
@@ -2400,27 +2738,28 @@ function optimizeSiblingGroupLanes(
       // i auf niedrigerem Lane-Index als j (l_i < l_j):
       // i liegt näher an den Kindern (Ebene 0),
       // j liegt weiter weg / näher am Elternteil (höhere Lanes).
-      // 1) i's Elternstamm startet am Elternknoten und muss zu i's Querlinie laufen.
-      //    Da j's Querlinie dazwischen liegt, kreuzt i's Elternstamm j's Querlinie:
-      if (itemI.parentX >= itemJ.barMin - 1 && itemI.parentX <= itemJ.barMax + 1) {
-        iBelowJ += 5;
+      // 1) i's Elternstamm startet am Elternknoten und läuft zu i's Querlinie.
+      //    Falls j's Querlinie dazwischen liegt und nicht vom selben Elternteil ausgeht, kreuzt i's Elternstamm j's Querlinie:
+      const sameParent = Math.abs(itemI.parentX - itemJ.parentX) < 2;
+      if (!sameParent && itemI.parentX > itemJ.barMin + 2 && itemI.parentX < itemJ.barMax - 2) {
+        iBelowJ += 500;
       }
       // 2) j's Kinder-Abgangslinien starten an j's Querlinie und laufen zu den Kindern.
       //    Falls eines von j's Kindern im horizontalen Bereich von i liegt,
       //    kreuzt diese Abgangslinie i's Querlinie:
       for (const cx of itemJ.childrenX) {
-        if (cx >= itemI.barMin - 1 && cx <= itemI.barMax + 1) {
-          iBelowJ += 5;
+        if (cx > itemI.barMin + 2 && cx < itemI.barMax - 2) {
+          iBelowJ += 500;
         }
       }
 
       // j auf niedrigerem Lane-Index als i (l_j < l_i):
-      if (itemJ.parentX >= itemI.barMin - 1 && itemJ.parentX <= itemI.barMax + 1) {
-        jBelowI += 5;
+      if (!sameParent && itemJ.parentX > itemI.barMin + 2 && itemJ.parentX < itemI.barMax - 2) {
+        jBelowI += 500;
       }
       for (const cx of itemI.childrenX) {
-        if (cx >= itemJ.barMin - 1 && cx <= itemJ.barMax + 1) {
-          jBelowI += 5;
+        if (cx > itemJ.barMin + 2 && cx < itemJ.barMax - 2) {
+          jBelowI += 500;
         }
       }
 
@@ -2431,30 +2770,26 @@ function optimizeSiblingGroupLanes(
   function evaluate(assignment: number[]): number {
     let cost = 0;
     for (let i = 0; i < n; i++) {
-      cost += assignment[i] * 0.05;
+      cost += assignment[i] * 0.002;
       for (let j = i + 1; j < n; j++) {
         const pc = pairCosts[i][j];
         const lI = assignment[i];
         const lJ = assignment[j];
         if (lI === lJ) {
-          if (pc.overlap) cost += 1000;
+          if (pc.overlap) cost += 5000;
         } else if (lI < lJ) {
           cost += pc.iBelowJ;
           const spanI = items[i].span;
           const spanJ = items[j].span;
           if (spanI > spanJ + 8) {
-            cost += 0.8 + (spanI - spanJ) * 0.001;
-          } else if (items[i].barMin <= items[j].barMin + 4 && items[i].barMax >= items[j].barMax - 4) {
-            cost += 0.8;
+            cost += 0.5;
           }
         } else {
           cost += pc.jBelowI;
           const spanI = items[i].span;
           const spanJ = items[j].span;
           if (spanJ > spanI + 8) {
-            cost += 0.8 + (spanJ - spanI) * 0.001;
-          } else if (items[j].barMin <= items[i].barMin + 4 && items[j].barMax >= items[i].barMax - 4) {
-            cost += 0.8;
+            cost += 0.5;
           }
         }
       }
@@ -2496,7 +2831,7 @@ function optimizeSiblingGroupLanes(
       }
 
       if (hasOverlapOnSameLane) {
-        curCost += 1000;
+        curCost += 5000;
       }
 
       for (let other = 0; other < n; other++) {
@@ -2505,25 +2840,25 @@ function optimizeSiblingGroupLanes(
         const lA = idx < other ? l : innerOuterLanes[other];
         const lB = idx < other ? innerOuterLanes[other] : l;
         if (lA === lB) {
-          if (pc.overlap) curCost += 1000;
+          if (pc.overlap) curCost += 5000;
         } else if (lA < lB) {
           curCost += pc.iBelowJ;
           const aIdx = idx < other ? idx : other;
           const bIdx = idx < other ? other : idx;
           if (items[aIdx].span > items[bIdx].span + 8) {
-            curCost += 0.8;
+            curCost += 0.5;
           }
         } else {
           curCost += pc.jBelowI;
           const aIdx = idx < other ? idx : other;
           const bIdx = idx < other ? other : idx;
           if (items[bIdx].span > items[aIdx].span + 8) {
-            curCost += 0.8;
+            curCost += 0.5;
           }
         }
       }
 
-      curCost += l * 0.1;
+      curCost += l * 0.002;
 
       if (curCost < bestIncr) {
         bestIncr = curCost;
@@ -3036,7 +3371,7 @@ const edgeGeometry = computed(() => {
 
   // Während aktivem Dragging Linienbrückenberechnung überspringen für 60-120 FPS
   if (enableBridges && !isDragging) {
-    const minClearance = 2;
+    const minClearance = 0.5;
 
     interface HorizSegInfo {
       idx: number;
@@ -4211,16 +4546,6 @@ function moveSinglePersonLevel(group: DesignSiblingGroup, personId: string, delt
   expandAndResolveLevelOverlaps(originLevel);
 }
 
-function addTopLevel() {
-  pushHistoryState();
-  const nextLvl = totalLevels.value + 1;
-  levelHeights.value = {
-    ...levelHeights.value,
-    [nextLvl]: DEFAULT_LEVEL_HEIGHT,
-  };
-  totalLevels.value = nextLvl;
-}
-
 function insertEmptyLevelAbove(level: number) {
   pushHistoryState();
   const newLevel = level + 1;
@@ -4258,24 +4583,6 @@ function removeEmptyLevel(level: number) {
     }
   });
   totalLevels.value -= 1;
-  levelHeights.value = nextHeights;
-}
-
-function cleanAllEmptyLevels() {
-  const occupied = Array.from(new Set(siblingGroups.value.map(g => g.level))).sort((a, b) => a - b);
-  if (occupied.length === 0) return;
-  pushHistoryState();
-  const levelMap = new Map<number, number>();
-  const nextHeights: Record<number, number> = {};
-  occupied.forEach((oldLvl, idx) => {
-    const newLvl = idx + 1;
-    levelMap.set(oldLvl, newLvl);
-    nextHeights[newLvl] = getLevelHeight(oldLvl);
-  });
-  siblingGroups.value.forEach(g => {
-    g.level = levelMap.get(g.level) || 1;
-  });
-  totalLevels.value = occupied.length;
   levelHeights.value = nextHeights;
 }
 
@@ -4346,6 +4653,10 @@ function onViewportClick(e: MouseEvent) {
   }
   const target = e.target as HTMLElement | null;
   if (!target) return;
+
+  if (!target.closest('.bg-tool-wrapper') && !target.closest('.bg-image-popover') && !isBgDraggingOnCanvas.value) {
+    isBgPopoverOpen.value = false;
+  }
 
   // Wenn der Klick innerhalb eines Eintrages oder Funktionsbereiches erfolgte, Selektion nicht aufheben
   if (
@@ -4424,6 +4735,8 @@ interface DesignPersistedState {
   expandedParentIds: string[];
   pan?: { x: number; y: number };
   zoom?: number;
+  backgroundConfig?: DesignBackgroundConfig | null;
+  backgroundImageData?: string | null;
 }
 
 interface DesignLayoutEntry {
@@ -4486,7 +4799,7 @@ function getSerializedDesignState(name: string): DesignPersistedState {
   });
 
   return {
-    version: 1,
+    version: 2,
     probandId: props.activeProbandId || '',
     probandName: activeProbandName.value,
     name: name.trim() || 'Design',
@@ -4498,6 +4811,8 @@ function getSerializedDesignState(name: string): DesignPersistedState {
     expandedParentIds: Array.from(expandedParentIds.value),
     pan: { ...pan.value },
     zoom: zoom.value,
+    backgroundConfig: bgImageData.value ? { ...bgConfig.value } : null,
+    backgroundImageData: bgImageData.value || null,
   };
 }
 
@@ -4659,6 +4974,18 @@ function applyLoadedState(state: DesignPersistedState) {
   if (state.zoom && typeof state.zoom === 'number') {
     zoom.value = state.zoom;
   }
+
+  // Hintergrundbild und Konfiguration für diesen Stand wiederherstellen
+  if (state.backgroundImageData && state.backgroundConfig) {
+    bgImageData.value = state.backgroundImageData;
+    bgConfig.value = { ...DEFAULT_BACKGROUND_CONFIG, ...state.backgroundConfig };
+    saveProbandBg(props.activeProbandId, state.backgroundImageData, bgConfig.value);
+  } else {
+    bgImageData.value = null;
+    bgConfig.value = { ...DEFAULT_BACKGROUND_CONFIG };
+    deleteProbandBg(props.activeProbandId);
+  }
+
   activeDesignPersonId.value = '';
 }
 
@@ -4848,15 +5175,29 @@ function formatDateStr(iso: string): string {
           <button class="btn-design-tool" @click="collapseAllToOrigin">
             {{ t('design_collapse_all') }}
           </button>
-          <button class="btn-design-tool" @click="addTopLevel">
-            {{ t('design_add_level_top') }}
-          </button>
-          <button class="btn-design-tool" @click="cleanAllEmptyLevels">
-            {{ t('design_clean_empty_levels') }}
-          </button>
           <button class="btn-design-tool btn-reset-design" @click="buildInitialDesignLayout">
             {{ t('design_reset_layout') }}
           </button>
+          <button
+            class="btn-design-tool btn-design-settings"
+            :title="t('design_settings_tooltip')"
+            @click="emit('open-settings')"
+          >
+            ⚙️ {{ t('design_settings_btn') }}
+          </button>
+
+          <!-- Button & Popover für Hintergrundbild -->
+          <div class="bg-tool-wrapper">
+            <button
+              class="btn-design-tool btn-bg-image"
+              :class="{ 'has-image': !!bgImageData, 'active': isBgPopoverOpen }"
+              :title="t('design_bg_image_tooltip')"
+              @click.stop="isBgPopoverOpen = !isBgPopoverOpen"
+            >
+              🖼️ {{ t('design_bg_image_btn') }}
+              <span v-if="bgImageData" class="bg-indicator-dot" :class="{ 'is-hidden': !bgConfig.visible }"></span>
+            </button>
+          </div>
 
           <!-- Button zum Gruppieren aller Nachkommeneinträge des gewählten Eintrags je Ebene -->
           <button
@@ -4904,7 +5245,167 @@ function formatDateStr(iso: string): string {
         @mouseup="stopCanvasPan"
         @mouseleave="stopCanvasPan"
         @click="onViewportClick"
+        @dragover.prevent
+        @drop.prevent="onViewportFileDrop"
       >
+        <!-- Popover für Hintergrundbild-Einstellungen: rechtsbündig zum Anzeigebereich, unterhalb des Buttons "Hintergrundbild" -->
+        <div
+          v-if="isBgPopoverOpen"
+          class="bg-image-popover"
+          @click.stop
+          @mousedown.stop
+          @wheel.stop
+        >
+          <div class="bg-popover-header">
+            <span class="bg-popover-title">🖼️ {{ t('design_bg_image_title') }}</span>
+            <button
+              type="button"
+              class="bg-popover-close"
+              @click="isBgPopoverOpen = false"
+            >✕</button>
+          </div>
+
+          <!-- Keine Datei geladen -->
+          <div v-if="!bgImageData" class="bg-popover-empty">
+            <p class="bg-drop-hint">{{ t('design_bg_image_drop_hint') }}</p>
+            <button
+              type="button"
+              class="btn-bg-upload-big"
+              @click="triggerBgUpload"
+            >
+              📁 {{ t('design_bg_image_upload_btn') }}
+            </button>
+          </div>
+
+          <!-- Bild ist geladen -->
+          <div v-else class="bg-popover-content">
+            <!-- Status & Dateiinfo -->
+            <div class="bg-file-info-row">
+              <div class="bg-file-meta">
+                <span class="bg-filename" :title="bgConfig.fileName || ''">
+                  {{ bgConfig.fileName || 'Bild' }}
+                </span>
+                <span v-if="bgConfig.naturalWidth" class="bg-dims">
+                  {{ bgConfig.naturalWidth }} × {{ bgConfig.naturalHeight }} px
+                </span>
+              </div>
+              <div class="bg-file-actions">
+                <button
+                  type="button"
+                  class="btn-icon-bg"
+                  :class="{ 'is-active': bgConfig.visible }"
+                  :title="bgConfig.visible ? t('design_bg_image_hidden') : t('design_bg_image_visible')"
+                  @click="bgConfig.visible = !bgConfig.visible"
+                >
+                  {{ bgConfig.visible ? '👁️' : '🙈' }}
+                </button>
+                <button
+                  type="button"
+                  class="btn-icon-bg"
+                  :title="t('design_bg_image_replace_btn')"
+                  @click="triggerBgUpload"
+                >
+                  🔄
+                </button>
+                <button
+                  type="button"
+                  class="btn-icon-bg danger"
+                  :title="t('design_bg_image_delete_btn')"
+                  @click="removeBgImage"
+                >
+                  🗑️
+                </button>
+              </div>
+            </div>
+
+            <!-- Skalierung / Größe -->
+            <div class="bg-control-section">
+              <div class="bg-section-label-row">
+                <label>🔍 {{ t('design_bg_image_scale_label') }}</label>
+                <span class="bg-val-badge">{{ bgConfig.scale }}%</span>
+              </div>
+              <div class="bg-slider-row">
+                <input
+                  type="range"
+                  min="10"
+                  max="400"
+                  step="1"
+                  v-model.number="bgConfig.scale"
+                  class="bg-slider"
+                />
+                <input
+                  type="number"
+                  min="10"
+                  max="1000"
+                  v-model.number="bgConfig.scale"
+                  class="bg-num-input"
+                />
+              </div>
+              <div class="bg-quick-btn-row">
+                <button type="button" class="btn-quick-bg" @click="resetBgScale">{{ t('design_bg_image_orig_btn') }}</button>
+                <button type="button" class="btn-quick-bg" @click="fitBgToWidth">{{ t('design_bg_image_fit_w_btn') }}</button>
+                <button type="button" class="btn-quick-bg" @click="fitBgToHeight">{{ t('design_bg_image_fit_h_btn') }}</button>
+              </div>
+            </div>
+
+            <!-- Deckkraft / Transparenz -->
+            <div class="bg-control-section">
+              <div class="bg-section-label-row">
+                <label>🌓 {{ t('design_bg_image_opacity_label') }}</label>
+                <span class="bg-val-badge">{{ bgConfig.opacity }}%</span>
+              </div>
+              <div class="bg-slider-row">
+                <input
+                  type="range"
+                  min="5"
+                  max="100"
+                  step="1"
+                  v-model.number="bgConfig.opacity"
+                  class="bg-slider"
+                />
+                <input
+                  type="number"
+                  min="5"
+                  max="100"
+                  v-model.number="bgConfig.opacity"
+                  class="bg-num-input"
+                />
+              </div>
+            </div>
+
+            <!-- Positionierung -->
+            <div class="bg-control-section">
+              <div class="bg-section-label-row">
+                <label>📍 {{ t('design_bg_image_pos_label') }}</label>
+                <button
+                  type="button"
+                  class="btn-toggle-drag-bg"
+                  :class="{ active: isBgDraggingOnCanvas }"
+                  @click="isBgDraggingOnCanvas = !isBgDraggingOnCanvas"
+                  :title="isBgDraggingOnCanvas ? 'Maus-Verschieben beenden' : 'Mit der Maus im Canvas verschieben'"
+                >
+                  ✥ {{ isBgDraggingOnCanvas ? 'Aktiv (Ziehen)' : 'Per Maus' }}
+                </button>
+              </div>
+              <div class="bg-coord-row">
+                <label>
+                  <span>X:</span>
+                  <input type="number" v-model.number="bgConfig.x" class="bg-num-input coord" />
+                </label>
+                <label>
+                  <span>Y:</span>
+                  <input type="number" v-model.number="bgConfig.y" class="bg-num-input coord" />
+                </label>
+              </div>
+              <div class="bg-quick-btn-row">
+                <button type="button" class="btn-quick-bg" @click="centerBgImage">⌖ {{ t('design_bg_image_center_btn') }}</button>
+                <button type="button" class="btn-quick-bg" @click="alignBottomCenterBgImage">⬇️ {{ t('design_bg_image_bottom_btn') }}</button>
+                <button type="button" class="btn-quick-bg" @click="alignTopLeftBgImage">↖️ Oben links</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <!-- Floating Ebenenkonfiguration immer am linken Bildschirmrand der jeweiligen Zeile -->
         <div class="floating-level-controls-container" @mousedown.stop>
           <div
@@ -5000,6 +5501,38 @@ function formatDateStr(iso: string): string {
             transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
           }"
         >
+          <!-- 0. Hintergrundbild-Ebene (hinter dem Ebenengitter und allen Einträgen; temporär im Vordergrund beim Verschieben) -->
+          <div
+            v-if="bgImageData && bgConfig.visible"
+            class="design-bg-image-container"
+            :class="{
+              'is-interactive-dragging': isBgDraggingOnCanvas,
+              'is-moving': isBgMoving,
+            }"
+            :style="bgContainerStyle"
+            @mousedown="onBgMouseDown"
+          >
+            <img
+              :src="bgImageData"
+              class="design-bg-image"
+              :style="bgImageStyle"
+              alt="Hintergrundbild"
+              @load="onBgImageLoaded"
+              draggable="false"
+            />
+            <div v-if="isBgDraggingOnCanvas" class="bg-drag-overlay" @mousedown.stop>
+              <span>✥ {{ t('design_bg_image_moving_badge') }}</span>
+              <button
+                type="button"
+                class="btn-bg-drag-finish"
+                @click.stop="isBgDraggingOnCanvas = false"
+                :title="t('design_bg_image_finish_drag')"
+              >
+                ✓ {{ t('design_bg_image_finish_drag') }}
+              </button>
+            </div>
+          </div>
+
           <!-- Horizontale Ebenen-Bänder (von oben nach unten gerendert, Ebene 1 = unten beim Stammahn) -->
           <div
             v-for="lvlInfo in levelsTopToBottom"
@@ -5678,6 +6211,15 @@ function formatDateStr(iso: string): string {
           </div>
         </div>
       </div>
+
+      <!-- Versteckter Datei-Input für Hintergrundbild-Upload (JPG, PNG, SVG, WEBP) -->
+      <input
+        ref="bgFileInputRef"
+        type="file"
+        accept=".jpg,.jpeg,.png,.svg,.webp,image/jpeg,image/png,image/svg+xml,image/webp"
+        style="display: none;"
+        @change="onBgFileSelected"
+      />
     </template>
   </div>
 </template>
@@ -7363,5 +7905,382 @@ function formatDateStr(iso: string): string {
 }
 .d-modal-btn-open-file:hover {
   background: #059669;
+}
+
+/* ----------------------------------------------------
+   Hintergrundbild (Design Mode)
+   ---------------------------------------------------- */
+.design-bg-image-container {
+  overflow: visible;
+  transition: opacity 0.15s ease;
+}
+
+.design-bg-image-container.is-interactive-dragging {
+  outline: 3px dashed #2563eb;
+  outline-offset: 4px;
+  background: rgba(37, 99, 235, 0.05);
+  box-shadow: 0 8px 30px rgba(37, 99, 235, 0.18);
+}
+
+.design-bg-image-container.is-interactive-dragging.is-moving {
+  outline-color: #1d4ed8;
+  outline-style: solid;
+}
+
+.bg-drag-overlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(15, 23, 42, 0.92);
+  color: #ffffff;
+  font-size: 0.8rem;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  user-select: none;
+  z-index: 5;
+  pointer-events: auto;
+}
+
+.btn-bg-drag-finish {
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-bg-drag-finish:hover {
+  background: #1d4ed8;
+}
+
+.bg-tool-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
+.btn-bg-image {
+  background: #475569;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  position: relative;
+}
+
+.btn-bg-image:hover {
+  background: #334155;
+}
+
+.btn-bg-image.has-image {
+  background: #0284c7;
+}
+
+.btn-bg-image.has-image:hover {
+  background: #0369a1;
+}
+
+.btn-bg-image.active {
+  box-shadow: 0 0 0 2px #38bdf8;
+}
+
+.bg-indicator-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  display: inline-block;
+}
+
+.bg-indicator-dot.is-hidden {
+  background: #f59e0b;
+}
+
+.bg-image-popover {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  left: auto;
+  width: 340px;
+  max-width: calc(100% - 28px);
+  max-height: calc(100% - 20px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 12px 32px -4px rgba(0, 0, 0, 0.22), 0 8px 12px -6px rgba(0, 0, 0, 0.12);
+  z-index: 60;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.bg-image-popover::-webkit-scrollbar {
+  width: 6px;
+}
+
+.bg-image-popover::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 3px;
+}
+
+.bg-image-popover::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.bg-popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #f1f5f9;
+  padding-bottom: 8px;
+}
+
+.bg-popover-title {
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.bg-popover-close {
+  background: none;
+  border: none;
+  font-size: 1rem;
+  color: #64748b;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.bg-popover-close:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+.bg-popover-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 12px 6px;
+}
+
+.bg-drop-hint {
+  font-size: 0.8rem;
+  color: #64748b;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.btn-bg-upload-big {
+  width: 100%;
+  background: #2563eb;
+  color: white;
+  border: none;
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.btn-bg-upload-big:hover {
+  background: #1d4ed8;
+}
+
+.bg-popover-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bg-file-info-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #f8fafc;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+
+.bg-file-meta {
+  display: flex;
+  flex-direction: column;
+  max-width: 180px;
+}
+
+.bg-filename {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bg-dims {
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+.bg-file-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.btn-icon-bg {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-icon-bg:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.btn-icon-bg.danger:hover {
+  background: #fef2f2;
+  border-color: #ef4444;
+  color: #dc2626;
+}
+
+.btn-icon-bg.is-active {
+  background: #eff6ff;
+  border-color: #3b82f6;
+}
+
+.bg-control-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bg-section-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #334155;
+}
+
+.bg-val-badge {
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: #2563eb;
+  background: #eff6ff;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.bg-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bg-slider {
+  flex: 1;
+  height: 5px;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+
+.bg-num-input {
+  width: 52px;
+  padding: 3px 5px;
+  font-size: 0.78rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  text-align: right;
+  outline: none;
+}
+
+.bg-num-input:focus {
+  border-color: #2563eb;
+}
+
+.bg-num-input.coord {
+  width: 70px;
+}
+
+.bg-quick-btn-row {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+}
+
+.btn-quick-bg {
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  color: #334155;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-quick-bg:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.btn-toggle-drag-bg {
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #475569;
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.btn-toggle-drag-bg:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.btn-toggle-drag-bg.active {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+
+.bg-coord-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.bg-coord-row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.78rem;
+  color: #475569;
+  font-weight: 600;
 }
 </style>

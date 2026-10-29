@@ -1247,9 +1247,9 @@ function getSpouseLines(data) {
 function getNodeHeight(d) {
                     const hasDates = !!extractDatesLine(d.data);
                     const spouseCount = (showSpouses && d.data.spouses) ? d.data.spouses.length : 0;
-                    const topPadding = 18;
-                    const bottomContent = (hasDates ? 14 : 0) + spouseCount * 14;
-                    const bottomPadding = Math.max(12, bottomContent + 10);
+                    const topPadding = 20;
+                    const bottomContent = (hasDates ? 16 : 0) + spouseCount * 16;
+                    const bottomPadding = Math.max(14, bottomContent + 12);
                     return topPadding + bottomPadding + 14;
 }
 
@@ -1257,23 +1257,23 @@ function getNodeTextWidth(d) {
                     if (d._measuredWidth && d._measuredWidth > 0 && d._lastSpouseState === showSpouses) {
                         return d._measuredWidth;
                     }
-                    const line1 = \`\${d.data.henry_code}. \${d.data.name}\${d.data.path_stopped ? " ↪" : ""}\`;
-                    let maxEst = line1.length * 8.4;
+                    const line1 = \`\${d.data.henry_code ? d.data.henry_code + '. ' : ''}\${d.data.name}\${d.data.path_stopped ? " ↪" : ""}\`;
+                    let maxEst = line1.length * 9.5;
 
                     const dates = extractDatesLine(d.data);
                     if (dates) {
-                        const datesW = dates.length * 7.0;
+                        const datesW = dates.length * 8.0;
                         if (datesW > maxEst) maxEst = datesW;
                     }
 
                     if (showSpouses && d.data.spouses && d.data.spouses.length > 0) {
                         const spLines = getSpouseLines(d.data);
                         for (const sp of spLines) {
-                            const spW = sp.length * 6.8;
+                            const spW = sp.length * 7.8;
                             if (spW > maxEst) maxEst = spW;
                         }
                     }
-                    return Math.max(120, Math.ceil(maxEst));
+                    return Math.max(160, Math.ceil(maxEst));
 }
 
 function layoutVerticalTree(rootNode) {
@@ -1344,8 +1344,9 @@ function computeGenerationOffsets(visibleNodes) {
                     const maxDepth = d3.max(visibleNodes, n => n.depth) || 0;
                     const levelXOffset = { 0: 0 };
                     for (let dep = 1; dep <= maxDepth + 1; dep++) {
-                        const genWidth = maxGenWidth[dep - 1] || 160;
-                        levelXOffset[dep] = levelXOffset[dep - 1] + 12 + genWidth + 12 + 55;
+                        const genWidth = Math.max(160, maxGenWidth[dep - 1] || 160);
+                        // 12px circle-to-text gap + genWidth + 16px text-end margin + 85px connector corridor
+                        levelXOffset[dep] = levelXOffset[dep - 1] + 12 + genWidth + 16 + 85;
                     }
                     visibleNodes.forEach(d => {
                         d.posX = levelXOffset[d.depth];
@@ -1363,10 +1364,14 @@ function refreshSelectionClasses() {
 
 function renderLink(s, d) {
                     const sWidth = getNodeTextWidth(s);
-                    const sX = (s.posX ?? 0) + 12 + sWidth + 12;
+                    let sX = (s.posX ?? 0) + 12 + sWidth + 10;
                     const sY = s.posY ?? 0;
                     const tX = d.posX ?? 0;
                     const tY = d.posY ?? 0;
+                    // Strict forward enforcement: sX must never be past tX - 25px
+                    if (sX >= tX - 25) {
+                        sX = tX - 25;
+                    }
                     const midX = (sX + tX) / 2;
                     return \`M \${sX} \${sY} C \${midX} \${sY}, \${midX} \${tY}, \${tX} \${tY}\`;
 }
@@ -1478,11 +1483,14 @@ function update(source) {
                         try {
                             const bbox = this.querySelector(".text-group").getBBox();
                             if (bbox && bbox.width > 0) {
-                                d._measuredWidth = Math.max(120, Math.ceil(bbox.width));
+                                d._measuredWidth = Math.max(140, Math.ceil(bbox.width));
                                 d._lastSpouseState = showSpouses;
                             }
                         } catch (e) {}
                     });
+
+                    // Sofort nach dem DOM-Messen die horizontalen Generationen-Abstände exakt neu berechnen
+                    computeGenerationOffsets(nodes);
 
                     nodeUpdate.transition(t_anim).attr("transform", d => \`translate(\${d.posX},\${d.posY})\`).style("opacity", 1);
 
