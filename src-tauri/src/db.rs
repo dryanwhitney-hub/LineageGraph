@@ -90,6 +90,13 @@ fn setup_schema(conn: Connection) -> Result<Connection> {
             layout_data TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_design_layouts_proband ON design_layouts(proband_id);
+
+        CREATE TABLE IF NOT EXISTS latex_export_templates (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            config_data TEXT NOT NULL
+        );
     ")?;
 
     // Migration für Individuals-Tabelle (Lebensdaten)

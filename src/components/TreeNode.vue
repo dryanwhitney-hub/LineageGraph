@@ -600,7 +600,7 @@ watch(
             <div class="dates">(* {{ node.person.birth_date || '?' }}<span v-if="node.person.death_date"> - † {{ node.person.death_date }}</span>)</div>
             
             <div class="side-actions" v-if="!node.is_side_branch && (node.person.spouses.length > 0 || node.spouse_nodes.length > 0)">
-              <button @click.stop="emit('toggle-side', node.person.id, 'spouses')" class="side-btn" :class="{ 'active': expandedSideNodes.get(node.person.id)?.spouses }" title="Ehepartner ein-/ausblenden">💍 {{ Math.max(node.person.spouses.length, node.spouse_nodes.length) }}</button>
+              <button @click.stop="emit('toggle-side', node.person.id, 'spouses')" class="side-btn" :class="{ 'active': expandedSideNodes.get(node.person.id)?.spouses }" title="Ehepartner ein-/ausblenden">⚭ {{ Math.max(node.person.spouses.length, node.spouse_nodes.length) }}</button>
               <button
                 v-if="isFreeView && (node.spouse_nodes.length > 0 || node.person.spouses.length > 0)"
                 @click.stop="handleSwitchFromMain"

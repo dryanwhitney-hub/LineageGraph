@@ -5,9 +5,9 @@ use petgraph::algo::astar;
 use petgraph::graph::{DiGraph, NodeIndex};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Manager, State};
@@ -98,6 +98,20 @@ pub struct DesignLayoutEntry {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LatexTemplateEntry {
+    pub id: String,
+    pub name: String,
+    pub created_at: String,
+    pub config_data: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LatexExportFilePayload {
+    pub file_name: String,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct PersonUpdate {
     pub original_id: String,
     pub person: Person,
@@ -109,61 +123,116 @@ pub struct AppState {
     pub active_tree: Mutex<String>,
 }
 
-#[tauri::command]
-fn get_trees(state: State<AppState>) -> Result<Vec<String>, String> {
+/// Validates a tree name against empty strings, path separators, and traversal sequences.
+fn validate_tree_name(tree_name: &str) -> Result<&str, String> {
+    let trimmed = tree_name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.contains('\0')
+    {
+        return Err("Ungültiger Stammbaum-Name".into());
+    }
+    Ok(trimmed)
+}
+
+/// Validates a user-selected file path and restricts access to allowed file extensions.
+fn validate_user_file_path<'a>(
+    file_path: &'a str,
+    allowed_extensions: &[&str],
+) -> Result<&'a Path, String> {
+    let trimmed = file_path.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return Err("Ungültiger Dateipfad.".into());
+    }
+    let path = Path::new(trimmed);
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .ok_or_else(|| "Dateierweiterung fehlt.".to_string())?;
+
+    if !allowed_extensions.iter().any(|allowed| *allowed == ext) {
+        return Err(format!(
+            "Nicht unterstützte Dateierweiterung '.{}'. Erlaubt: {}",
+            ext,
+            allowed_extensions.join(", ")
+        ));
+    }
+    Ok(path)
+}
+
+/// Scans `app_dir` for `.db` files and returns a sorted, deduplicated list of tree names,
+/// optionally excluding a specific tree name.
+fn list_tree_names(app_dir: &Path, exclude: Option<&str>) -> Vec<String> {
     let mut trees = Vec::new();
-    if let Ok(entries) = fs::read_dir(&state.app_dir) {
+    if let Ok(entries) = fs::read_dir(app_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("db") {
                 if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    trees.push(stem.to_string());
+                    if exclude.map_or(true, |ex| stem != ex) {
+                        trees.push(stem.to_string());
+                    }
                 }
             }
         }
     }
     trees.sort();
     trees.dedup();
-    Ok(trees)
+    trees
+}
+
+/// Escapes LaTeX special characters to prevent markup corruption and command injection.
+fn escape_latex(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '\\' => out.push_str(r"\textbackslash{}"),
+            '{' => out.push_str(r"\{"),
+            '}' => out.push_str(r"\}"),
+            '$' => out.push_str(r"\$"),
+            '&' => out.push_str(r"\&"),
+            '#' => out.push_str(r"\#"),
+            '^' => out.push_str(r"\textasciicircum{}"),
+            '_' => out.push_str(r"\_"),
+            '~' => out.push_str(r"\textasciitilde{}"),
+            '%' => out.push_str(r"\%"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn get_trees(state: State<AppState>) -> Result<Vec<String>, String> {
+    Ok(list_tree_names(&state.app_dir, None))
 }
 
 #[tauri::command]
 fn switch_tree(state: State<AppState>, tree_name: String) -> Result<(), String> {
-    let db_path = state.app_dir.join(format!("{}.db", tree_name));
+    let valid_name = validate_tree_name(&tree_name)?;
+    let db_path = state.app_dir.join(format!("{}.db", valid_name));
     let new_conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     *conn = new_conn;
     let mut active = state.active_tree.lock().map_err(|e| e.to_string())?;
-    *active = tree_name;
+    *active = valid_name.to_string();
     Ok(())
 }
 
+/// Deletes a tree database (including WAL/SHM sidecar files) safely after releasing file locks.
 pub fn delete_tree_internal(
-    app_dir: &std::path::Path,
+    app_dir: &Path,
     conn: &mut Connection,
     active: &mut String,
     tree_name: &str,
 ) -> Result<Vec<String>, String> {
-    if tree_name.is_empty() || tree_name.contains('/') || tree_name.contains('\\') || tree_name.contains("..") {
-        return Err("Ungültiger Stammbaum-Name".into());
-    }
+    let valid_name = validate_tree_name(tree_name)?;
 
     // Vorhandene Bäume ermitteln (ohne den zu löschenden)
-    let mut remaining_trees = Vec::new();
-    if let Ok(entries) = fs::read_dir(app_dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("db") {
-                if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                    if stem != tree_name {
-                        remaining_trees.push(stem.to_string());
-                    }
-                }
-            }
-        }
-    }
-    remaining_trees.sort();
-    remaining_trees.dedup();
+    let remaining_trees = list_tree_names(app_dir, Some(valid_name));
 
     // Immer zuerst WAL-Checkpoint durchführen und auf initialisierte In-Memory-DB wechseln,
     // damit alle File-Locks auf Windows garantiert sofort freigegeben werden.
@@ -171,15 +240,20 @@ pub fn delete_tree_internal(
     *conn = db::init_in_memory_database().map_err(|e| e.to_string())?;
 
     // Alle zugehörigen Dateien dieses Stammbaums sammeln und physisch von der Festplatte entfernen
+    let db_file = format!("{}.db", valid_name);
+    let db_prefix = format!("{}.db-", valid_name);
+    let sqlite_file = format!("{}.sqlite", valid_name);
+    let sqlite_prefix = format!("{}.sqlite-", valid_name);
+
     let mut files_to_delete = Vec::new();
     if let Ok(entries) = fs::read_dir(app_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
-                if file_name == format!("{}.db", tree_name)
-                    || file_name.starts_with(&format!("{}.db-", tree_name))
-                    || file_name == format!("{}.sqlite", tree_name)
-                    || file_name.starts_with(&format!("{}.sqlite-", tree_name))
+                if file_name == db_file
+                    || file_name.starts_with(&db_prefix)
+                    || file_name == sqlite_file
+                    || file_name.starts_with(&sqlite_prefix)
                 {
                     files_to_delete.push(path);
                 }
@@ -203,7 +277,7 @@ pub fn delete_tree_internal(
 
     // Falls noch andere Stammbäume existieren, auf einen verbleibenden wechseln.
     // Falls der letzte Stammbaum gelöscht wurde, KEINEN neuen Baum anlegen (active = "", remaining_trees = []).
-    if !active.is_empty() && *active != tree_name && remaining_trees.contains(active) {
+    if !active.is_empty() && active.as_str() != valid_name && remaining_trees.contains(active) {
         let keep_path = app_dir.join(format!("{}.db", active));
         *conn = db::init_database(&keep_path).map_err(|e| e.to_string())?;
     } else if let Some(first) = remaining_trees.first() {
@@ -211,7 +285,7 @@ pub fn delete_tree_internal(
         *conn = db::init_database(&next_path).map_err(|e| e.to_string())?;
         *active = first.clone();
     } else {
-        *active = String::new();
+        active.clear();
     }
 
     Ok(remaining_trees)
@@ -227,150 +301,301 @@ fn delete_tree(state: State<AppState>, tree_name: String) -> Result<Vec<String>,
 #[tauri::command]
 fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    
-    let mut codes_stmt = conn.prepare("SELECT proband_id, person_id, henry_code, generation FROM proband_henry_codes").map_err(|e| e.to_string())?;
-    let code_rows = codes_stmt.query_map([], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i32>(3)?))
-    }).map_err(|e| e.to_string())?;
+
+    let mut codes_stmt = conn
+        .prepare("SELECT proband_id, person_id, henry_code, generation FROM proband_henry_codes")
+        .map_err(|e| e.to_string())?;
+    let code_rows = codes_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
 
     let mut codes_map: HashMap<String, HashMap<String, ProbandData>> = HashMap::new();
     for r in code_rows {
-        if let Ok((proband_id, person_id, henry_code, generation)) = r {
-            codes_map.entry(person_id).or_default().insert(proband_id, ProbandData { henry_code, generation });
-        }
+        let (proband_id, person_id, henry_code, generation) = r.map_err(|e| e.to_string())?;
+        codes_map
+            .entry(person_id)
+            .or_default()
+            .insert(proband_id, ProbandData { henry_code, generation });
     }
 
     let mut spouse_map: HashMap<String, Vec<SpouseConnection>> = HashMap::new();
     let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut family_parents: HashMap<String, Vec<String>> = HashMap::new();
 
-    let mut fam_stmt = conn.prepare("SELECT id, husband_id, wife_id, marriage_date, divorce_date, is_divorced, json_data FROM families").unwrap();
-    let fam_rows = fam_stmt.query_map([], |row| {
-        Ok((
-            row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?,
-            row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, bool>(5)?,
-            row.get::<_, String>(6)?
-        ))
-    }).unwrap();
-    
+    let mut fam_stmt = conn
+        .prepare("SELECT id, husband_id, wife_id, marriage_date, divorce_date, is_divorced, json_data FROM families")
+        .map_err(|e| e.to_string())?;
+    let fam_rows = fam_stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
+                row.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
     for f in fam_rows {
-        if let Ok((fam_id, h_opt, w_opt, m_date, d_date, is_divorced, json_str)) = f {
-            let mut m_place = None;
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                if let Some(marr) = json_val.get("MARR") {
-                    if let Some(plac) = marr.get("PLAC") {
-                        m_place = plac.as_str().map(|s| s.to_string());
-                    }
+        let (fam_id, h_opt, w_opt, m_date, d_date, is_divorced, json_str) =
+            f.map_err(|e| e.to_string())?;
+
+        let m_place = serde_json::from_str::<serde_json::Value>(&json_str)
+            .ok()
+            .and_then(|val| {
+                val.get("MARR")?
+                    .get("PLAC")?
+                    .as_str()
+                    .map(ToOwned::to_owned)
+            });
+
+        let mut parents = Vec::with_capacity(2);
+        if let Some(ref h) = h_opt {
+            parents.push(h.clone());
+        }
+        if let Some(ref w) = w_opt {
+            parents.push(w.clone());
+        }
+        family_parents.insert(fam_id, parents);
+
+        if let (Some(h), Some(w)) = (h_opt, w_opt) {
+            let conn_w = SpouseConnection {
+                id: w.clone(),
+                date: m_date.clone(),
+                place: m_place.clone(),
+                divorce_date: d_date.clone(),
+                is_divorced,
+            };
+            let conn_h = SpouseConnection {
+                id: h.clone(),
+                date: m_date,
+                place: m_place,
+                divorce_date: d_date,
+                is_divorced,
+            };
+
+            let h_spouses = spouse_map.entry(h.clone()).or_default();
+            if !h_spouses.iter().any(|c| c.id == w) {
+                h_spouses.push(conn_w);
+            }
+
+            let w_spouses = spouse_map.entry(w).or_default();
+            if !w_spouses.iter().any(|c| c.id == h) {
+                w_spouses.push(conn_h);
+            }
+        }
+    }
+
+    let mut pc_stmt = conn
+        .prepare("SELECT family_id, child_id FROM parent_child")
+        .map_err(|e| e.to_string())?;
+    let pc_rows = pc_stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for pc in pc_rows {
+        let (fam_id, child_id) = pc.map_err(|e| e.to_string())?;
+        if let Some(parents) = family_parents.get(&fam_id) {
+            let p_list = parent_map.entry(child_id).or_default();
+            for p in parents {
+                if !p_list.contains(p) {
+                    p_list.push(p.clone());
                 }
             }
-            
-            let mut parents = Vec::new();
-            if let Some(h) = h_opt.clone() { parents.push(h.clone()); }
-            if let Some(w) = w_opt.clone() { parents.push(w.clone()); }
-            family_parents.insert(fam_id, parents);
-
-            if let (Some(h), Some(w)) = (h_opt, w_opt) {
-                let conn_w = SpouseConnection { id: w.clone(), date: m_date.clone(), place: m_place.clone(), divorce_date: d_date.clone(), is_divorced };
-                let conn_h = SpouseConnection { id: h.clone(), date: m_date, place: m_place, divorce_date: d_date, is_divorced };
-                
-                if !spouse_map.entry(h.clone()).or_default().iter().any(|c| c.id == w) { spouse_map.get_mut(&h).unwrap().push(conn_w); }
-                if !spouse_map.entry(w.clone()).or_default().iter().any(|c| c.id == h) { spouse_map.get_mut(&w).unwrap().push(conn_h); }
-            }
         }
     }
 
-    let mut pc_stmt = conn.prepare("SELECT family_id, child_id FROM parent_child").unwrap();
-    let pc_rows = pc_stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).unwrap();
-    for pc in pc_rows {
-        if let Ok((fam_id, child_id)) = pc {
-            if let Some(parents) = family_parents.get(&fam_id) {
-                let p_list = parent_map.entry(child_id).or_default();
-                for p in parents { if !p_list.contains(p) { p_list.push(p.clone()); } }
-            }
-        }
-    }
+    let mut stmt = conn
+        .prepare("SELECT id, given_name, surname, sex, birth_date, birth_place, death_date, death_place, json(json_data) FROM individuals ORDER BY surname, given_name")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            let id: String = row.get(0)?;
+            let extra_str: Option<String> = row.get(8)?;
+            let extra_json = extra_str
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| serde_json::json!({}));
+            let p_data = codes_map.remove(&id).unwrap_or_default();
+            let spouses = spouse_map.remove(&id).unwrap_or_default();
+            let parents = parent_map.remove(&id).unwrap_or_default();
 
-    let mut stmt = conn.prepare("SELECT id, given_name, surname, sex, birth_date, birth_place, death_date, death_place, json(json_data) FROM individuals ORDER BY surname, given_name").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| {
-        let id: String = row.get(0)?;
-        let extra_str: Option<String> = row.get(8)?;
-        let extra_json = extra_str.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or(serde_json::json!({}));
-        let p_data = codes_map.remove(&id).unwrap_or_default();
-        let spouses = spouse_map.remove(&id).unwrap_or_default();
-        let parents = parent_map.remove(&id).unwrap_or_default();
-
-        Ok(Person {
-            id, given_name: row.get(1)?, surname: row.get(2)?, sex: row.get(3)?,
-            birth_date: row.get(4)?, birth_place: row.get(5)?, death_date: row.get(6)?, death_place: row.get(7)?,
-            proband_data: p_data, gedcom_extra: extra_json, spouses, parent_ids: parents,
+            Ok(Person {
+                id,
+                given_name: row.get(1)?,
+                surname: row.get(2)?,
+                sex: row.get(3)?,
+                birth_date: row.get(4)?,
+                birth_place: row.get(5)?,
+                death_date: row.get(6)?,
+                death_place: row.get(7)?,
+                proband_data: p_data,
+                gedcom_extra: extra_json,
+                spouses,
+                parent_ids: parents,
+            })
         })
-    }).map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?;
 
     let mut result = Vec::new();
-    for p in rows { result.push(p.map_err(|e| e.to_string())?); }
+    for p in rows {
+        result.push(p.map_err(|e| e.to_string())?);
+    }
     Ok(result)
 }
 
 #[tauri::command]
-fn get_person_details(state: State<AppState>, person_id: String) -> Result<PersonDetailsResponse, String> {
+fn get_person_details(
+    state: State<AppState>,
+    person_id: String,
+) -> Result<PersonDetailsResponse, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
 
-    let mut stmt = conn.prepare("SELECT f.husband_id, f.wife_id FROM parent_child pc JOIN families f ON pc.family_id = f.id WHERE pc.child_id = ?1").map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT f.husband_id, f.wife_id FROM parent_child pc JOIN families f ON pc.family_id = f.id WHERE pc.child_id = ?1")
+        .map_err(|e| e.to_string())?;
     let mut parent_ids = Vec::new();
-    let rows = stmt.query_map([&person_id], |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?))).map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([&person_id], |row| {
+            Ok((
+                row.get::<_, Option<String>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
     for r in rows {
-        if let Ok((h, w)) = r {
-            if let Some(hid) = h { parent_ids.push(hid); }
-            if let Some(wid) = w { parent_ids.push(wid); }
+        let (h, w) = r.map_err(|e| e.to_string())?;
+        if let Some(hid) = h {
+            parent_ids.push(hid);
+        }
+        if let Some(wid) = w {
+            parent_ids.push(wid);
         }
     }
     let mut parents = Vec::new();
-    for pid in parent_ids { if let Some(p) = fetch_relative_person(&conn, &pid)? { parents.push(p); } }
-
-    let mut stmt = conn.prepare("SELECT pc.child_id FROM parent_child pc WHERE pc.family_id IN (SELECT family_id FROM parent_child WHERE child_id = ?1) AND pc.child_id != ?1").map_err(|e| e.to_string())?;
-    let sibling_ids: Vec<String> = stmt.query_map([&person_id], |row| row.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
-    let mut siblings = Vec::new();
-    for sid in sibling_ids { if let Some(s) = fetch_relative_person(&conn, &sid)? { siblings.push(s); } }
-
-    let mut stmt = conn.prepare("SELECT id, husband_id, wife_id, marriage_date, divorce_date, is_divorced FROM families WHERE husband_id = ?1 OR wife_id = ?1").map_err(|e| e.to_string())?;
-    let spouses_iter = stmt.query_map([&person_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, Option<String>>(2)?, row.get::<_, Option<String>>(3)?, row.get::<_, Option<String>>(4)?, row.get::<_, bool>(5)?))
-    }).map_err(|e| e.to_string())?;
-
-    let mut spouses = Vec::new();
-    let mut children_ids = Vec::new();
-
-    for res in spouses_iter {
-        if let Ok((fam_id, h_id, w_id, m_date, d_date, is_divorced)) = res {
-            let partner_id = if h_id.as_deref() == Some(&person_id) { w_id } else { h_id };
-            let mut partner_name = None; let mut partner_henry = None; let mut partner_birth = None; let mut partner_death = None;
-
-            if let Some(pid) = &partner_id {
-                if let Some(p) = fetch_relative_person(&conn, pid)? {
-                    partner_name = Some(format!("{}, {}", p.surname.as_deref().unwrap_or(""), p.given_name.as_deref().unwrap_or("N.N.")));
-                    partner_henry = p.henry_code; partner_birth = p.birth_date; partner_death = p.death_date;
-                }
-            }
-
-            spouses.push(SpouseInfo { family_id: fam_id.clone(), partner_id, partner_name, partner_henry, partner_birth, partner_death, marriage_date: m_date, divorce_date: d_date, is_divorced });
-
-            let mut c_stmt = conn.prepare("SELECT child_id FROM parent_child WHERE family_id = ?1").map_err(|e| e.to_string())?;
-            let c_ids: Vec<String> = c_stmt.query_map([&fam_id], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
-            for cid in c_ids { if !children_ids.contains(&cid) { children_ids.push(cid); } }
+    for pid in parent_ids {
+        if let Some(p) = fetch_relative_person(&conn, &pid)? {
+            parents.push(p);
         }
     }
 
+    let mut stmt = conn
+        .prepare("SELECT pc.child_id FROM parent_child pc WHERE pc.family_id IN (SELECT family_id FROM parent_child WHERE child_id = ?1) AND pc.child_id != ?1")
+        .map_err(|e| e.to_string())?;
+    let sibling_ids: Vec<String> = stmt
+        .query_map([&person_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    let mut siblings = Vec::new();
+    for sid in sibling_ids {
+        if let Some(s) = fetch_relative_person(&conn, &sid)? {
+            siblings.push(s);
+        }
+    }
+
+    let mut stmt = conn
+        .prepare("SELECT id, husband_id, wife_id, marriage_date, divorce_date, is_divorced FROM families WHERE husband_id = ?1 OR wife_id = ?1")
+        .map_err(|e| e.to_string())?;
+    let spouses_iter = stmt
+        .query_map([&person_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, bool>(5)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut spouses = Vec::new();
+    let mut children_ids = Vec::new();
+    let mut c_stmt = conn
+        .prepare("SELECT child_id FROM parent_child WHERE family_id = ?1")
+        .map_err(|e| e.to_string())?;
+
+    for res in spouses_iter {
+        let (fam_id, h_id, w_id, m_date, d_date, is_divorced) = res.map_err(|e| e.to_string())?;
+        let partner_id = if h_id.as_deref() == Some(person_id.as_str()) {
+            w_id
+        } else {
+            h_id
+        };
+        let mut partner_name = None;
+        let mut partner_henry = None;
+        let mut partner_birth = None;
+        let mut partner_death = None;
+
+        if let Some(pid) = &partner_id {
+            if let Some(p) = fetch_relative_person(&conn, pid)? {
+                partner_name = Some(format!(
+                    "{}, {}",
+                    p.surname.as_deref().unwrap_or(""),
+                    p.given_name.as_deref().unwrap_or("N.N.")
+                ));
+                partner_henry = p.henry_code;
+                partner_birth = p.birth_date;
+                partner_death = p.death_date;
+            }
+        }
+
+        let c_ids: Vec<String> = c_stmt
+            .query_map([&fam_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        for cid in c_ids {
+            if !children_ids.contains(&cid) {
+                children_ids.push(cid);
+            }
+        }
+
+        spouses.push(SpouseInfo {
+            family_id: fam_id,
+            partner_id,
+            partner_name,
+            partner_henry,
+            partner_birth,
+            partner_death,
+            marriage_date: m_date,
+            divorce_date: d_date,
+            is_divorced,
+        });
+    }
+
     let mut children = Vec::new();
-    for cid in children_ids { if let Some(c) = fetch_relative_person(&conn, &cid)? { children.push(c); } }
+    for cid in children_ids {
+        if let Some(c) = fetch_relative_person(&conn, &cid)? {
+            children.push(c);
+        }
+    }
     children.sort_by(|a, b| {
         let ka = parse_birth_sort_key(a.birth_date.as_deref().unwrap_or(""));
         let kb = parse_birth_sort_key(b.birth_date.as_deref().unwrap_or(""));
         ka.cmp(&kb).then_with(|| a.id.cmp(&b.id))
     });
 
-    let mut stmt = conn.prepare("SELECT json_data FROM individuals WHERE id = ?1").map_err(|e| e.to_string())?;
-    let json_str: String = stmt.query_row([&person_id], |row| row.get(0)).map_err(|e| e.to_string())?;
-    let json_val: serde_json::Value = serde_json::from_str(&json_str).unwrap_or(serde_json::json!({}));
+    let mut stmt = conn
+        .prepare("SELECT json_data FROM individuals WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+    let json_str: String = stmt
+        .query_row([&person_id], |row| row.get(0))
+        .map_err(|e| e.to_string())?;
+    let json_val: serde_json::Value =
+        serde_json::from_str(&json_str).unwrap_or_else(|_| serde_json::json!({}));
 
     let mut notes = Vec::new();
     let mut gedcom_tags: HashMap<String, String> = HashMap::new();
@@ -378,51 +603,113 @@ fn get_person_details(state: State<AppState>, person_id: String) -> Result<Perso
     if let Some(obj) = json_val.as_object() {
         for (k, v) in obj {
             if k == "NOTE" {
-                if let Some(s) = v.as_str() { notes.push(s.to_string()); }
-                else if let Some(map) = v.as_object() { if let Some(val) = map.get("_val").and_then(|x| x.as_str()) { notes.push(val.to_string()); } }
+                if let Some(s) = v.as_str() {
+                    notes.push(s.to_string());
+                } else if let Some(map) = v.as_object() {
+                    if let Some(val) = map.get("_val").and_then(|x| x.as_str()) {
+                        notes.push(val.to_string());
+                    }
+                }
             }
-            if let Some(s) = v.as_str() { gedcom_tags.insert(k.clone(), s.to_string()); } 
-            else if let Some(map) = v.as_object() {
+            if let Some(s) = v.as_str() {
+                gedcom_tags.insert(k.clone(), s.to_string());
+            } else if let Some(map) = v.as_object() {
                 let main_val = map.get("_val").and_then(|x| x.as_str()).unwrap_or("");
-                let sub_str = map.iter().filter(|(sub_k, _)| *sub_k != "_val").map(|(sub_k, sub_v)| format!("{}: {}", sub_k, sub_v.as_str().unwrap_or(""))).collect::<Vec<String>>().join(", ");
-                let combined = if sub_str.is_empty() { main_val.to_string() } else { format!("{} ({})", main_val, sub_str) };
+                let sub_str = map
+                    .iter()
+                    .filter(|(sub_k, _)| *sub_k != "_val")
+                    .map(|(sub_k, sub_v)| format!("{}: {}", sub_k, sub_v.as_str().unwrap_or("")))
+                    .collect::<Vec<String>>()
+                    .join(", ");
+                let combined = if sub_str.is_empty() {
+                    main_val.to_string()
+                } else {
+                    format!("{} ({})", main_val, sub_str)
+                };
                 gedcom_tags.insert(k.clone(), combined);
             }
         }
     }
-    Ok(PersonDetailsResponse { parents, siblings, spouses, children, notes, gedcom_tags })
+    Ok(PersonDetailsResponse {
+        parents,
+        siblings,
+        spouses,
+        children,
+        notes,
+        gedcom_tags,
+    })
 }
 
 fn fetch_relative_person(conn: &Connection, id: &str) -> Result<Option<RelativePerson>, String> {
-    let mut stmt = conn.prepare("SELECT id, given_name, surname, henry_code, birth_date, death_date FROM individuals WHERE id = ?1").map_err(|e| e.to_string())?;
-    let mut rows = stmt.query_map([id], |row| {
-        Ok(RelativePerson { id: row.get(0)?, given_name: row.get(1)?, surname: row.get(2)?, henry_code: row.get(3)?, birth_date: row.get(4)?, death_date: row.get(5)? })
-    }).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, given_name, surname, henry_code, birth_date, death_date FROM individuals WHERE id = ?1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([id], |row| {
+            Ok(RelativePerson {
+                id: row.get(0)?,
+                given_name: row.get(1)?,
+                surname: row.get(2)?,
+                henry_code: row.get(3)?,
+                birth_date: row.get(4)?,
+                death_date: row.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
 
-    if let Some(row) = rows.next() { Ok(Some(row.map_err(|e| e.to_string())?)) } else { Ok(None) }
+    if let Some(row) = rows.next() {
+        Ok(Some(row.map_err(|e| e.to_string())?))
+    } else {
+        Ok(None)
+    }
 }
 
 #[tauri::command]
 fn get_root_ancestors(state: State<AppState>) -> Result<Vec<RootAncestorConfig>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT r.person_id, r.starting_code, i.given_name, i.surname FROM root_ancestors r JOIN individuals i ON r.person_id = i.id ORDER BY r.starting_code ASC").map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |row| { Ok(RootAncestorConfig { person_id: row.get(0)?, starting_code: row.get(1)?, given_name: row.get(2)?, surname: row.get(3)? }) }).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT r.person_id, r.starting_code, i.given_name, i.surname FROM root_ancestors r JOIN individuals i ON r.person_id = i.id ORDER BY r.starting_code ASC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RootAncestorConfig {
+                person_id: row.get(0)?,
+                starting_code: row.get(1)?,
+                given_name: row.get(2)?,
+                surname: row.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
     let mut result = Vec::new();
-    for r in rows { result.push(r.map_err(|e| e.to_string())?); }
+    for r in rows {
+        result.push(r.map_err(|e| e.to_string())?);
+    }
     Ok(result)
 }
 
 #[tauri::command]
-fn add_root_ancestor(state: State<AppState>, person_id: String, starting_code: String) -> Result<(), String> {
+fn add_root_ancestor(
+    state: State<AppState>,
+    person_id: String,
+    starting_code: String,
+) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("INSERT OR REPLACE INTO root_ancestors (person_id, starting_code) VALUES (?1, ?2)", rusqlite::params![person_id, starting_code]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR REPLACE INTO root_ancestors (person_id, starting_code) VALUES (?1, ?2)",
+        rusqlite::params![person_id, starting_code],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
 #[tauri::command]
 fn remove_root_ancestor(state: State<AppState>, person_id: String) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    conn.execute("DELETE FROM root_ancestors WHERE person_id = ?1", rusqlite::params![person_id]).map_err(|e| e.to_string())?;
+    conn.execute(
+        "DELETE FROM root_ancestors WHERE person_id = ?1",
+        rusqlite::params![person_id],
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -432,6 +719,8 @@ fn calculate_henry_codes_from_roots(state: State<AppState>) -> Result<(), String
     calculate_henry_codes_internal(&mut conn)
 }
 
+/// Parses heterogeneous date strings (ISO, German DD.MM.YYYY, and GEDCOM date tokens)
+/// into a comparable `(year, month, day)` tuple for chronological sibling sorting.
 fn parse_birth_sort_key(date: &str) -> (i32, i32, i32) {
     let s = date.trim().to_uppercase();
     if s.is_empty() {
@@ -442,8 +731,14 @@ fn parse_birth_sort_key(date: &str) -> (i32, i32, i32) {
     let parts_dash: Vec<&str> = s.split(|c| c == '-' || c == '/').collect();
     if parts_dash.len() >= 2 && parts_dash[0].len() == 4 {
         if let Ok(y) = parts_dash[0].parse::<i32>() {
-            let m = parts_dash.get(1).and_then(|v| v.parse::<i32>().ok()).unwrap_or(99);
-            let d = parts_dash.get(2).and_then(|v| v.split_whitespace().next()?.parse::<i32>().ok()).unwrap_or(99);
+            let m = parts_dash
+                .get(1)
+                .and_then(|v| v.parse::<i32>().ok())
+                .unwrap_or(99);
+            let d = parts_dash
+                .get(2)
+                .and_then(|v| v.split_whitespace().next()?.parse::<i32>().ok())
+                .unwrap_or(99);
             return (y, m, d);
         }
     }
@@ -507,154 +802,240 @@ fn parse_birth_sort_key(date: &str) -> (i32, i32, i32) {
     (year, month, day)
 }
 
+/// Computes Henry codes for all configured root ancestors (proband_henry_codes table).
+/// Uses bulk queries and parent-indexed adjacency lists to avoid N+1 SQL queries.
 fn calculate_henry_codes_internal(conn: &mut Connection) -> Result<(), String> {
     // 1. Geburtsdaten laden für die Sortierung der Geschwister
     let mut birth_dates: HashMap<String, String> = HashMap::new();
     {
-        let mut stmt = conn.prepare("SELECT id, birth_date FROM individuals").map_err(|e| e.to_string())?;
-        let iter = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, birth_date FROM individuals")
+            .map_err(|e| e.to_string())?;
+        let iter = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
         for res in iter {
-            if let Ok((id, Some(bd))) = res {
+            let (id, bd_opt) = res.map_err(|e| e.to_string())?;
+            if let Some(bd) = bd_opt {
                 birth_dates.insert(id, bd);
             }
         }
     }
 
-    let families_map: HashMap<String, (Option<String>, Option<String>, Vec<String>)> = {
-        let mut fam_stmt = conn.prepare("SELECT id, husband_id, wife_id FROM families").map_err(|e| e.to_string())?;
-        let fam_iter = fam_stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).map_err(|e| e.to_string())?;
-        let mut map = HashMap::new();
-        for fam_res in fam_iter {
-            if let Ok((fam_id, h, w)) = fam_res {
-                let mut c_stmt = conn.prepare("SELECT child_id FROM parent_child WHERE family_id = ?").map_err(|e| e.to_string())?;
-                let children: Vec<String> = c_stmt.query_map([&fam_id], |r| r.get(0)).map_err(|e| e.to_string())?.filter_map(Result::ok).collect();
-                map.insert(fam_id, (h, w, children));
-            }
+    // 2. Alle Eltern-Kind-Zuordnungen in einer einzigen Abfrage laden (vermeidet N+1 Queries)
+    let mut children_by_family: HashMap<String, Vec<String>> = HashMap::new();
+    {
+        let mut pc_stmt = conn
+            .prepare("SELECT family_id, child_id FROM parent_child")
+            .map_err(|e| e.to_string())?;
+        let pc_iter = pc_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for pc_res in pc_iter {
+            let (fam_id, child_id) = pc_res.map_err(|e| e.to_string())?;
+            children_by_family.entry(fam_id).or_default().push(child_id);
         }
-        map
-    };
+    }
+
+    // 3. Familien laden und nach Elternteil indizieren für O(1)-Zugriff während der BFS
+    struct FamilyRecord {
+        husband: Option<String>,
+        wife: Option<String>,
+        children: Vec<String>,
+    }
+
+    let mut families: Vec<FamilyRecord> = Vec::new();
+    let mut parent_to_families: HashMap<String, Vec<usize>> = HashMap::new();
+    {
+        let mut fam_stmt = conn
+            .prepare("SELECT id, husband_id, wife_id FROM families")
+            .map_err(|e| e.to_string())?;
+        let fam_iter = fam_stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+
+        for fam_res in fam_iter {
+            let (fam_id, husband, wife) = fam_res.map_err(|e| e.to_string())?;
+            let children = children_by_family.remove(&fam_id).unwrap_or_default();
+            let idx = families.len();
+            if let Some(ref h) = husband {
+                parent_to_families.entry(h.clone()).or_default().push(idx);
+            }
+            if let Some(ref w) = wife {
+                parent_to_families.entry(w.clone()).or_default().push(idx);
+            }
+            families.push(FamilyRecord {
+                husband,
+                wife,
+                children,
+            });
+        }
+    }
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
-    tx.execute("DELETE FROM proband_henry_codes", []).map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM proband_henry_codes", [])
+        .map_err(|e| e.to_string())?;
 
     let mut roots = Vec::new();
     {
-        let mut stmt = tx.prepare("SELECT person_id, starting_code FROM root_ancestors").map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
-        for r in rows { if let Ok(res) = r { roots.push(res); } }
+        let mut stmt = tx
+            .prepare("SELECT person_id, starting_code FROM root_ancestors")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            roots.push(r.map_err(|e| e.to_string())?);
+        }
     }
 
-    for (proband_id, start_code) in roots {
-        // 1. Alle Nachkommen des gewählten Stammahnen ermitteln (Teil des Stammbaums dieses Stammahnen)
-        let mut tree_members = std::collections::HashSet::new();
-        let mut member_queue = std::collections::VecDeque::new();
-        tree_members.insert(proband_id.clone());
-        member_queue.push_back(proband_id.clone());
+    {
+        let mut insert_stmt = tx
+            .prepare("INSERT INTO proband_henry_codes (proband_id, person_id, henry_code, generation) VALUES (?1, ?2, ?3, ?4)")
+            .map_err(|e| e.to_string())?;
 
-        while let Some(curr) = member_queue.pop_front() {
-            for (_fam_id, (husband, wife, children)) in &families_map {
-                if husband.as_ref() == Some(&curr) || wife.as_ref() == Some(&curr) {
-                    for c in children {
-                        if c != &curr && !tree_members.contains(c) {
-                            tree_members.insert(c.clone());
-                            member_queue.push_back(c.clone());
+        for (proband_id, start_code) in roots {
+            // Schritt A: Alle Nachkommen des gewählten Stammahnen ermitteln (Teil des Stammbaums dieses Stammahnen)
+            let mut tree_members = HashSet::new();
+            let mut member_queue = VecDeque::new();
+            tree_members.insert(proband_id.clone());
+            member_queue.push_back(proband_id.clone());
+
+            while let Some(curr) = member_queue.pop_front() {
+                if let Some(fam_indices) = parent_to_families.get(&curr) {
+                    for &fam_idx in fam_indices {
+                        for c in &families[fam_idx].children {
+                            if c != &curr && tree_members.insert(c.clone()) {
+                                member_queue.push_back(c.clone());
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // 2. Henry-Codes vergeben:
-        // - Wenn der Vater Teil des Stammbaums des gewählten Stammahnen ist (auch wenn beide Eltern im Stammbaum sind),
-        //   werden die Linien patrilinear unter dem Vater weitergeführt.
-        // - Wenn der Vater NICHT Teil des Stammbaums des gewählten Stammahnen ist,
-        //   werden die Kinder unter der Mutter weitergeführt.
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back((proband_id.clone(), start_code, 1));
-        let mut visited = std::collections::HashSet::new();
+            // Schritt B: Henry-Codes vergeben:
+            // - Wenn der Vater Teil des Stammbaums des gewählten Stammahnen ist (auch wenn beide Eltern im Stammbaum sind),
+            //   werden die Linien patrilinear unter dem Vater weitergeführt.
+            // - Wenn der Vater NICHT Teil des Stammbaums des gewählten Stammahnen ist,
+            //   werden die Kinder unter der Mutter weitergeführt.
+            let mut queue = VecDeque::new();
+            queue.push_back((proband_id.clone(), start_code, 1));
+            let mut visited = HashSet::new();
 
-        while let Some((curr_id, code, gen_num)) = queue.pop_front() {
-            if visited.contains(&curr_id) { continue; }
-            visited.insert(curr_id.clone());
+            while let Some((curr_id, code, gen_num)) = queue.pop_front() {
+                if !visited.insert(curr_id.clone()) {
+                    continue;
+                }
 
-            tx.execute(
-                "INSERT INTO proband_henry_codes (proband_id, person_id, henry_code, generation) VALUES (?1, ?2, ?3, ?4)",
-                rusqlite::params![proband_id, curr_id, code, gen_num],
-            ).map_err(|e| e.to_string())?;
+                insert_stmt
+                    .execute(rusqlite::params![&proband_id, &curr_id, &code, gen_num])
+                    .map_err(|e| e.to_string())?;
 
-            let mut all_children = Vec::new();
-            for (_fam_id, (husband, wife, children)) in &families_map {
-                let father_in_tree = husband.as_ref().map_or(false, |h| tree_members.contains(h));
-                let mother_in_tree = wife.as_ref().map_or(false, |w| tree_members.contains(w));
+                let mut all_children = Vec::new();
+                if let Some(fam_indices) = parent_to_families.get(&curr_id) {
+                    for &fam_idx in fam_indices {
+                        let fam = &families[fam_idx];
+                        let father_in_tree = fam
+                            .husband
+                            .as_ref()
+                            .is_some_and(|h| tree_members.contains(h));
+                        let mother_in_tree =
+                            fam.wife.as_ref().is_some_and(|w| tree_members.contains(w));
 
-                let should_continue_here = if father_in_tree {
-                    husband.as_ref() == Some(&curr_id)
-                } else if mother_in_tree {
-                    wife.as_ref() == Some(&curr_id)
-                } else {
-                    false
-                };
+                        let should_continue_here = if father_in_tree {
+                            fam.husband.as_deref() == Some(curr_id.as_str())
+                        } else if mother_in_tree {
+                            fam.wife.as_deref() == Some(curr_id.as_str())
+                        } else {
+                            false
+                        };
 
-                if should_continue_here {
-                    for c in children { 
-                        // Verhindert Zyklen, Rekursion und doppelte Aufnahme
-                        if !visited.contains(c) && !all_children.contains(c) && c != &curr_id {
-                            all_children.push(c.clone()); 
-                        } 
+                        if should_continue_here {
+                            for c in &fam.children {
+                                // Verhindert Zyklen, Rekursion und doppelte Aufnahme
+                                if !visited.contains(c) && !all_children.contains(c) && c != &curr_id
+                                {
+                                    all_children.push(c.clone());
+                                }
+                            }
+                        }
                     }
                 }
-            }
-            
-            // Kinder chronologisch nach Geburtsdatum sortieren (Jahr, Monat, Tag; mit ID als Tie-Breaker)
-            all_children.sort_by(|a, b| {
-                let ka = parse_birth_sort_key(birth_dates.get(a).map(|s| s.as_str()).unwrap_or(""));
-                let kb = parse_birth_sort_key(birth_dates.get(b).map(|s| s.as_str()).unwrap_or(""));
-                ka.cmp(&kb).then_with(|| a.cmp(b))
-            });
-            
-            for (idx, child_id) in all_children.iter().enumerate() {
-                queue.push_back((child_id.clone(), crate::db::generate_next_henry_code(&code, idx + 1), gen_num + 1));
+
+                // Kinder chronologisch nach Geburtsdatum sortieren (Jahr, Monat, Tag; mit ID als Tie-Breaker)
+                all_children.sort_by(|a, b| {
+                    let ka = parse_birth_sort_key(birth_dates.get(a).map_or("", String::as_str));
+                    let kb = parse_birth_sort_key(birth_dates.get(b).map_or("", String::as_str));
+                    ka.cmp(&kb).then_with(|| a.cmp(b))
+                });
+
+                for (idx, child_id) in all_children.into_iter().enumerate() {
+                    let next_code = crate::db::generate_next_henry_code(&code, idx + 1);
+                    queue.push_back((child_id, next_code, gen_num + 1));
+                }
             }
         }
     }
+
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 
-fn check_parent_recursion(conn: &Connection, person_id: &str, parent_candidate_id: &str) -> Result<bool, String> {
+/// Checks via BFS whether `person_id` is already an ancestor of `parent_candidate_id`
+/// to prevent cyclic parent-child relationships.
+fn check_parent_recursion(
+    conn: &Connection,
+    person_id: &str,
+    parent_candidate_id: &str,
+) -> Result<bool, String> {
     if person_id == parent_candidate_id {
         return Ok(true); // Direkte Selbstreferenz
     }
-    
-    let mut queue = std::collections::VecDeque::new();
-    let mut visited = std::collections::HashSet::new();
+
+    let mut queue = VecDeque::new();
+    let mut visited = HashSet::new();
     queue.push_back(parent_candidate_id.to_string());
     visited.insert(parent_candidate_id.to_string());
 
-    let mut stmt = conn.prepare(
-        "SELECT f.husband_id, f.wife_id 
-         FROM parent_child pc 
-         JOIN families f ON pc.family_id = f.id 
-         WHERE pc.child_id = ?1"
-    ).map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.husband_id, f.wife_id 
+             FROM parent_child pc 
+             JOIN families f ON pc.family_id = f.id 
+             WHERE pc.child_id = ?1",
+        )
+        .map_err(|e| e.to_string())?;
 
     while let Some(current_id) = queue.pop_front() {
-        let parent_rows = stmt.query_map([&current_id], |row| {
-            Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<String>>(1)?))
-        }).map_err(|e| e.to_string())?;
+        let parent_rows = stmt
+            .query_map([&current_id], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
 
         for p_res in parent_rows {
-            if let Ok((h_opt, w_opt)) = p_res {
-                for parent_opt in [h_opt, w_opt] {
-                    if let Some(pid) = parent_opt {
-                        if pid == person_id {
-                            return Ok(true); // Rekursion erkannt! person_id ist ein Vorfahre von parent_candidate_id
-                        }
-                        if !visited.contains(&pid) {
-                            visited.insert(pid.clone());
-                            queue.push_back(pid);
-                        }
-                    }
+            let (h_opt, w_opt) = p_res.map_err(|e| e.to_string())?;
+            for pid in [h_opt, w_opt].into_iter().flatten() {
+                if pid == person_id {
+                    return Ok(true); // Rekursion erkannt! person_id ist ein Vorfahre von parent_candidate_id
+                }
+                if visited.insert(pid.clone()) {
+                    queue.push_back(pid);
                 }
             }
         }
@@ -678,30 +1059,43 @@ fn update_person_parents(
     // 1. Prüfen auf Rekursion (Zyklusprüfung)
     if let Some(fid) = &f_opt {
         if check_parent_recursion(&conn, &person_id, fid)? {
-            return Err("Rekursion erkannt: Der gewählte Vater ist bereits ein Nachfahre dieser Person.".to_string());
+            return Err(
+                "Rekursion erkannt: Der gewählte Vater ist bereits ein Nachfahre dieser Person."
+                    .to_string(),
+            );
         }
     }
     if let Some(mid) = &m_opt {
         if check_parent_recursion(&conn, &person_id, mid)? {
-            return Err("Rekursion erkannt: Die gewählte Mutter ist bereits ein Nachfahre dieser Person.".to_string());
+            return Err(
+                "Rekursion erkannt: Die gewählte Mutter ist bereits ein Nachfahre dieser Person."
+                    .to_string(),
+            );
         }
     }
 
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     // Bisherige Elternschaften des Kindes lösen
-    tx.execute("DELETE FROM parent_child WHERE child_id = ?1", [&person_id]).map_err(|e| e.to_string())?;
+    tx.execute(
+        "DELETE FROM parent_child WHERE child_id = ?1",
+        [&person_id],
+    )
+    .map_err(|e| e.to_string())?;
 
     // Falls mindestens ein Elternteil gesetzt ist:
     if f_opt.is_some() || m_opt.is_some() {
         // Prüfen, ob bereits eine Familie mit diesen Eltern existiert
         let existing_fam_id: Option<String> = {
-            let mut stmt = tx.prepare(
-                "SELECT id FROM families 
-                 WHERE (husband_id = ?1 OR (?1 IS NULL AND husband_id IS NULL))
-                   AND (wife_id = ?2 OR (?2 IS NULL AND wife_id IS NULL))"
-            ).map_err(|e| e.to_string())?;
-            stmt.query_row(rusqlite::params![f_opt, m_opt], |row| row.get(0)).ok()
+            let mut stmt = tx
+                .prepare(
+                    "SELECT id FROM families 
+                     WHERE (husband_id = ?1 OR (?1 IS NULL AND husband_id IS NULL))
+                       AND (wife_id = ?2 OR (?2 IS NULL AND wife_id IS NULL))",
+                )
+                .map_err(|e| e.to_string())?;
+            stmt.query_row(rusqlite::params![f_opt, m_opt], |row| row.get(0))
+                .ok()
         };
 
         let target_fam_id = if let Some(fid) = existing_fam_id {
@@ -711,20 +1105,22 @@ fn update_person_parents(
             tx.execute(
                 "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, '{}')",
                 rusqlite::params![fid, f_opt, m_opt],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
             fid
         };
 
         tx.execute(
             "INSERT INTO parent_child (family_id, child_id) VALUES (?1, ?2)",
             rusqlite::params![target_fam_id, person_id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     tx.commit().map_err(|e| e.to_string())?;
 
     // Henry-Codes im Baum neu berechnen
-    let _ = calculate_henry_codes_internal(&mut conn);
+    calculate_henry_codes_internal(&mut conn)?;
 
     Ok(())
 }
@@ -738,6 +1134,8 @@ fn format_person_name(given: Option<&str>, surname: Option<&str>) -> String {
     }
 }
 
+/// Validates whether `id_str` conforms to the GEDCOM XREF format (max 20 ASCII chars,
+/// starting with an alphanumeric character or `_`).
 pub fn is_valid_gedcom_xref(id_str: &str) -> bool {
     let s = id_str.trim();
     if s.is_empty() {
@@ -756,20 +1154,16 @@ pub fn is_valid_gedcom_xref(id_str: &str) -> bool {
     }
 
     let mut chars = inner.chars();
-    let first = chars.next().unwrap();
+    let Some(first) = chars.next() else {
+        return false;
+    };
     // Erstes Zeichen muss alphanumerisch oder ein Unterstrich sein (nicht '#' oder sonstige Sonderzeichen)
     if !(first.is_ascii_alphanumeric() || first == '_') {
         return false;
     }
 
     // Nachfolgende Zeichen: alphanumerisch, Unterstrich, Doppelpunkt, Punkt, Bindestrich
-    for c in chars {
-        if !(c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == ':' || c == '-') {
-            return false;
-        }
-    }
-
-    true
+    chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | ':' | '-'))
 }
 
 pub fn normalize_gedcom_xref(id_str: &str) -> String {
@@ -788,27 +1182,31 @@ fn get_next_person_id(state: State<AppState>) -> Result<String, String> {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn add_person(
-    state: State<AppState>, 
-    target_person_id: Option<String>, 
-    relation_type: Option<String>, 
-    given_name: String, 
-    surname: String, 
+    state: State<AppState>,
+    target_person_id: Option<String>,
+    relation_type: Option<String>,
+    given_name: String,
+    surname: String,
     sex: String,
-    birth_date: Option<String>, 
+    birth_date: Option<String>,
     birth_place: Option<String>,
-    death_date: Option<String>, 
+    death_date: Option<String>,
     death_place: Option<String>,
     custom_id: Option<String>,
 ) -> Result<String, String> {
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
 
     let new_id = if let Some(cid) = custom_id.filter(|s| !s.trim().is_empty()) {
-        let trimmed = cid.trim().to_string();
-        if !is_valid_gedcom_xref(&trimmed) {
-            return Err(format!("Ungültige XREF-ID '{}'. Entspricht nicht dem GEDCOM-Format.", trimmed));
+        let trimmed = cid.trim();
+        if !is_valid_gedcom_xref(trimmed) {
+            return Err(format!(
+                "Ungültige XREF-ID '{}'. Entspricht nicht dem GEDCOM-Format.",
+                trimmed
+            ));
         }
-        let normalized = normalize_gedcom_xref(&trimmed);
+        let normalized = normalize_gedcom_xref(trimmed);
         let existing: Option<(Option<String>, Option<String>)> = conn
             .query_row(
                 "SELECT given_name, surname FROM individuals WHERE id = ?1",
@@ -818,7 +1216,10 @@ fn add_person(
             .ok();
         if let Some((g, s)) = existing {
             let name = format_person_name(g.as_deref(), s.as_deref());
-            return Err(format!("Die ID '{}' wird bereits von '{}' verwendet.", normalized, name));
+            return Err(format!(
+                "Die ID '{}' wird bereits von '{}' verwendet.",
+                normalized, name
+            ));
         }
         normalized
     } else {
@@ -835,36 +1236,89 @@ fn add_person(
     tx.execute(
         "INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, birth_place, death_date, death_place, json_data) VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         rusqlite::params![new_id, given_name, surname, sex, birth_date, birth_place, death_date, death_place, json_val.to_string()],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
 
     if let (Some(target_id), Some(rel)) = (target_person_id, relation_type) {
         if rel == "child" {
-            let mut fam_stmt = tx.prepare("SELECT id FROM families WHERE husband_id = ?1 OR wife_id = ?1").map_err(|e| e.to_string())?;
-            let fam_id: Option<String> = fam_stmt.query_row([&target_id], |row| row.get(0)).ok();
-            let target_fam_id = if let Some(fid) = fam_id { fid } else {
+            let fam_id: Option<String> = tx
+                .query_row(
+                    "SELECT id FROM families WHERE husband_id = ?1 OR wife_id = ?1",
+                    [&target_id],
+                    |row| row.get(0),
+                )
+                .ok();
+            let target_fam_id = if let Some(fid) = fam_id {
+                fid
+            } else {
                 let fid = format!("F{}", uuid::Uuid::new_v4().simple());
-                let is_male = tx.query_row("SELECT sex FROM individuals WHERE id = ?1", [&target_id], |row| row.get::<_, String>(0)).unwrap_or_default() == "M";
-                let (h, w) = if is_male { (Some(target_id.clone()), None) } else { (None, Some(target_id.clone())) };
-                tx.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, ?4)", rusqlite::params![fid, h, w, "{}"]).map_err(|e| e.to_string())?;
+                let is_male = tx
+                    .query_row(
+                        "SELECT sex FROM individuals WHERE id = ?1",
+                        [&target_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .unwrap_or_default()
+                    == "M";
+                let (h, w) = if is_male {
+                    (Some(target_id.as_str()), None)
+                } else {
+                    (None, Some(target_id.as_str()))
+                };
+                tx.execute(
+                    "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, ?4)",
+                    rusqlite::params![fid, h, w, "{}"],
+                )
+                .map_err(|e| e.to_string())?;
                 fid
             };
-            tx.execute("INSERT INTO parent_child (family_id, child_id) VALUES (?1, ?2)", rusqlite::params![target_fam_id, new_id]).map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO parent_child (family_id, child_id) VALUES (?1, ?2)",
+                rusqlite::params![target_fam_id, new_id],
+            )
+            .map_err(|e| e.to_string())?;
         } else if rel == "parent" {
             let fam_id = format!("F{}", uuid::Uuid::new_v4().simple());
-            let is_male = sex == "M";
-            let (h, w) = if is_male { (Some(new_id.clone()), None) } else { (None, Some(new_id.clone())) };
-            tx.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, ?4)", rusqlite::params![fam_id, h, w, "{}"]).map_err(|e| e.to_string())?;
-            tx.execute("INSERT INTO parent_child (family_id, child_id) VALUES (?1, ?2)", rusqlite::params![fam_id, target_id]).map_err(|e| e.to_string())?;
+            let (h, w) = if sex == "M" {
+                (Some(new_id.as_str()), None)
+            } else {
+                (None, Some(new_id.as_str()))
+            };
+            tx.execute(
+                "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, ?4)",
+                rusqlite::params![fam_id, h, w, "{}"],
+            )
+            .map_err(|e| e.to_string())?;
+            tx.execute(
+                "INSERT INTO parent_child (family_id, child_id) VALUES (?1, ?2)",
+                rusqlite::params![fam_id, target_id],
+            )
+            .map_err(|e| e.to_string())?;
         } else if rel == "spouse" {
             let fam_id = format!("F{}", uuid::Uuid::new_v4().simple());
-            let is_male = tx.query_row("SELECT sex FROM individuals WHERE id = ?1", [&target_id], |row| row.get::<_, String>(0)).unwrap_or_default() == "M";
-            let (h, w) = if is_male { (Some(target_id.clone()), Some(new_id.clone())) } else { (Some(new_id.clone()), Some(target_id.clone())) };
-            tx.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, ?4)", rusqlite::params![fam_id, h, w, "{}"]).map_err(|e| e.to_string())?;
+            let is_male = tx
+                .query_row(
+                    "SELECT sex FROM individuals WHERE id = ?1",
+                    [&target_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap_or_default()
+                == "M";
+            let (h, w) = if is_male {
+                (Some(target_id.as_str()), Some(new_id.as_str()))
+            } else {
+                (Some(new_id.as_str()), Some(target_id.as_str()))
+            };
+            tx.execute(
+                "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, ?4)",
+                rusqlite::params![fam_id, h, w, "{}"],
+            )
+            .map_err(|e| e.to_string())?;
         }
     }
 
     tx.commit().map_err(|e| e.to_string())?;
-    let _ = calculate_henry_codes_internal(&mut conn);
+    calculate_henry_codes_internal(&mut conn)?;
     Ok(new_id)
 }
 
@@ -878,57 +1332,37 @@ fn rename_person_references(
         conn.execute(
             "UPDATE individuals SET id = ?1, xref_id = ?1 WHERE id = ?2",
             rusqlite::params![to_id, from_id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     } else {
         conn.execute(
             "UPDATE individuals SET id = ?1 WHERE id = ?2",
             rusqlite::params![to_id, from_id],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
     }
 
-    conn.execute(
+    let queries = [
         "UPDATE families SET husband_id = ?1 WHERE husband_id = ?2",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
-
-    conn.execute(
         "UPDATE families SET wife_id = ?1 WHERE wife_id = ?2",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
-
-    conn.execute(
         "UPDATE parent_child SET child_id = ?1 WHERE child_id = ?2",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
-
-    conn.execute(
         "UPDATE events SET owner_id = ?1 WHERE owner_id = ?2 AND owner_type = 'INDI'",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
-
-    conn.execute(
         "UPDATE root_ancestors SET person_id = ?1 WHERE person_id = ?2",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
-
-    conn.execute(
         "UPDATE proband_henry_codes SET person_id = ?1 WHERE person_id = ?2",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
-
-    conn.execute(
         "UPDATE proband_henry_codes SET proband_id = ?1 WHERE proband_id = ?2",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
-
-    conn.execute(
         "UPDATE design_layouts SET proband_id = ?1 WHERE proband_id = ?2",
-        rusqlite::params![to_id, from_id],
-    ).map_err(|e| e.to_string())?;
+    ];
+
+    for sql in queries {
+        conn.execute(sql, rusqlite::params![to_id, from_id])
+            .map_err(|e| e.to_string())?;
+    }
 
     Ok(())
 }
 
+/// Atomically updates a batch of persons, supporting cyclic ID swaps via a 2-phase temporary
+/// ID rename across all relational tables and stored JSON design layouts.
 fn update_persons_batch_internal(
     conn: &mut Connection,
     updates: Vec<PersonUpdate>,
@@ -940,7 +1374,10 @@ fn update_persons_batch_internal(
     // 1. Pflichtfeld- und GEDCOM-Allowed-Values-Prüfung: Keine leere ID erlaubt und muss GEDCOM XREF entsprechen
     for u in &updates {
         let trimmed_new_id = u.person.id.trim();
-        let name = format_person_name(u.person.given_name.as_deref(), u.person.surname.as_deref());
+        let name = format_person_name(
+            u.person.given_name.as_deref(),
+            u.person.surname.as_deref(),
+        );
         if trimmed_new_id.is_empty() {
             return Err(format!(
                 "Das Feld ID ist ein Pflichtfeld. Die ID von '{}' darf nicht leer sein.",
@@ -962,43 +1399,46 @@ fn update_persons_batch_internal(
     }
 
     // 2. Gesamtheitliche Konsistenz: Duplikate innerhalb der geänderten Liste prüfen
-    let mut target_id_map: HashMap<String, String> = HashMap::new();
+    let mut target_id_map: HashMap<String, String> = HashMap::with_capacity(updates.len());
     for u in &updates {
-        let new_id = u.person.id.clone();
-        let name = format_person_name(u.person.given_name.as_deref(), u.person.surname.as_deref());
-        if let Some(first_name) = target_id_map.get(&new_id) {
+        let name = format_person_name(
+            u.person.given_name.as_deref(),
+            u.person.surname.as_deref(),
+        );
+        if let Some(first_name) = target_id_map.get(&u.person.id) {
             return Err(format!(
                 "Die ID '{}' wird mehrfach vergeben (an '{}' und '{}').",
-                new_id, first_name, name
+                u.person.id, first_name, name
             ));
         }
-        target_id_map.insert(new_id, name);
+        target_id_map.insert(u.person.id.clone(), name);
     }
 
     // 3. Gesamtheitliche Konsistenz: Kollision gegen bestehende, unberührte Personen in DB prüfen
-    let batch_orig_ids: std::collections::HashSet<String> = updates.iter().map(|u| u.original_id.clone()).collect();
+    let batch_orig_ids: HashSet<&str> = updates.iter().map(|u| u.original_id.as_str()).collect();
     for u in &updates {
-        let new_id = &u.person.id;
-        if new_id != &u.original_id {
-            // Wenn die Ziel-ID Teil der geänderten Gruppe ist, wird dieser Platz von einer anderen Person geräumt (z.B. Tausch/Zyklus)
-            if !batch_orig_ids.contains(new_id) {
-                let existing: Option<(Option<String>, Option<String>)> = conn
-                    .query_row(
-                        "SELECT given_name, surname FROM individuals WHERE id = ?1",
-                        [new_id],
-                        |r| Ok((r.get(0)?, r.get(1)?)),
-                    )
-                    .ok();
-                if let Some((g, s)) = existing {
-                    let name = format_person_name(g.as_deref(), s.as_deref());
-                    return Err(format!("Die ID '{}' wird bereits von '{}' verwendet.", new_id, name));
-                }
+        let new_id = u.person.id.as_str();
+        if new_id != u.original_id && !batch_orig_ids.contains(new_id) {
+            let existing: Option<(Option<String>, Option<String>)> = conn
+                .query_row(
+                    "SELECT given_name, surname FROM individuals WHERE id = ?1",
+                    [new_id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+            if let Some((g, s)) = existing {
+                let name = format_person_name(g.as_deref(), s.as_deref());
+                return Err(format!(
+                    "Die ID '{}' wird bereits von '{}' verwendet.",
+                    new_id, name
+                ));
             }
         }
     }
 
     // 4. Durchführung der Änderungen mit 2-Phasen Rename (unter Deaktivierung der Fremdschlüssel-Prüfung)
-    conn.execute_batch("PRAGMA foreign_keys = OFF;").map_err(|e| e.to_string())?;
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")
+        .map_err(|e| e.to_string())?;
 
     let res = (|| -> Result<(), String> {
         let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -1006,8 +1446,7 @@ fn update_persons_batch_internal(
         // Phase 1: Vorübergehend auf eindeutige Temp-IDs umbenennen (verhindert Primary-Key-Konflikte bei Zyklen & Tausch)
         let mut temp_renames: Vec<(&PersonUpdate, String)> = Vec::new();
         for u in &updates {
-            let new_id = &u.person.id;
-            if new_id != &u.original_id {
+            if u.person.id != u.original_id {
                 let temp_id = format!("__TMP_ID_{}__", uuid::Uuid::new_v4().simple());
                 rename_person_references(&tx, &u.original_id, &temp_id, false)?;
                 temp_renames.push((u, temp_id));
@@ -1016,14 +1455,13 @@ fn update_persons_batch_internal(
 
         // Phase 2: Von Temp-IDs auf endgültige neue IDs umbenennen
         for (u, temp_id) in &temp_renames {
-            let new_id = &u.person.id;
-            rename_person_references(&tx, temp_id, new_id, true)?;
+            rename_person_references(&tx, temp_id, &u.person.id, true)?;
         }
 
         // Phase 3: Alle Datensatz-Felder der Personen aktualisieren
         for u in &updates {
-            let target_id = &u.person.id;
-            let json_str = serde_json::to_string(&u.person.gedcom_extra).unwrap_or_else(|_| "{}".to_string());
+            let json_str = serde_json::to_string(&u.person.gedcom_extra)
+                .unwrap_or_else(|_| "{}".to_string());
             tx.execute(
                 "UPDATE individuals SET given_name = ?1, surname = ?2, sex = ?3, birth_date = ?4, birth_place = ?5, death_date = ?6, death_place = ?7, json_data = ?8 WHERE id = ?9",
                 rusqlite::params![
@@ -1035,30 +1473,45 @@ fn update_persons_batch_internal(
                     u.person.death_date,
                     u.person.death_place,
                     json_str,
-                    target_id
+                    u.person.id
                 ],
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
 
-        // Phase 4: Layout-Referenzen in design_layouts JSON-Daten aktualisieren
-        for u in &updates {
-            let new_id = &u.person.id;
-            if new_id != &u.original_id {
-                let old_pat = format!("\"{}\"", u.original_id);
-                let new_pat = format!("\"{}\"", new_id);
-                let mut stmt = tx.prepare("SELECT id, layout_data FROM design_layouts").map_err(|e| e.to_string())?;
-                let rows: Vec<(String, String)> = stmt
-                    .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                    .map_err(|e| e.to_string())?
-                    .filter_map(Result::ok)
-                    .collect();
+        // Phase 4: Layout-Referenzen in design_layouts JSON-Daten ebenfall 2-phasig aktualisieren,
+        // damit ein ID-Tausch (I1 <-> I2) im JSON nicht kollidiert.
+        if !temp_renames.is_empty() {
+            let mut stmt = tx
+                .prepare("SELECT id, layout_data FROM design_layouts")
+                .map_err(|e| e.to_string())?;
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .map_err(|e| e.to_string())?
+                .filter_map(Result::ok)
+                .collect();
 
-                for (dl_id, ldata) in rows {
+            for (dl_id, mut ldata) in rows {
+                let mut modified = false;
+                for (u, temp_id) in &temp_renames {
+                    let old_pat = format!("\"{}\"", u.original_id);
                     if ldata.contains(&old_pat) {
-                        let updated = ldata.replace(&old_pat, &new_pat);
-                        tx.execute("UPDATE design_layouts SET layout_data = ?1 WHERE id = ?2", [&updated, &dl_id])
-                            .map_err(|e| e.to_string())?;
+                        let tmp_pat = format!("\"{}\"", temp_id);
+                        ldata = ldata.replace(&old_pat, &tmp_pat);
+                        modified = true;
                     }
+                }
+                if modified {
+                    for (u, temp_id) in &temp_renames {
+                        let tmp_pat = format!("\"{}\"", temp_id);
+                        let new_pat = format!("\"{}\"", u.person.id);
+                        ldata = ldata.replace(&tmp_pat, &new_pat);
+                    }
+                    tx.execute(
+                        "UPDATE design_layouts SET layout_data = ?1 WHERE id = ?2",
+                        [&ldata, &dl_id],
+                    )
+                    .map_err(|e| e.to_string())?;
                 }
             }
         }
@@ -1067,11 +1520,12 @@ fn update_persons_batch_internal(
         Ok(())
     })();
 
-    let _ = conn.execute_batch("PRAGMA foreign_keys = ON;");
+    let fk_restore = conn.execute_batch("PRAGMA foreign_keys = ON;");
     res?;
+    fk_restore.map_err(|e| e.to_string())?;
 
     // Henry-Codes neu berechnen
-    let _ = calculate_henry_codes_internal(conn);
+    calculate_henry_codes_internal(conn)?;
     Ok(())
 }
 
@@ -1082,25 +1536,35 @@ fn update_persons_batch(state: State<AppState>, updates: Vec<PersonUpdate>) -> R
 }
 
 #[tauri::command]
-fn update_person(state: State<AppState>, person: Person, original_id: Option<String>) -> Result<(), String> {
+fn update_person(
+    state: State<AppState>,
+    person: Person,
+    original_id: Option<String>,
+) -> Result<(), String> {
     let orig_id = original_id.unwrap_or_else(|| person.id.clone());
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-    update_persons_batch_internal(&mut conn, vec![PersonUpdate { original_id: orig_id, person }])
+    update_persons_batch_internal(
+        &mut conn,
+        vec![PersonUpdate {
+            original_id: orig_id,
+            person,
+        }],
+    )
 }
 
 #[tauri::command]
 fn import_gedcom_file(state: State<AppState>, file_path: String) -> Result<usize, String> {
+    let path = validate_user_file_path(&file_path, &["ged", "gedcom"])?;
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut active = state.active_tree.lock().map_err(|e| e.to_string())?;
-    let path = std::path::Path::new(&file_path);
 
     if active.is_empty() {
         let tree_name = path
             .file_stem()
             .and_then(|s| s.to_str())
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty() && !s.contains('/') && !s.contains('\\') && !s.contains(".."))
-            .unwrap_or_else(|| "stammbaum".to_string());
+            .and_then(|s| validate_tree_name(s).ok())
+            .unwrap_or("stammbaum")
+            .to_string();
         let db_path = state.app_dir.join(format!("{}.db", tree_name));
         *conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
         *active = tree_name;
@@ -1108,44 +1572,122 @@ fn import_gedcom_file(state: State<AppState>, file_path: String) -> Result<usize
 
     let count = parser::import_gedcom(&mut conn, path)?;
     // Henry-Codes für eventuell bestehende Probanden berechnen
-    let _ = calculate_henry_codes_internal(&mut conn);
+    calculate_henry_codes_internal(&mut conn)?;
     Ok(count)
 }
 
 #[tauri::command]
-fn find_relationship_path(state: State<AppState>, start_id: String, target_id: String) -> Result<Vec<String>, String> {
+fn find_relationship_path(
+    state: State<AppState>,
+    start_id: String,
+    target_id: String,
+) -> Result<Vec<String>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut stmt = conn.prepare("SELECT family_id, child_id FROM parent_child").map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT family_id, child_id FROM parent_child")
+        .map_err(|e| e.to_string())?;
     let mut graph = DiGraph::<String, ()>::new();
     let mut nodes: HashMap<String, NodeIndex> = HashMap::new();
-    let edges = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))).map_err(|e| e.to_string())?;
+    let edges = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
 
     for edge in edges {
         let (f_id, c_id) = edge.map_err(|e| e.to_string())?;
-        let f_idx = *nodes.entry(f_id.clone()).or_insert_with(|| graph.add_node(f_id));
-        let c_idx = *nodes.entry(c_id.clone()).or_insert_with(|| graph.add_node(c_id));
+        let f_idx = *nodes
+            .entry(f_id.clone())
+            .or_insert_with(|| graph.add_node(f_id));
+        let c_idx = *nodes
+            .entry(c_id.clone())
+            .or_insert_with(|| graph.add_node(c_id));
         graph.add_edge(f_idx, c_idx, ());
         graph.add_edge(c_idx, f_idx, ());
     }
 
-    let (&start_idx, &target_idx) = match (nodes.get(&start_id), nodes.get(&target_id)) { (Some(s), Some(t)) => (s, t), _ => return Err("Person nicht gefunden.".into()) };
-    if let Some((_, path)) = astar(&graph, start_idx, |finish| finish == target_idx, |_| 1, |_| 0) { Ok(path.into_iter().map(|idx| graph[idx].clone()).collect()) } else { Ok(vec![]) }
+    let (&start_idx, &target_idx) = match (nodes.get(&start_id), nodes.get(&target_id)) {
+        (Some(s), Some(t)) => (s, t),
+        _ => return Err("Person nicht gefunden.".into()),
+    };
+
+    if let Some((_, path)) = astar(
+        &graph,
+        start_idx,
+        |finish| finish == target_idx,
+        |_| 1,
+        |_| 0,
+    ) {
+        Ok(path.into_iter().map(|idx| graph[idx].clone()).collect())
+    } else {
+        Ok(vec![])
+    }
 }
 
 #[tauri::command]
-fn export_latex_pdf(state: State<AppState>, output_dir: String) -> Result<String, String> {
+async fn export_latex_pdf(state: State<'_, AppState>, output_dir: String) -> Result<String, String> {
+    let trimmed_dir = output_dir.trim().to_string();
+    if trimmed_dir.is_empty() || trimmed_dir.contains('\0') {
+        return Err("Ungültiges Ausgabeverzeichnis.".into());
+    }
+
     let persons = get_all_persons(state)?;
-    let mut tera = Tera::default();
-    tera.add_raw_template("chronik.tex", r#"\documentclass[a4paper,11pt]{scrbook}\usepackage[utf8]{inputenc}\begin{document}\chapter{Familienverzeichnis}{% for p in persons %}\textbf{ {{ p.surname }}, {{ p.given_name | default(value="N.N.") }} }\\{% endfor %}\end{document}"#).map_err(|e| e.to_string())?;
-    let mut context = Context::new(); context.insert("persons", &persons);
-    let rendered_tex = tera.render("chronik.tex", &context).map_err(|e| e.to_string())?;
-    let tex_path = PathBuf::from(&output_dir).join("chronik.tex");
-    fs::write(&tex_path, rendered_tex).map_err(|e| e.to_string())?;
-    let mut cmd = Command::new("pdflatex");
-    cmd.arg("-interaction=nonstopmode").arg("-output-directory").arg(&output_dir).arg(&tex_path);
-    #[cfg(target_os = "windows")] cmd.creation_flags(0x08000000);
-    let output = cmd.output().map_err(|e| format!("Fehler beim Start von pdflatex: {}", e))?;
-    if output.status.success() { Ok(format!("{}/chronik.pdf", output_dir)) } else { Err(format!("LaTeX-Fehler:\n{}", String::from_utf8_lossy(&output.stdout))) }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        #[derive(Serialize)]
+        struct SafeLatexPerson {
+            surname: String,
+            given_name: String,
+        }
+
+        let safe_persons: Vec<SafeLatexPerson> = persons
+            .into_iter()
+            .map(|p| SafeLatexPerson {
+                surname: escape_latex(p.surname.as_deref().unwrap_or("")),
+                given_name: escape_latex(p.given_name.as_deref().unwrap_or("N.N.")),
+            })
+            .collect();
+
+        let mut tera = Tera::default();
+        tera.add_raw_template(
+            "chronik.tex",
+            r#"\documentclass[a4paper,11pt]{scrbook}\usepackage[utf8]{inputenc}\begin{document}\chapter{Familienverzeichnis}{% for p in persons %}\textbf{ {{ p.surname }}, {{ p.given_name }} }\\{% endfor %}\end{document}"#,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let mut context = Context::new();
+        context.insert("persons", &safe_persons);
+        let rendered_tex = tera
+            .render("chronik.tex", &context)
+            .map_err(|e| e.to_string())?;
+
+        let out_path = PathBuf::from(&trimmed_dir);
+        let tex_path = out_path.join("chronik.tex");
+        fs::write(&tex_path, rendered_tex).map_err(|e| e.to_string())?;
+
+        let mut cmd = Command::new("pdflatex");
+        cmd.arg("-no-shell-escape")
+            .arg("-interaction=nonstopmode")
+            .arg("-output-directory")
+            .arg(&out_path)
+            .arg(&tex_path);
+        #[cfg(target_os = "windows")]
+        cmd.creation_flags(0x08000000);
+
+        let output = cmd
+            .output()
+            .map_err(|e| format!("Fehler beim Start von pdflatex: {}", e))?;
+        if output.status.success() {
+            Ok(out_path.join("chronik.pdf").to_string_lossy().into_owned())
+        } else {
+            Err(format!(
+                "LaTeX-Fehler:\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            ))
+        }
+    })
+    .await
+    .map_err(|e| format!("Hintergrund-Task fehlgeschlagen: {}", e))?
 }
 
 #[tauri::command]
@@ -1159,33 +1701,35 @@ fn save_design_layout(
 ) -> Result<DesignLayoutEntry, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
 
-    if let Some(ref oid) = overwrite_id {
-        if !oid.is_empty() {
-            conn.execute(
-                "UPDATE design_layouts SET name = ?1, created_at = ?2, layout_data = ?3 WHERE id = ?4",
-                [&name, &created_at, &layout_data, oid],
-            ).map_err(|e| e.to_string())?;
-            return Ok(DesignLayoutEntry {
-                id: oid.clone(),
-                proband_id,
-                name,
-                created_at,
-                layout_data,
-            });
-        }
+    if let Some(oid) = overwrite_id.filter(|s| !s.is_empty()) {
+        conn.execute(
+            "UPDATE design_layouts SET name = ?1, created_at = ?2, layout_data = ?3 WHERE id = ?4",
+            [&name, &created_at, &layout_data, &oid],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(DesignLayoutEntry {
+            id: oid,
+            proband_id,
+            name,
+            created_at,
+            layout_data,
+        });
     }
 
-    let existing_id: Option<String> = conn.query_row(
-        "SELECT id FROM design_layouts WHERE proband_id = ?1 AND name = ?2 LIMIT 1",
-        [&proband_id, &name],
-        |r| r.get(0),
-    ).ok();
+    let existing_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM design_layouts WHERE proband_id = ?1 AND name = ?2 LIMIT 1",
+            [&proband_id, &name],
+            |r| r.get(0),
+        )
+        .ok();
 
     if let Some(eid) = existing_id {
         conn.execute(
             "UPDATE design_layouts SET created_at = ?1, layout_data = ?2 WHERE id = ?3",
             [&created_at, &layout_data, &eid],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         return Ok(DesignLayoutEntry {
             id: eid,
             proband_id,
@@ -1199,7 +1743,8 @@ fn save_design_layout(
     conn.execute(
         "INSERT INTO design_layouts (id, proband_id, name, created_at, layout_data) VALUES (?1, ?2, ?3, ?4, ?5)",
         [&id, &proband_id, &name, &created_at, &layout_data],
-    ).map_err(|e| e.to_string())?;
+    )
+    .map_err(|e| e.to_string())?;
     Ok(DesignLayoutEntry {
         id,
         proband_id,
@@ -1209,56 +1754,47 @@ fn save_design_layout(
     })
 }
 
+fn map_design_layout_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DesignLayoutEntry> {
+    Ok(DesignLayoutEntry {
+        id: r.get(0)?,
+        proband_id: r.get(1)?,
+        name: r.get(2)?,
+        created_at: r.get(3)?,
+        layout_data: r.get(4)?,
+    })
+}
+
 #[tauri::command]
 fn get_design_layouts(
     state: State<'_, AppState>,
     proband_id: Option<String>,
 ) -> Result<Vec<DesignLayoutEntry>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
-    let mut list = Vec::new();
-    if let Some(pid) = proband_id {
-        if !pid.is_empty() {
-            let mut stmt = conn.prepare(
-                "SELECT id, proband_id, name, created_at, layout_data FROM design_layouts WHERE proband_id = ?1 ORDER BY created_at DESC"
-            ).map_err(|e| e.to_string())?;
-            let rows = stmt.query_map([&pid], |r| {
-                Ok(DesignLayoutEntry {
-                    id: r.get(0)?,
-                    proband_id: r.get(1)?,
-                    name: r.get(2)?,
-                    created_at: r.get(3)?,
-                    layout_data: r.get(4)?,
-                })
-            }).map_err(|e| e.to_string())?;
-            for row in rows.flatten() {
-                list.push(row);
-            }
-            return Ok(list);
-        }
+
+    if let Some(pid) = proband_id.filter(|s| !s.is_empty()) {
+        let mut stmt = conn
+            .prepare("SELECT id, proband_id, name, created_at, layout_data FROM design_layouts WHERE proband_id = ?1 ORDER BY created_at DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([&pid], map_design_layout_row)
+            .map_err(|e| e.to_string())?;
+        return rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string());
     }
-    let mut stmt = conn.prepare(
-        "SELECT id, proband_id, name, created_at, layout_data FROM design_layouts ORDER BY created_at DESC"
-    ).map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| {
-        Ok(DesignLayoutEntry {
-            id: r.get(0)?,
-            proband_id: r.get(1)?,
-            name: r.get(2)?,
-            created_at: r.get(3)?,
-            layout_data: r.get(4)?,
-        })
-    }).map_err(|e| e.to_string())?;
-    for row in rows.flatten() {
-        list.push(row);
-    }
-    Ok(list)
+
+    let mut stmt = conn
+        .prepare("SELECT id, proband_id, name, created_at, layout_data FROM design_layouts ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], map_design_layout_row)
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn delete_design_layout(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
+fn delete_design_layout(state: State<'_, AppState>, id: String) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
     conn.execute("DELETE FROM design_layouts WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
@@ -1266,46 +1802,188 @@ fn delete_design_layout(
 }
 
 #[tauri::command]
-fn save_design_file(file_path: String, content: String) -> Result<(), String> {
-    fs::write(&file_path, content).map_err(|e| e.to_string())
+fn save_latex_template(
+    state: State<'_, AppState>,
+    name: String,
+    created_at: String,
+    config_data: String,
+    overwrite_id: Option<String>,
+) -> Result<LatexTemplateEntry, String> {
+    let trimmed_name = name.trim().to_string();
+    if trimmed_name.is_empty() {
+        return Err("Vorlagenname darf nicht leer sein.".into());
+    }
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+
+    if let Some(oid) = overwrite_id.filter(|s| !s.is_empty()) {
+        conn.execute(
+            "UPDATE latex_export_templates SET name = ?1, created_at = ?2, config_data = ?3 WHERE id = ?4",
+            [&trimmed_name, &created_at, &config_data, &oid],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(LatexTemplateEntry {
+            id: oid,
+            name: trimmed_name,
+            created_at,
+            config_data,
+        });
+    }
+
+    let existing_id: Option<String> = conn
+        .query_row(
+            "SELECT id FROM latex_export_templates WHERE name = ?1 LIMIT 1",
+            [&trimmed_name],
+            |r| r.get(0),
+        )
+        .ok();
+
+    if let Some(eid) = existing_id {
+        conn.execute(
+            "UPDATE latex_export_templates SET created_at = ?1, config_data = ?2 WHERE id = ?3",
+            [&created_at, &config_data, &eid],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(LatexTemplateEntry {
+            id: eid,
+            name: trimmed_name,
+            created_at,
+            config_data,
+        });
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    conn.execute(
+        "INSERT INTO latex_export_templates (id, name, created_at, config_data) VALUES (?1, ?2, ?3, ?4)",
+        [&id, &trimmed_name, &created_at, &config_data],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(LatexTemplateEntry {
+        id,
+        name: trimmed_name,
+        created_at,
+        config_data,
+    })
 }
 
 #[tauri::command]
-fn read_design_file(file_path: String) -> Result<String, String> {
-    fs::read_to_string(&file_path).map_err(|e| e.to_string())
+fn get_latex_templates(state: State<'_, AppState>) -> Result<Vec<LatexTemplateEntry>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, created_at, config_data FROM latex_export_templates ORDER BY created_at DESC")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(LatexTemplateEntry {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                created_at: r.get(2)?,
+                config_data: r.get(3)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-fn save_binary_file(file_path: String, data: Vec<u8>) -> Result<(), String> {
-    fs::write(&file_path, data).map_err(|e| e.to_string())
+fn delete_latex_template(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM latex_export_templates WHERE id = ?1", [&id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn save_design_file(file_path: String, content: String) -> Result<(), String> {
+    validate_user_file_path(&file_path, &["json", "svg", "html", "htm", "tex"])?;
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::write(&file_path, content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn save_latex_export_bundle(
+    base_file_path: String,
+    files: Vec<LatexExportFilePayload>,
+) -> Result<Vec<String>, String> {
+    let base_path = validate_user_file_path(&base_file_path, &["tex"])?.to_path_buf();
+    let parent_dir = base_path
+        .parent()
+        .ok_or_else(|| "Zielverzeichnis konnte nicht ermittelt werden.".to_string())?
+        .to_path_buf();
+
+    if files.is_empty() {
+        return Err("Keine Exportdateien übergeben.".into());
+    }
+
+    for item in &files {
+        let fname = item.file_name.trim();
+        if fname.is_empty()
+            || fname.contains('/')
+            || fname.contains('\\')
+            || fname.contains("..")
+            || fname.contains('\0')
+        {
+            return Err(format!("Ungültiger Dateiname '{}'.", item.file_name));
+        }
+        validate_user_file_path(fname, &["tex"])?;
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut written_paths = Vec::with_capacity(files.len());
+        for item in files {
+            let target = parent_dir.join(item.file_name.trim());
+            fs::write(&target, item.content).map_err(|e| e.to_string())?;
+            written_paths.push(target.to_string_lossy().into_owned());
+        }
+        Ok(written_paths)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn read_design_file(file_path: String) -> Result<String, String> {
+    validate_user_file_path(&file_path, &["json"])?;
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::read_to_string(&file_path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn save_binary_file(file_path: String, data: Vec<u8>) -> Result<(), String> {
+    validate_user_file_path(&file_path, &["png", "pdf", "jpg", "jpeg", "svg"])?;
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::write(&file_path, data).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let app_dir = app.path().app_data_dir().expect("Kein App-Verzeichnis");
-            std::fs::create_dir_all(&app_dir).unwrap();
+            let app_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("Kein App-Verzeichnis verfügbar: {}", e))?;
+            fs::create_dir_all(&app_dir)
+                .map_err(|e| format!("App-Verzeichnis konnte nicht erstellt werden: {}", e))?;
 
-            let mut existing_trees = Vec::new();
-            if let Ok(entries) = fs::read_dir(&app_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("db") {
-                        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
-                            existing_trees.push(stem.to_string());
-                        }
-                    }
-                }
-            }
-            existing_trees.sort();
-            existing_trees.dedup();
+            let existing_trees = list_tree_names(&app_dir, None);
 
             let (conn, initial_tree) = if let Some(first) = existing_trees.first() {
-                let c = crate::db::init_database(&app_dir.join(format!("{}.db", first))).expect("DB Init Fehler");
+                let c = crate::db::init_database(&app_dir.join(format!("{}.db", first)))
+                    .map_err(|e| format!("DB Init Fehler: {}", e))?;
                 (c, first.clone())
             } else {
-                let c = crate::db::init_in_memory_database().expect("In-Memory DB Init Fehler");
+                let c = crate::db::init_in_memory_database()
+                    .map_err(|e| format!("In-Memory DB Init Fehler: {}", e))?;
                 (c, String::new())
             };
 
@@ -1319,10 +1997,33 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
-            get_trees, switch_tree, delete_tree, get_all_persons, get_person_details, find_relationship_path, export_latex_pdf,
-            import_gedcom_file, update_person, update_persons_batch, get_next_person_id, update_person_parents, add_person, get_root_ancestors, add_root_ancestor,
-            remove_root_ancestor, calculate_henry_codes_from_roots,
-            save_design_layout, get_design_layouts, delete_design_layout, save_design_file, read_design_file, save_binary_file
+            get_trees,
+            switch_tree,
+            delete_tree,
+            get_all_persons,
+            get_person_details,
+            find_relationship_path,
+            export_latex_pdf,
+            import_gedcom_file,
+            update_person,
+            update_persons_batch,
+            get_next_person_id,
+            update_person_parents,
+            add_person,
+            get_root_ancestors,
+            add_root_ancestor,
+            remove_root_ancestor,
+            calculate_henry_codes_from_roots,
+            save_design_layout,
+            get_design_layouts,
+            delete_design_layout,
+            save_latex_template,
+            get_latex_templates,
+            delete_latex_template,
+            save_design_file,
+            save_latex_export_bundle,
+            read_design_file,
+            save_binary_file
         ])
         .run(tauri::generate_context!())
         .expect("Tauri Error");
@@ -1335,7 +2036,13 @@ mod tests {
 
     #[test]
     fn test_delete_tree_removes_database_and_preserves_others() {
-        let temp_dir = std::env::temp_dir().join(format!("test_stammbaum_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let temp_dir = std::env::temp_dir().join(format!(
+            "test_stammbaum_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         fs::create_dir_all(&temp_dir).unwrap();
 
         // 1. Zwei Bäume anlegen
@@ -1355,7 +2062,8 @@ mod tests {
         let mut conn = db::init_database(&db1_path).unwrap();
 
         // 2. baum_a löschen
-        let remaining = delete_tree_internal(&temp_dir, &mut conn, &mut active, "baum_a").unwrap();
+        let remaining =
+            delete_tree_internal(&temp_dir, &mut conn, &mut active, "baum_a").unwrap();
 
         // 3. Prüfen: baum_a.db existiert nicht mehr
         assert!(!db1_path.exists(), "baum_a.db muss physisch gelöscht sein!");
@@ -1363,25 +2071,49 @@ mod tests {
         assert!(!temp_dir.join("baum_a.db-shm").exists());
 
         // 4. Prüfen: baum_b.db existiert weiterhin unberührt
-        assert!(db2_path.exists(), "baum_b.db darf nicht gelöscht worden sein!");
+        assert!(
+            db2_path.exists(),
+            "baum_b.db darf nicht gelöscht worden sein!"
+        );
         assert_eq!(active, "baum_b");
         assert_eq!(remaining, vec!["baum_b".to_string()]);
 
         // 5. In conn darf jetzt nur noch Erika aus baum_b existieren
-        let count_b: i64 = conn.query_row("SELECT count(*) FROM individuals WHERE id = 'I2'", [], |r| r.get(0)).unwrap();
+        let count_b: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM individuals WHERE id = 'I2'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_b, 1);
-        let count_a: i64 = conn.query_row("SELECT count(*) FROM individuals WHERE id = 'I1'", [], |r| r.get(0)).unwrap();
+        let count_a: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM individuals WHERE id = 'I1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_a, 0);
 
         // 6. Nun auch baum_b löschen (letzter Baum)
-        let remaining2 = delete_tree_internal(&temp_dir, &mut conn, &mut active, "baum_b").unwrap();
+        let remaining2 =
+            delete_tree_internal(&temp_dir, &mut conn, &mut active, "baum_b").unwrap();
         assert!(!db2_path.exists(), "baum_b.db muss physisch gelöscht sein!");
-        assert!(!temp_dir.join("stammbaum.db").exists(), "Es darf kein neuer leerer Stammbaum auf Disk angelegt werden!");
+        assert!(
+            !temp_dir.join("stammbaum.db").exists(),
+            "Es darf kein neuer leerer Stammbaum auf Disk angelegt werden!"
+        );
         assert_eq!(active, "");
-        assert!(remaining2.is_empty(), "Nach Löschen des letzten Baums muss die Liste der Bäume leer sein!");
+        assert!(
+            remaining2.is_empty(),
+            "Nach Löschen des letzten Baums muss die Liste der Bäume leer sein!"
+        );
 
         // In-Memory-DB muss 0 Personen haben
-        let count_fresh: i64 = conn.query_row("SELECT count(*) FROM individuals", [], |r| r.get(0)).unwrap();
+        let count_fresh: i64 = conn
+            .query_row("SELECT count(*) FROM individuals", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(count_fresh, 0);
 
         // Aufräumen
@@ -1409,19 +2141,43 @@ mod tests {
 
         // Familien anlegen
         conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F1', 'F1', 'I1', NULL, 0, '{}')", []).unwrap();
-        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I2')", []).unwrap();
-        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I3')", []).unwrap();
+        conn.execute(
+            "INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I3')",
+            [],
+        )
+        .unwrap();
 
         conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F2', 'F2', 'I_EXT', 'I3', 0, '{}')", []).unwrap();
-        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F2', 'I4')", []).unwrap();
+        conn.execute(
+            "INSERT INTO parent_child (family_id, child_id) VALUES ('F2', 'I4')",
+            [],
+        )
+        .unwrap();
 
         conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F3', 'F3', 'I2', NULL, 0, '{}')", []).unwrap();
-        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F3', 'I5')", []).unwrap();
+        conn.execute(
+            "INSERT INTO parent_child (family_id, child_id) VALUES ('F3', 'I5')",
+            [],
+        )
+        .unwrap();
 
         conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F4', 'F4', 'I5', 'I4', 0, '{}')", []).unwrap();
-        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F4', 'I6')", []).unwrap();
+        conn.execute(
+            "INSERT INTO parent_child (family_id, child_id) VALUES ('F4', 'I6')",
+            [],
+        )
+        .unwrap();
 
-        conn.execute("INSERT INTO root_ancestors (person_id, starting_code) VALUES ('I1', '1')", []).unwrap();
+        conn.execute(
+            "INSERT INTO root_ancestors (person_id, starting_code) VALUES ('I1', '1')",
+            [],
+        )
+        .unwrap();
         calculate_henry_codes_internal(&mut conn).unwrap();
 
         let get_code = |pid: &str| -> Option<String> {
@@ -1429,16 +2185,25 @@ mod tests {
                 "SELECT henry_code FROM proband_henry_codes WHERE proband_id = 'I1' AND person_id = ?1",
                 [pid],
                 |r| r.get(0),
-            ).ok()
+            )
+            .ok()
         };
 
         assert_eq!(get_code("I1"), Some("1".to_string()));
         assert_eq!(get_code("I2"), Some("11".to_string()));
         assert_eq!(get_code("I3"), Some("12".to_string()));
         assert_eq!(get_code("I_EXT"), None);
-        assert_eq!(get_code("I4"), Some("121".to_string()), "Kind muss unter der Mutter weitergeführt werden, da Vater nicht im Stammbaum ist");
+        assert_eq!(
+            get_code("I4"),
+            Some("121".to_string()),
+            "Kind muss unter der Mutter weitergeführt werden, da Vater nicht im Stammbaum ist"
+        );
         assert_eq!(get_code("I5"), Some("111".to_string()));
-        assert_eq!(get_code("I6"), Some("1111".to_string()), "Wenn beide Eltern im Stammbaum sind, muss die Linie patrilinear unter dem Vater weitergeführt werden");
+        assert_eq!(
+            get_code("I6"),
+            Some("1111".to_string()),
+            "Wenn beide Eltern im Stammbaum sind, muss die Linie patrilinear unter dem Vater weitergeführt werden"
+        );
     }
 
     #[test]
@@ -1462,7 +2227,10 @@ mod tests {
 
         // Höhere numerische ID
         conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I191141', 'I191141', 'G', 'H', 'M', '{}')", []).unwrap();
-        assert_eq!(crate::db::get_next_individual_id(&conn).unwrap(), "I191142");
+        assert_eq!(
+            crate::db::get_next_individual_id(&conn).unwrap(),
+            "I191142"
+        );
     }
 
     #[test]
@@ -1473,8 +2241,16 @@ mod tests {
         conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Vater', 'Ahne', 'M', '{}')", []).unwrap();
         conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I2', 'I2', 'Kind', 'Ahne', 'M', '{}')", []).unwrap();
         conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F1', 'F1', 'I1', NULL, 0, '{}')", []).unwrap();
-        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I2')", []).unwrap();
-        conn.execute("INSERT INTO root_ancestors (person_id, starting_code) VALUES ('I1', '1')", []).unwrap();
+        conn.execute(
+            "INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'I2')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO root_ancestors (person_id, starting_code) VALUES ('I1', '1')",
+            [],
+        )
+        .unwrap();
         calculate_henry_codes_internal(&mut conn).unwrap();
 
         // 2. Prüfung auf leere ID (Pflichtfeld)
@@ -1544,17 +2320,37 @@ mod tests {
         update_persons_batch_internal(&mut conn, rename_update).unwrap();
 
         // Überprüfen: individuals hat jetzt I100 und nicht mehr I1
-        let count_i1: i64 = conn.query_row("SELECT count(*) FROM individuals WHERE id = 'I1'", [], |r| r.get(0)).unwrap();
+        let count_i1: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM individuals WHERE id = 'I1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_i1, 0);
-        let count_i100: i64 = conn.query_row("SELECT count(*) FROM individuals WHERE id = 'I100'", [], |r| r.get(0)).unwrap();
+        let count_i100: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM individuals WHERE id = 'I100'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(count_i100, 1);
 
         // Überprüfen: families.husband_id wurde auf I100 aktualisiert
-        let husband: String = conn.query_row("SELECT husband_id FROM families WHERE id = 'F1'", [], |r| r.get(0)).unwrap();
+        let husband: String = conn
+            .query_row(
+                "SELECT husband_id FROM families WHERE id = 'F1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(husband, "I100");
 
         // Überprüfen: root_ancestors wurde auf I100 aktualisiert
-        let root_p: String = conn.query_row("SELECT person_id FROM root_ancestors", [], |r| r.get(0)).unwrap();
+        let root_p: String = conn
+            .query_row("SELECT person_id FROM root_ancestors", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(root_p, "I100");
 
         // 5. Tausch zweier IDs (Swap) im Mass Edit: I100 <-> I2
@@ -1597,15 +2393,39 @@ mod tests {
         update_persons_batch_internal(&mut conn, swap_updates).unwrap();
 
         // Vater hat jetzt I2
-        let vater_id: String = conn.query_row("SELECT id FROM individuals WHERE given_name = 'VaterNeu'", [], |r| r.get(0)).unwrap();
+        let vater_id: String = conn
+            .query_row(
+                "SELECT id FROM individuals WHERE given_name = 'VaterNeu'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(vater_id, "I2");
         // Kind hat jetzt I100
-        let kind_id: String = conn.query_row("SELECT id FROM individuals WHERE given_name = 'Kind'", [], |r| r.get(0)).unwrap();
+        let kind_id: String = conn
+            .query_row(
+                "SELECT id FROM individuals WHERE given_name = 'Kind'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(kind_id, "I100");
         // Familie husband ist jetzt I2, child_id ist jetzt I100
-        let h: String = conn.query_row("SELECT husband_id FROM families WHERE id = 'F1'", [], |r| r.get(0)).unwrap();
+        let h: String = conn
+            .query_row(
+                "SELECT husband_id FROM families WHERE id = 'F1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(h, "I2");
-        let c: String = conn.query_row("SELECT child_id FROM parent_child WHERE family_id = 'F1'", [], |r| r.get(0)).unwrap();
+        let c: String = conn
+            .query_row(
+                "SELECT child_id FROM parent_child WHERE family_id = 'F1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
         assert_eq!(c, "I100");
     }
 
@@ -1654,25 +2474,23 @@ mod tests {
     #[test]
     fn test_update_persons_batch_rejects_invalid_xref() {
         let mut conn = db::init_in_memory_database().unwrap();
-        let invalid_update = vec![
-            PersonUpdate {
-                original_id: "I1".to_string(),
-                person: Person {
-                    id: "Ungültige ID mit Leerzeichen!".to_string(),
-                    given_name: Some("Test".to_string()),
-                    surname: Some("Person".to_string()),
-                    sex: Some("M".to_string()),
-                    birth_date: None,
-                    birth_place: None,
-                    death_date: None,
-                    death_place: None,
-                    proband_data: HashMap::new(),
-                    gedcom_extra: serde_json::json!({}),
-                    spouses: vec![],
-                    parent_ids: vec![],
-                },
+        let invalid_update = vec![PersonUpdate {
+            original_id: "I1".to_string(),
+            person: Person {
+                id: "Ungültige ID mit Leerzeichen!".to_string(),
+                given_name: Some("Test".to_string()),
+                surname: Some("Person".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: None,
+                birth_place: None,
+                death_date: None,
+                death_place: None,
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+                spouses: vec![],
+                parent_ids: vec![],
             },
-        ];
+        }];
         let res = update_persons_batch_internal(&mut conn, invalid_update);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Ungültige XREF-ID"));

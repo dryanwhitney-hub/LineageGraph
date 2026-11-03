@@ -16,6 +16,9 @@ export interface StoredBgImage {
   updatedAt: number;
 }
 
+/**
+ * Opens a connection to the IndexedDB database, creating the object store if needed.
+ */
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined' || !window.indexedDB) {
@@ -33,10 +36,51 @@ function openDB(): Promise<IDBDatabase> {
     };
 
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () => reject(request.error ?? new Error('Failed to open IndexedDB'));
+    request.onblocked = () => reject(new Error('IndexedDB open request was blocked'));
   });
 }
 
+/**
+ * Executes a transaction against the background image object store and guarantees
+ * that the database connection is closed once the transaction finishes.
+ */
+async function withStore<T>(
+  mode: IDBTransactionMode,
+  operation: (store: IDBObjectStore) => IDBRequest<T>
+): Promise<T> {
+  const db = await openDB();
+  return new Promise<T>((resolve, reject) => {
+    let requestResult: T;
+    const tx = db.transaction(STORE_NAME, mode);
+    const store = tx.objectStore(STORE_NAME);
+    const req = operation(store);
+
+    req.onsuccess = () => {
+      requestResult = req.result;
+    };
+    req.onerror = () => {
+      reject(req.error ?? new Error('IndexedDB request failed'));
+    };
+
+    tx.oncomplete = () => {
+      db.close();
+      resolve(requestResult);
+    };
+    tx.onerror = () => {
+      db.close();
+      reject(tx.error ?? new Error('IndexedDB transaction failed'));
+    };
+    tx.onabort = () => {
+      db.close();
+      reject(tx.error ?? new Error('IndexedDB transaction aborted'));
+    };
+  });
+}
+
+/**
+ * Persists a background image record in IndexedDB.
+ */
 export async function saveBackgroundImageToDB(
   dataUrl: string,
   fileName: string = 'background_image',
@@ -44,53 +88,38 @@ export async function saveBackgroundImageToDB(
   fileSize: number = 0,
   key: string = BG_IMAGE_KEY
 ): Promise<void> {
-  const db = await openDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, 'readwrite');
-    const store = tx.objectStore(STORE_NAME);
-    const record: StoredBgImage = {
-      dataUrl,
-      fileName,
-      fileType,
-      fileSize,
-      updatedAt: Date.now(),
-    };
-    const req = store.put(record, key);
-    req.onsuccess = () => resolve();
-    req.onerror = () => reject(req.error);
-  });
+  const record: StoredBgImage = {
+    dataUrl,
+    fileName,
+    fileType,
+    fileSize,
+    updatedAt: Date.now(),
+  };
+  await withStore('readwrite', store => store.put(record, key));
 }
 
+/**
+ * Loads a previously persisted background image record from IndexedDB.
+ */
 export async function loadBackgroundImageFromDB(key: string = BG_IMAGE_KEY): Promise<StoredBgImage | null> {
   try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.get(key);
-      req.onsuccess = () => {
-        resolve(req.result ? (req.result as StoredBgImage) : null);
-      };
-      req.onerror = () => reject(req.error);
-    });
+    const result = await withStore<StoredBgImage | undefined>('readonly', store => store.get(key));
+    return result ?? null;
   } catch (e) {
     console.warn('Could not load background image from IndexedDB:', e);
     return null;
   }
 }
 
+/**
+ * Deletes a persisted background image record from IndexedDB.
+ */
 export async function deleteBackgroundImageFromDB(key: string = BG_IMAGE_KEY): Promise<void> {
   try {
-    const db = await openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const req = store.delete(key);
-      req.onsuccess = () => resolve();
-      req.onerror = () => reject(req.error);
-    });
+    await withStore('readwrite', store => store.delete(key));
   } catch (e) {
     console.warn('Could not delete background image from IndexedDB:', e);
   }
 }
+
 

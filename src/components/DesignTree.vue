@@ -3546,7 +3546,7 @@ const edgeGeometry = computed(() => {
     const { lanes } = assignNonOverlappingLanes(items, corridorDir);
 
     relations.forEach((rel, idx) => {
-      const { parentId, childLevel, direction, pBox, cBoxes } = rel;
+      const { parentId, childLevel, pBox, cBoxes } = rel;
       const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
       const activeSel = activeDesignPersonId.value || props.selectedId;
       const isCommonHighlighted =
@@ -3557,21 +3557,20 @@ const edgeGeometry = computed(() => {
           cBoxes.some(c => props.highlightedPathIds?.has(c.person.id))
         );
 
-      // Der Start-Anknüpfpunkt und der Stamm beginnen immer exakt mittig oben/unten auf der Kachel
+      // Der Start-Anknüpfpunkt und der Stamm beginnen immer exakt mittig oben auf der Kachel der Elterngeneration
       const stemX = pBox.centerX;
+      const startY = pBox.top;
 
       const laneOffset = lanes[idx] * gap;
       const levelMaxBottom = levelLayoutMetrics.value.levelMaxCardBottom[corridorLevel]
         || (getLevelBandTopY(corridorLevel) + LEVEL_CARD_PAD_TOP + getMaxCardHeightForLevel(corridorLevel));
-      const jogY = levelMaxBottom + CORRIDOR_PAD_TOP + laneOffset;
+      // Linien verlassen den Anknüpfpunkt immer nach oben: jogY liegt immer oberhalb von startY
+      const jogY = Math.min(startY - 12, levelMaxBottom + CORRIDOR_PAD_TOP + laneOffset);
 
-      const startY = direction === 'up' ? pBox.top : pBox.bottom;
-
-      // 1. Ausgangs-Anknüpfpunkt (Halbkreis) an der Kante des Elternknotens
+      // 1. Ausgangs-Anknüpfpunkt (Halbkreisaußen) an der oberen Kante des Elternknotens
       const anchorRadius = 7;
-      const anchorD = direction === 'up'
-        ? `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 0 ${stemX + anchorRadius} ${startY} Z`
-        : `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
+      // Halbkreis wölbt sich nach außen (oben) weg von der Kachelkante in den Zwischenraum
+      const anchorD = `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
 
       const existingAnchor = anchors.find(a => Math.abs(a.x - stemX) < 1 && Math.abs(a.y - startY) < 1);
       if (existingAnchor) {
@@ -3609,10 +3608,9 @@ const edgeGeometry = computed(() => {
       cBoxesByGroup.forEach((boxes) => {
         const minL = Math.min(...boxes.map(c => c.left));
         const maxR = Math.max(...boxes.map(c => c.right));
+        // Der Ende-Anknüpfpunkt wird mittig an der Unterseite der Kachel bzw. bei Geschwistergruppen mittig an der Unterseite der Kachelgruppe angezeigt
         const targetX = Math.round((minL + maxR) / 2);
-        const targetY = direction === 'down'
-          ? Math.min(...boxes.map(c => c.top))
-          : Math.max(...boxes.map(c => c.bottom));
+        const targetY = Math.max(...boxes.map(c => c.bottom));
 
         const isTargetHighlighted =
           Boolean(activeSel && (activeSel === parentId || boxes.some(c => c.person.id === activeSel))) ||
@@ -3648,7 +3646,7 @@ const edgeGeometry = computed(() => {
       }
 
       // 5. Einzelne eingehende Verbindungslinie und Pfeil pro Geschwistergruppe
-      const arrowDir = direction === 'down' ? 'down' : 'up';
+      // Der Ende-Anknüpfpunkt wird mit einem eingehenden Pfeil an der Unterseite dargestellt (Pfeilspitze zeigt nach oben)
       groupTargets.forEach(tgt => {
         rawSegments.push({
           id: tgt.key,
@@ -3663,7 +3661,7 @@ const edgeGeometry = computed(() => {
         arrows.push({
           x: tgt.targetX,
           y: tgt.targetY,
-          direction: arrowDir,
+          direction: 'up',
           isHighlighted: tgt.isHighlighted,
         });
       });
@@ -6036,14 +6034,6 @@ function formatDateStr(iso: string): string {
             :width="canvasWidth"
             :height="canvasHeight"
           >
-            <!-- Ausgangs-Anknüpfpunkte (Halbkreise) an den Kanten der Elternkacheln -->
-            <path
-              v-for="(anc, idx) in edgeGeometry.anchors"
-              :key="'anc-' + idx"
-              :d="anc.d"
-              class="design-edge-anchor"
-              :class="{ 'is-highlighted': anc.isHighlighted }"
-            />
             <path
               v-for="(d, idx) in edgeGeometry.normalPaths"
               :key="'np-' + idx"
@@ -6056,6 +6046,15 @@ function formatDateStr(iso: string): string {
               :d="d"
               class="design-edge-line is-highlighted"
             />
+            <!-- Ausgangs-Anknüpfpunkte (Halbkreise außen) an der oberen Kante der Elternkacheln -->
+            <path
+              v-for="(anc, idx) in edgeGeometry.anchors"
+              :key="'anc-' + idx"
+              :d="anc.d"
+              class="design-edge-anchor"
+              :class="{ 'is-highlighted': anc.isHighlighted }"
+            />
+            <!-- Eingehende Pfeile an der Unterseite der Kinderkacheln/-gruppen -->
             <polygon
               v-for="(arr, idx) in edgeGeometry.arrows"
               :key="'arr-' + idx"

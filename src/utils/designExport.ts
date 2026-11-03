@@ -877,23 +877,22 @@ export function generateDesignExportSvg(
     const { lanes } = assignNonOverlappingLanes(items, corridorDir);
 
     relations.forEach((rel, idx) => {
-      const { parentId, childLevel, direction, pBox, cBoxes } = rel;
+      const { parentId, childLevel, pBox, cBoxes } = rel;
       const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
 
-      // Der Start-Anknüpfpunkt und der Stamm beginnen immer exakt mittig oben/unten auf der Kachel
+      // Der Start-Anknüpfpunkt und der Stamm beginnen immer exakt mittig oben auf der Kachel der Elterngeneration
       const stemX = pBox.centerX;
+      const startY = pBox.top;
 
       const laneOffset = lanes[idx] * gap;
       const levelMaxCardBottom = getLevelBandTopY(corridorLevel) + LEVEL_CARD_PAD_TOP + getMaxCardHeightForLevel(corridorLevel);
-      const jogY = levelMaxCardBottom + CORRIDOR_PAD_TOP + laneOffset;
+      // Linien verlassen den Anknüpfpunkt immer nach oben: jogY liegt immer oberhalb von startY
+      const jogY = Math.min(startY - 12, levelMaxCardBottom + CORRIDOR_PAD_TOP + laneOffset);
 
-      const startY = direction === 'up' ? pBox.top : pBox.bottom;
-
-      // 1. Ausgangs-Anknüpfpunkt (Halbkreis) an der Kante des Elternknotens
+      // 1. Ausgangs-Anknüpfpunkt (Halbkreisaußen) an der oberen Kante des Elternknotens
       const anchorRadius = 7;
-      const anchorD = direction === 'up'
-        ? `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 0 ${stemX + anchorRadius} ${startY} Z`
-        : `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
+      // Halbkreis wölbt sich nach außen (oben) weg von der Kachelkante in den Zwischenraum
+      const anchorD = `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
 
       const existingAnchor = anchors.find(a => Math.abs(a.x - stemX) < 1 && Math.abs(a.y - startY) < 1);
       if (!existingAnchor) {
@@ -927,10 +926,9 @@ export function generateDesignExportSvg(
       cBoxesByGroup.forEach((boxes) => {
         const minL = Math.min(...boxes.map(c => c.left));
         const maxR = Math.max(...boxes.map(c => c.right));
+        // Der Ende-Anknüpfpunkt wird mittig an der Unterseite der Kachel bzw. bei Geschwistergruppen mittig an der Unterseite der Kachelgruppe angezeigt
         const targetX = Math.round((minL + maxR) / 2);
-        const targetY = direction === 'down'
-          ? Math.min(...boxes.map(c => c.top))
-          : Math.max(...boxes.map(c => c.bottom));
+        const targetY = Math.max(...boxes.map(c => c.bottom));
 
         groupTargets.push({
           targetX,
@@ -956,7 +954,7 @@ export function generateDesignExportSvg(
       }
 
       // 5. Einzelne eingehende Verbindungslinie und Pfeil pro Geschwistergruppe
-      const arrowDir = direction === 'down' ? 'down' : 'up';
+      // Der Ende-Anknüpfpunkt wird mit einem eingehenden Pfeil an der Unterseite dargestellt (Pfeilspitze zeigt nach oben)
       groupTargets.forEach(tgt => {
         rawSegments.push({
           id: tgt.key,
@@ -966,7 +964,7 @@ export function generateDesignExportSvg(
           x2: tgt.targetX,
           y2: tgt.targetY,
         });
-        arrows.push({ x: tgt.targetX, y: tgt.targetY, direction: arrowDir });
+        arrows.push({ x: tgt.targetX, y: tgt.targetY, direction: 'up' });
       });
     });
   });
@@ -1168,6 +1166,7 @@ export function generateDesignExportSvg(
       .text-marriage { font-size: 8px; fill: #64748b; text-anchor: middle; }
       .edge-line { fill: none; stroke: #1e293b; stroke-width: 2px; stroke-linecap: round; stroke-linejoin: round; }
       .edge-arrow { fill: #1e293b; }
+      .edge-anchor { fill: #1e293b; stroke: #1e293b; stroke-width: 1.5px; }
       .level-line { stroke: #cbd5e1; stroke-dasharray: 5,5; stroke-width: 1.5px; }
       .level-text { font-size: 10.5px; font-weight: bold; fill: #ffffff; text-anchor: middle; }
     </style>
@@ -1396,11 +1395,11 @@ export function generateDesignExportSvg(
   // Connecting Lines Layer (rendered on top so cards never obscure lines)
   svgParts.push(`  <!-- Connecting Lines -->`);
   svgParts.push(`  <g id="edges">`);
-  anchors.forEach(anc => {
-    svgParts.push(`    <path d="${anc.d}" class="edge-arrow" />`);
-  });
   edgePaths.forEach(p => {
     svgParts.push(`    <path d="${p}" class="edge-line" />`);
+  });
+  anchors.forEach(anc => {
+    svgParts.push(`    <path d="${anc.d}" class="edge-anchor" />`);
   });
   arrows.forEach(arr => {
     const pts = arr.direction === 'up'
