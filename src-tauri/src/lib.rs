@@ -1275,6 +1275,11 @@ fn read_design_file(file_path: String) -> Result<String, String> {
     fs::read_to_string(&file_path).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn save_binary_file(file_path: String, data: Vec<u8>) -> Result<(), String> {
+    fs::write(&file_path, data).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1317,7 +1322,7 @@ pub fn run() {
             get_trees, switch_tree, delete_tree, get_all_persons, get_person_details, find_relationship_path, export_latex_pdf,
             import_gedcom_file, update_person, update_persons_batch, get_next_person_id, update_person_parents, add_person, get_root_ancestors, add_root_ancestor,
             remove_root_ancestor, calculate_henry_codes_from_roots,
-            save_design_layout, get_design_layouts, delete_design_layout, save_design_file, read_design_file
+            save_design_layout, get_design_layouts, delete_design_layout, save_design_file, read_design_file, save_binary_file
         ])
         .run(tauri::generate_context!())
         .expect("Tauri Error");

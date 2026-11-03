@@ -2183,7 +2183,7 @@ onMounted(async () => {
                       <div class="line-config-options">
                         <label class="cfg-checkbox-label">
                           <input type="checkbox" checked disabled />
-                          <span><strong>{{ t('design_cfg_name') }}</strong></span>
+                          <span><strong>{{ t('design_cfg_given_name_only') }}</strong></span>
                         </label>
                       </div>
                     </div>
@@ -2222,6 +2222,10 @@ onMounted(async () => {
                         </label>
                       </div>
                       <div class="line-config-options line-grid-2col">
+                        <label class="cfg-checkbox-label" style="grid-column: 1 / -1; margin-bottom: 4px; padding: 4px 6px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px;">
+                          <input type="checkbox" v-model="designConfig.cardConfig.showOnlyYears" />
+                          <span><strong>📅 {{ t('design_cfg_only_years') }}</strong> — <small style="color: #64748b;">{{ t('design_cfg_only_years_desc') }}</small></span>
+                        </label>
                         <label class="cfg-checkbox-label">
                           <input type="checkbox" v-model="designConfig.cardConfig.showBirthDate" @change="!designConfig.cardConfig.showBirthDate && (designConfig.cardConfig.showBirthPlace = false)" />
                           <span>{{ t('design_cfg_birth_date') }}</span>
@@ -2415,45 +2419,6 @@ onMounted(async () => {
                           </div>
                         </div>
                       </div>
-                    </div>
-                    <small style="color: #64748b; font-size: 0.72rem; text-align: center;">
-                      {{ designConfig.cardConfig.customCardHeightEnabled ? (t('design_cfg_custom_height_active') || 'Manuelle Höhe:') : (t('design_cfg_custom_height_auto') || 'Berechnete Standardhöhe:') }} {{ computeCardHeight(designConfig.cardConfig, 1) }} px
-                    </small>
-                  </div>
-                </div>
-
-                <!-- Option: Manuelle Kachelhöhe -->
-                <div class="config-field mb-3" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;">
-                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
-                    <input type="checkbox" v-model="designConfig.cardConfig.customCardHeightEnabled" style="cursor: pointer;" />
-                    <strong>{{ t('design_cfg_custom_height_label') || 'Kachelhöhe manuell definieren' }}</strong>
-                  </label>
-                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 4px; padding-left: 22px;">
-                    {{ t('design_cfg_custom_height_hint') || 'Definiert eine feste Höhe für alle Kacheln. Ist die Option deaktiviert, passt sich die Höhe automatisch den Inhalten an.' }}
-                  </small>
-                  <div v-if="designConfig.cardConfig.customCardHeightEnabled" style="margin-top: 10px; padding-left: 22px;">
-                    <label class="d-block mb-1" style="font-size: 0.85rem; color: #334155;">
-                      <strong>{{ t('design_cfg_custom_height_val') || 'Manuelle Kachelhöhe:' }}</strong>
-                      <span class="badge-val" style="background: #0284c7; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;">
-                        {{ designConfig.cardConfig.customCardHeight || 180 }} px
-                      </span>
-                    </label>
-                    <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
-                      <input
-                        type="range"
-                        min="70"
-                        max="350"
-                        step="5"
-                        v-model.number="designConfig.cardConfig.customCardHeight"
-                        class="flex-grow"
-                      />
-                      <input
-                        type="number"
-                        min="60"
-                        max="500"
-                        v-model.number="designConfig.cardConfig.customCardHeight"
-                        style="width: 70px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
-                      />
                     </div>
                   </div>
                 </div>
@@ -2829,6 +2794,17 @@ onMounted(async () => {
         @clear-selection="() => { selectedPerson = null; activePartnerPath = []; }"
         @select-proband="pid => setProbandTab(pid)"
         @open-settings="showSettings = true; activeSettingsTab = 'design_mode'; loadRootAncestors()"
+        @update-card-config="cfg => { designConfig.cardConfig = { ...designConfig.cardConfig, ...cfg }; }"
+        @update-design-config="cfg => {
+          if (cfg.cardConfig) {
+            designConfig.cardConfig = { ...designConfig.cardConfig, ...cfg.cardConfig };
+          }
+          if (typeof cfg.horizontalLaneGap === 'number') designConfig.horizontalLaneGap = cfg.horizontalLaneGap;
+          if (typeof cfg.autoSubLanes === 'boolean') designConfig.autoSubLanes = cfg.autoSubLanes;
+          if (typeof cfg.enableLineBridges === 'boolean') designConfig.enableLineBridges = cfg.enableLineBridges;
+          if (typeof cfg.bridgeRadius === 'number') designConfig.bridgeRadius = cfg.bridgeRadius;
+          if (typeof cfg.minimizeBridges === 'boolean') designConfig.minimizeBridges = cfg.minimizeBridges;
+        }"
         @jump-to="jumpToTreePerson"
       />
 

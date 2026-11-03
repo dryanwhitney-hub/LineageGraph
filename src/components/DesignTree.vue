@@ -6,7 +6,7 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 import {
   DEFAULT_CARD_CONFIG,
   DEFAULT_BACKGROUND_CONFIG,
-  computeCardHeight,
+  computePersonCardNeededHeight,
   formatLocalizedDate,
   type DesignCardConfig,
   type DesignBackgroundConfig,
@@ -76,6 +76,15 @@ const emit = defineEmits<{
   (e: 'clear-selection'): void;
   (e: 'select-proband', personId: string): void;
   (e: 'open-settings'): void;
+  (e: 'update-card-config', config: DesignCardConfig): void;
+  (e: 'update-design-config', config: {
+    cardConfig?: DesignCardConfig;
+    horizontalLaneGap?: number;
+    autoSubLanes?: boolean;
+    enableLineBridges?: boolean;
+    bridgeRadius?: number;
+    minimizeBridges?: boolean;
+  }): void;
   (e: 'jump-to', personId: string): void;
 }>();
 
@@ -86,83 +95,10 @@ const activeCardConfig = computed<DesignCardConfig>(() => props.cardConfig || DE
 const CARD_WIDTH = 174;
 const DEFAULT_LEVEL_HEIGHT = 200;
 const MIN_LEVEL_HEIGHT = 110;
-const MAX_LEVEL_HEIGHT = 600;
 const LEVEL_SIDEBAR_W = 210;
 const CANVAS_PAD_TOP = 65;
 const CANVAS_PAD_BOTTOM = 65;
 const SNAP_DISTANCE = 16;
-
-// Maximale Ehepartner-Anzahl unter den sichtbaren Einträgen ermitteln
-const maxVisibleSpouses = computed(() => {
-  let max = 0;
-  visibleSiblingGroups.value.forEach(g => {
-    g.memberIds.forEach(id => {
-      const p = personById.value.get(id);
-      if (p && p.spouses && p.spouses.length > max) {
-        max = p.spouses.length;
-      }
-    });
-  });
-  return Math.max(1, max);
-});
-
-// Dynamische Kachelhöhe, angepasst an die ausgewählten Inhalte und maximale Inhaltslänge
-const currentCardHeight = computed(() => {
-  const cfg = activeCardConfig.value;
-  if (cfg.customCardHeightEnabled && typeof cfg.customCardHeight === 'number' && cfg.customCardHeight > 0) {
-    return Math.max(60, Math.min(500, cfg.customCardHeight));
-  }
-
-  const baseHeight = computeCardHeight(cfg, maxVisibleSpouses.value);
-
-  // Sichtbare Einträge prüfen, um auch bei mehrzeiligen langen Namen und mehrzeiligen Partnern Überläufe sicher auszuschließen
-  let maxNeeded = baseHeight;
-  visibleSiblingGroups.value.forEach(g => {
-    g.memberIds.forEach(id => {
-      const p = personById.value.get(id);
-      if (!p) return;
-      let needed = 16;
-      if (cfg.showHenryId || cfg.showGeneration) needed += 20;
-
-      // Name: Bei langen Namen (>= 22 Zeichen) 2 Zeilen einplanen
-      const name = `${p.given_name || ''} ${p.surname || ''}`.trim();
-      needed += name.length >= 22 ? 40 : 24;
-
-      // Lebensdaten
-      if (cfg.showBirthDate && p.birth_date) needed += 20;
-      else if (cfg.showDeathDate && p.death_date) needed += 20;
-
-      // Ehen
-      if (p.spouses && p.spouses.length > 0 && (cfg.showSpouseName || cfg.showMarriageDate || cfg.showDivorce || cfg.showMarriageCounter)) {
-        needed += 8; // Divider + Margin
-        p.spouses.forEach(sp => {
-          let spH = 0;
-          if (cfg.showSpouseName || cfg.showMarriageCounter) {
-            const spPerson = personById.value.get(sp.id);
-            const spName = spPerson ? `${spPerson.given_name || ''} ${spPerson.surname || ''}`.trim() : '';
-            spH += spName.length >= 20 ? 34 : 18;
-          }
-          let datesCount = 0;
-          if (cfg.showMarriageDate && sp.date) datesCount++;
-          if (cfg.showDivorce && (sp.is_divorced || sp.divorce_date)) datesCount++;
-          if (cfg.lifeDatesLayout === 'single') {
-            if (datesCount > 1) spH += 34;
-            else if (datesCount === 1) spH += 20;
-          } else {
-            spH += datesCount * 18;
-          }
-          needed += Math.max(24, spH) + 6;
-        });
-      }
-
-      if (needed > maxNeeded) {
-        maxNeeded = needed;
-      }
-    });
-  });
-
-  return maxNeeded;
-});
 
 interface DesignSiblingGroup {
   id: string;
@@ -204,8 +140,6 @@ const historyStack = ref<HistorySnapshot[]>([]);
 const maxHistoryLength = 50;
 
 let preDragSnapshot: HistorySnapshot | null = null;
-let preResizeSnapshot: HistorySnapshot | null = null;
-let didResizeLevel = false;
 
 function captureCurrentSnapshot(): HistorySnapshot {
   const bws: { personId: string; minX: number; maxX: number }[] = [];
@@ -291,10 +225,6 @@ function eZero() {
   return 0;
 }
 
-// Drag-State für Ebenen-Höhenänderung per Maus
-const resizingLevel = ref<number | null>(null);
-let resizeStartY = 0;
-let resizeStartHeight = DEFAULT_LEVEL_HEIGHT;
 
 const personById = computed<Map<string, Person>>(() => {
   const m = new Map<string, Person>();
@@ -322,21 +252,527 @@ function getBiologicalParentId(personId: string): string | null {
   return null;
 }
 
-function getLevelHeight(level: number): number {
-  const minNeeded = currentCardHeight.value + 60;
-  const h = levelHeights.value[level];
-  if (typeof h === 'number' && !Number.isNaN(h)) {
-    return Math.max(Math.max(MIN_LEVEL_HEIGHT, minNeeded), Math.min(MAX_LEVEL_HEIGHT, h));
+function getBaptismInfo(person: Person): { date: string | null; place: string | null } {
+  const extra = person.gedcom_extra;
+  if (!extra || typeof extra !== 'object') return { date: null, place: null };
+  const chr = extra['CHR'];
+  if (!chr) return { date: null, place: null };
+  if (typeof chr === 'object') {
+    return {
+      date: chr['DATE'] ? String(chr['DATE']) : null,
+      place: chr['PLAC'] ? String(chr['PLAC']) : null,
+    };
   }
-  return Math.max(DEFAULT_LEVEL_HEIGHT, minNeeded);
+  return { date: null, place: null };
 }
 
-function setLevelHeight(level: number, val: number) {
-  const clamped = Math.max(MIN_LEVEL_HEIGHT, Math.min(MAX_LEVEL_HEIGHT, Math.round(val || DEFAULT_LEVEL_HEIGHT)));
-  levelHeights.value = {
-    ...levelHeights.value,
-    [level]: clamped,
+// Zentraler Cache für die dynamische Kachelhöhe jeder Person
+const cardHeightByPersonId = computed<Map<string, number>>(() => {
+  const map = new Map<string, number>();
+  const cfg = activeCardConfig.value;
+  const loc = locale.value;
+  const activeProband = props.activeProbandId;
+
+  const genByPersonId = new Map<string, number>();
+  visibleSiblingGroups.value.forEach(g => {
+    g.memberIds.forEach(id => {
+      genByPersonId.set(id, g.generation);
+    });
+  });
+
+  personById.value.forEach((p, pId) => {
+    const chr = getBaptismInfo(p);
+    const hasHenry = Boolean(p.proband_data && activeProband && p.proband_data[activeProband]?.henry_code);
+    const spousesInput = (p.spouses || []).map(sp => {
+      const spPerson = personById.value.get(sp.id);
+      const spHenry = Boolean(spPerson?.proband_data && activeProband && spPerson.proband_data[activeProband]?.henry_code);
+      return {
+        id: sp.id,
+        given_name: spPerson?.given_name,
+        surname: spPerson?.surname,
+        date: sp.date,
+        divorce_date: sp.divorce_date,
+        is_divorced: sp.is_divorced,
+        birth_date: spPerson?.birth_date,
+        birth_place: spPerson?.birth_place,
+        death_date: spPerson?.death_date,
+        death_place: spPerson?.death_place,
+        has_henry_code: spHenry,
+      };
+    });
+
+    const h = computePersonCardNeededHeight(
+      {
+        given_name: p.given_name,
+        surname: p.surname,
+        sex: p.sex,
+        birth_date: p.birth_date,
+        birth_place: p.birth_place,
+        death_date: p.death_date,
+        death_place: p.death_place,
+        chr_date: chr.date,
+        chr_place: chr.place,
+        has_henry_code: hasHenry,
+        generation: genByPersonId.get(pId),
+        spouses: spousesInput,
+      },
+      cfg,
+      loc
+    );
+    map.set(pId, h);
+  });
+  return map;
+});
+
+function getCardHeightForPerson(personId: string, _generation?: number): number {
+  return cardHeightByPersonId.value.get(personId) || 50;
+}
+
+const LEVEL_CARD_PAD_TOP = 26; // Platz oberhalb der Kacheln für den Nachnamens-Header (subgroup-surname-label)
+const CORRIDOR_PAD_TOP = 24; // Sicherer Mindestabstand unterhalb der untersten Kachelkante der Ebene bis zur obersten Querlinie
+const CORRIDOR_PAD_BOTTOM = 28; // Sicherer Mindestabstand von der untersten Querlinie bis zur Kacheloberkante/Nachnamenslabel der darunterliegenden Ebene
+const CORRIDOR_EMPTY = 36; // Mindestabstand zwischen Ebenen, wenn keine Querlinien vorhanden sind
+
+interface SiblingBarItem {
+  parentId?: string;
+  parentX?: number;
+  minChildX: number;
+  maxChildX: number;
+  childrenX?: number[];
+  pBox?: { centerX: number; level?: number };
+  cBoxes?: { centerX: number }[];
+}
+
+// Berechnet optimale Höhenstufen (Lanes) für Querlinien:
+// - Linien ohne gemeinsamen horizontalen Abschnitt dürfen Linienhöhen wiederverwenden,
+//   sofern sie einen horizontalen Sicherheitsabstand einhalten (keine Berührung an Endpunkten).
+// - Linien mit gemeinsamem horizontalem Abschnitt erhalten zwingend unterschiedliche Linienhöhen (keine Überdeckung).
+// - Vertikale Linien dürfen Querlinien kreuzen.
+function assignNonOverlappingLanes(
+  items: SiblingBarItem[],
+  direction: 'up' | 'same' | 'down' = 'up'
+): { lanes: number[]; totalLanes: number } {
+  const n = items.length;
+  if (n === 0) return { lanes: [], totalLanes: 0 };
+  if (n === 1) return { lanes: [0], totalLanes: 1 };
+
+  const parsed = items.map((rel, origIdx) => {
+    const parentX = rel.pBox ? rel.pBox.centerX : (rel.parentX ?? 0);
+    const minChildX = rel.minChildX;
+    const maxChildX = rel.maxChildX;
+    const childrenX = rel.cBoxes
+      ? rel.cBoxes.map(c => c.centerX)
+      : (rel.childrenX ?? [minChildX, maxChildX]);
+    const barMin = Math.min(parentX, minChildX);
+    const barMax = Math.max(parentX, maxChildX);
+    const span = Math.max(0, barMax - barMin);
+    const centerX = (barMin + barMax) / 2;
+    return { origIdx, parentX, barMin, barMax, span, centerX, childrenX };
+  });
+
+  // Mindestabstand (in px) zwischen horizontalen Balken auf derselben Lane, um optisches Verschmelzen zu verhindern
+  const LANE_REUSE_SAFETY_GAP = 24;
+
+  // Überlappungs-Prüfung: Haben zwei Items einen gemeinsamen horizontalen Abschnitt oder unterschreiten sie den Sicherheitsabstand?
+  function hasOverlap(i: number, j: number): boolean {
+    const a = parsed[i];
+    const b = parsed[j];
+    // Wirkungsbereich für horizontale Kollision:
+    // Auch Einzelkinder (span <= 1) definieren einen Knotenbereich um parentX, damit Querlinien nicht durch ihren Knoten laufen.
+    const aMin = a.span <= 1 ? a.parentX - 8 : a.barMin;
+    const aMax = a.span <= 1 ? a.parentX + 8 : a.barMax;
+    const bMin = b.span <= 1 ? b.parentX - 8 : b.barMin;
+    const bMax = b.span <= 1 ? b.parentX + 8 : b.barMax;
+
+    return Math.max(aMin, bMin) < Math.min(aMax, bMax) + LANE_REUSE_SAFETY_GAP;
+  }
+
+  // Precompute pair costs for crossing quality
+  // iBelowJ: Kosten/Kreuzungen, wenn Item i auf kleinerem Lane-Index liegt als Item j (lI < lJ)
+  // jBelowI: Kosten/Kreuzungen, wenn Item j auf kleinerem Lane-Index liegt als Item i (lJ < lI)
+  const pairCosts: { iBelowJ: number; jBelowI: number; overlap: boolean }[][] = [];
+  for (let i = 0; i < n; i++) {
+    pairCosts[i] = [];
+    for (let j = 0; j < n; j++) {
+      if (i === j) {
+        pairCosts[i][j] = { iBelowJ: 0, jBelowI: 0, overlap: false };
+        continue;
+      }
+      const overlap = hasOverlap(i, j);
+      let iBelowJ = 0;
+      let jBelowI = 0;
+
+      const sameParent = Math.abs(parsed[i].parentX - parsed[j].parentX) < 2;
+
+      if (direction !== 'down') {
+        // Standard (up): Lane 0 ist näher an Kindern (oben), höhere Lanes näher an Eltern (unten)
+        // 1. Wenn lI < lJ:
+        //    - Item i's Elternstamm steigt von unten nach Lane lI auf und kreuzt Lane lJ, falls parentX_i in j's Balken liegt.
+        if (!sameParent && parsed[i].parentX > parsed[j].barMin + 2 && parsed[i].parentX < parsed[j].barMax - 2) {
+          iBelowJ += 500;
+        }
+        //    - Item j's Kinder-Abgangslinien steigen von Lane lJ nach oben zu den Kindern auf und kreuzen Lane lI, falls cx in i's Balken liegt.
+        for (const cx of parsed[j].childrenX) {
+          if (cx > parsed[i].barMin + 2 && cx < parsed[i].barMax - 2) {
+            iBelowJ += 500;
+          }
+        }
+
+        // 2. Wenn lJ < lI:
+        //    - Item j's Elternstamm kreuzt Lane lI, falls parentX_j in i's Balken liegt.
+        if (!sameParent && parsed[j].parentX > parsed[i].barMin + 2 && parsed[j].parentX < parsed[i].barMax - 2) {
+          jBelowI += 500;
+        }
+        //    - Item i's Kinder-Abgangslinien steigen von Lane lI auf und kreuzen Lane lJ, falls cx in j's Balken liegt.
+        for (const cx of parsed[i].childrenX) {
+          if (cx > parsed[j].barMin + 2 && cx < parsed[j].barMax - 2) {
+            jBelowI += 500;
+          }
+        }
+      } else {
+        // Umgekehrt für down: Lane 0 ist näher an Eltern (oben), höhere Lanes näher an Kindern (unten)
+        if (!sameParent && parsed[i].parentX > parsed[j].barMin + 2 && parsed[i].parentX < parsed[j].barMax - 2) {
+          jBelowI += 500;
+        }
+        for (const cx of parsed[j].childrenX) {
+          if (cx > parsed[i].barMin + 2 && cx < parsed[i].barMax - 2) {
+            jBelowI += 500;
+          }
+        }
+
+        if (!sameParent && parsed[j].parentX > parsed[i].barMin + 2 && parsed[j].parentX < parsed[i].barMax - 2) {
+          iBelowJ += 500;
+        }
+        for (const cx of parsed[i].childrenX) {
+          if (cx > parsed[j].barMin + 2 && cx < parsed[j].barMax - 2) {
+            iBelowJ += 500;
+          }
+        }
+      }
+
+      pairCosts[i][j] = { iBelowJ, jBelowI, overlap };
+    }
+  }
+
+  function evaluate(assignment: number[]): number {
+    let cost = 0;
+    for (let i = 0; i < n; i++) {
+      cost += assignment[i] * 0.05;
+      for (let j = i + 1; j < n; j++) {
+        const pc = pairCosts[i][j];
+        const lI = assignment[i];
+        const lJ = assignment[j];
+        if (lI === lJ) {
+          if (pc.overlap) cost += 100000; // Harter Ausschluss: Überlappende Linien dürfen NIEMALS dieselbe Lane haben
+        } else if (lI < lJ) {
+          cost += pc.iBelowJ;
+          if (parsed[i].span > parsed[j].span + 8) cost += 0.5;
+        } else {
+          cost += pc.jBelowI;
+          if (parsed[j].span > parsed[i].span + 8) cost += 0.5;
+        }
+      }
+    }
+    return cost;
+  }
+
+  function buildAssignment(order: number[]): number[] {
+    const lanes = new Array<number>(n).fill(0);
+    const laneOccupants: number[][] = [];
+    for (const idx of order) {
+      let chosenLane = 0;
+      while (true) {
+        if (!laneOccupants[chosenLane]) {
+          laneOccupants[chosenLane] = [];
+          break;
+        }
+        const hasConflict = laneOccupants[chosenLane].some(occIdx => pairCosts[idx][occIdx].overlap);
+        if (!hasConflict) break;
+        chosenLane++;
+      }
+      lanes[idx] = chosenLane;
+      laneOccupants[chosenLane].push(idx);
+    }
+    return lanes;
+  }
+
+  // 1. Kandidat: Verschachtelung (innere umschlossene Spannen zuerst)
+  const order1 = parsed.map((it, idx) => {
+    let enclosedByCount = 0;
+    for (let other = 0; other < n; other++) {
+      if (other === idx) continue;
+      if (parsed[other].barMin <= it.barMin + 4 && parsed[other].barMax >= it.barMax - 4) {
+        enclosedByCount++;
+      }
+    }
+    return { idx, score: enclosedByCount * 10000 - it.span };
+  }).sort((a, b) => b.score - a.score).map(o => o.idx);
+
+  // 2. Kandidat: Greedy nach Position (von links nach rechts)
+  const order2 = parsed.map((it, idx) => ({ idx, minX: it.barMin }))
+    .sort((a, b) => a.minX - b.minX).map(o => o.idx);
+
+  // 3. Kandidat: Kürzeste Spannen zuerst (reduziert Durchdringungen und Brückenbildung)
+  const order3 = parsed.map((it, idx) => ({ idx, span: it.span }))
+    .sort((a, b) => a.span - b.span).map(o => o.idx);
+
+  // 4. Kandidat: Längste Spannen zuerst
+  const order4 = parsed.map((it, idx) => ({ idx, span: it.span }))
+    .sort((a, b) => b.span - a.span).map(o => o.idx);
+
+  // 5. Kandidat: Rangfolge nach gerichteter Kreuzungspräferenz
+  const order5 = parsed.map((_it, i) => {
+    let prefScore = 0;
+    for (let j = 0; j < n; j++) {
+      if (i === j) continue;
+      prefScore += (pairCosts[i][j].jBelowI - pairCosts[i][j].iBelowJ);
+    }
+    return { idx: i, prefScore };
+  }).sort((a, b) => b.prefScore - a.prefScore).map(o => o.idx);
+
+  const candidates = [order1, order2, order3, order4, order5].map(buildAssignment);
+  let bestAssignment = candidates[0];
+  let bestScore = evaluate(bestAssignment);
+
+  for (let c = 1; c < candidates.length; c++) {
+    const score = evaluate(candidates[c]);
+    if (score < bestScore) {
+      bestScore = score;
+      bestAssignment = candidates[c];
+    }
+  }
+
+  // Lokale Suche zur weiteren Minimierung von Linienkreuzungen (sofern n <= 60)
+  if (n <= 60) {
+    const current = [...bestAssignment];
+    let improved = true;
+    let iters = 0;
+    while (improved && iters < 12) {
+      improved = false;
+      iters++;
+
+      // 1. Pairwise Swaps: Tauscht die Lanes von zwei Items, um lokale Minima bei kreuzungsreduzierender Sortierung zu überwinden
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          const li = current[i];
+          const lj = current[j];
+          if (li === lj) continue;
+
+          let canSwap = true;
+          for (let k = 0; k < n; k++) {
+            if (k !== i && k !== j) {
+              if (current[k] === lj && pairCosts[i][k].overlap) { canSwap = false; break; }
+              if (current[k] === li && pairCosts[j][k].overlap) { canSwap = false; break; }
+            }
+          }
+          if (!canSwap) continue;
+
+          current[i] = lj;
+          current[j] = li;
+          const score = evaluate(current);
+          if (score < bestScore - 0.001) {
+            bestScore = score;
+            improved = true;
+            bestAssignment[i] = lj;
+            bestAssignment[j] = li;
+          } else {
+            current[i] = li;
+            current[j] = lj;
+          }
+        }
+      }
+
+      // 2. Einzel-Verschiebungen in freie oder andere Lanes
+      const maxLane = Math.max(...current);
+      for (let i = 0; i < n; i++) {
+        const origL = current[i];
+        for (let targetL = 0; targetL <= maxLane + 1; targetL++) {
+          if (targetL === origL) continue;
+          let conflict = false;
+          for (let other = 0; other < n; other++) {
+            if (other === i) continue;
+            if (current[other] === targetL && pairCosts[i][other].overlap) {
+              conflict = true;
+              break;
+            }
+          }
+          if (conflict) continue;
+
+          current[i] = targetL;
+          const score = evaluate(current);
+          if (score < bestScore - 0.001) {
+            bestScore = score;
+            improved = true;
+            bestAssignment[i] = targetL;
+          } else {
+            current[i] = origL;
+          }
+        }
+      }
+    }
+  }
+
+  const usedLanes = Array.from(new Set(bestAssignment)).sort((a, b) => a - b);
+  const laneMap = new Map<number, number>();
+  usedLanes.forEach((l, idx) => laneMap.set(l, idx));
+  const compacted = bestAssignment.map(l => laneMap.get(l) ?? 0);
+  const totalLanes = usedLanes.length > 0 ? Math.max(...compacted) + 1 : 0;
+
+  return { lanes: compacted, totalLanes };
+}
+
+interface LevelMetrics {
+  heights: Record<number, number>;
+  bandTopY: Record<number, number>;
+  cardTopY: Record<number, number>;
+  levelMaxCardBottom: Record<number, number>;
+  maxCardHeights: Record<number, number>;
+  requiredLanes: Record<number, number>;
+  totalCanvasHeight: number;
+}
+
+
+const computedLevelMetrics = computed<LevelMetrics>(() => {
+  const heights: Record<number, number> = {};
+  const bandTopY: Record<number, number> = {};
+  const cardTopY: Record<number, number> = {};
+  const levelMaxCardBottom: Record<number, number> = {};
+  const maxCardHeights: Record<number, number> = {};
+  const requiredLanes: Record<number, number> = {};
+
+  const gap = Math.max(10, props.horizontalLaneGap || 16);
+  const totalLvls = totalLevels.value;
+
+  // 1. O(1) Index für Elterngruppen-Suche
+  const groupByPersonId = new Map<string, DesignSiblingGroup>();
+  visibleSiblingGroups.value.forEach(g => {
+    g.memberIds.forEach(id => groupByPersonId.set(id, g));
+  });
+
+  // 2. Gruppen nach Ebene indizieren
+  const groupsByLevel = new Map<number, DesignSiblingGroup[]>();
+  for (let l = 1; l <= totalLvls; l++) {
+    groupsByLevel.set(l, []);
+  }
+  visibleSiblingGroups.value.forEach(g => {
+    if (!groupsByLevel.has(g.level)) {
+      groupsByLevel.set(g.level, []);
+    }
+    groupsByLevel.get(g.level)!.push(g);
+  });
+
+  // 2b. Alle Querlinien nach physischem Korridor indizieren (up, same und down)
+  const barsByCorridorLevel = new Map<number, SiblingBarItem[]>();
+  const childGroupsAll = visibleSiblingGroups.value.filter(g => g.parentId);
+  const groupsByParentAndLvl = new Map<string, Map<number, DesignSiblingGroup[]>>();
+  childGroupsAll.forEach(cg => {
+    const pId = cg.parentId!;
+    if (!groupsByParentAndLvl.has(pId)) groupsByParentAndLvl.set(pId, new Map());
+    const lvlMap = groupsByParentAndLvl.get(pId)!;
+    if (!lvlMap.has(cg.level)) lvlMap.set(cg.level, []);
+    lvlMap.get(cg.level)!.push(cg);
+  });
+
+  groupsByParentAndLvl.forEach((lvlMap, parentId) => {
+    const pGrp = groupByPersonId.get(parentId);
+    if (!pGrp) return;
+    const pIdx = pGrp.memberIds.indexOf(parentId);
+    const pWidth = pGrp.memberIds.length * CARD_WIDTH;
+    const pLeft = Math.round(pGrp.x - pWidth / 2);
+    const parentX = pLeft + pIdx * CARD_WIDTH + Math.round(CARD_WIDTH / 2);
+
+    lvlMap.forEach((cGroups, childLevel) => {
+      // Jede Geschwistergruppe hat genau einen Ziel-X-Punkt (ihr Zentrum)
+      const targetXs = cGroups.map(cg => Math.round(cg.x));
+      if (targetXs.length === 0) return;
+      const minChildX = Math.min(...targetXs);
+      const maxChildX = Math.max(...targetXs);
+      const barMinX = Math.min(parentX, minChildX);
+      const barMaxX = Math.max(parentX, maxChildX);
+
+      if (barMaxX - barMinX > 1) {
+        // Physischer Korridor: Bei downRelations liegt der Querbalken unterhalb von pGrp.level, sonst unter childLevel
+        const corridorLvl = childLevel < pGrp.level ? pGrp.level : childLevel;
+        if (!barsByCorridorLevel.has(corridorLvl)) {
+          barsByCorridorLevel.set(corridorLvl, []);
+        }
+        barsByCorridorLevel.get(corridorLvl)!.push({
+          parentId,
+          parentX,
+          minChildX,
+          maxChildX,
+          childrenX: targetXs,
+        });
+      }
+    });
+  });
+
+  // 3. Maximale Kachelhöhe und benötigte Lanes je Ebene ermitteln
+  for (let lvl = 1; lvl <= totalLvls; lvl++) {
+    const groupsInLvl = groupsByLevel.get(lvl) || [];
+    let maxCardH = 50;
+    if (groupsInLvl.length > 0) {
+      groupsInLvl.forEach(g => {
+        g.memberIds.forEach(id => {
+          const h = cardHeightByPersonId.value.get(id) || 50;
+          if (h > maxCardH) maxCardH = h;
+        });
+      });
+    }
+    maxCardHeights[lvl] = maxCardH;
+
+    const corridorBars = barsByCorridorLevel.get(lvl) || [];
+    let totalLanes = 0;
+    if (corridorBars.length > 0) {
+      const { totalLanes: calculatedLanes } = assignNonOverlappingLanes(corridorBars);
+      totalLanes = calculatedLanes;
+    }
+
+    requiredLanes[lvl] = totalLanes;
+    const linesHeight = totalLanes === 0
+      ? CORRIDOR_EMPTY
+      : (CORRIDOR_PAD_TOP + (totalLanes - 1) * gap + CORRIDOR_PAD_BOTTOM);
+    heights[lvl] = Math.max(MIN_LEVEL_HEIGHT, LEVEL_CARD_PAD_TOP + maxCardH + linesHeight);
+  }
+
+  // 4. Kumulative Positionen von oben (totalLevels) nach unten (1) in O(L)
+  let currY = CANVAS_PAD_TOP;
+  for (let lvl = totalLvls; lvl >= 1; lvl--) {
+    bandTopY[lvl] = currY;
+    cardTopY[lvl] = currY + LEVEL_CARD_PAD_TOP;
+    levelMaxCardBottom[lvl] = cardTopY[lvl] + (maxCardHeights[lvl] || 50);
+    currY += heights[lvl];
+  }
+
+  const totalCanvasHeight = Math.max(800, currY + CANVAS_PAD_BOTTOM);
+
+  return {
+    heights,
+    bandTopY,
+    cardTopY,
+    levelMaxCardBottom,
+    maxCardHeights,
+    requiredLanes,
+    totalCanvasHeight,
   };
+});
+
+const levelLayoutMetrics = computed<LevelMetrics>(() => computedLevelMetrics.value);
+
+function getLevelHeight(level: number): number {
+  return levelLayoutMetrics.value.heights[level] || DEFAULT_LEVEL_HEIGHT;
+}
+
+function getLevelBandTopY(level: number): number {
+  return levelLayoutMetrics.value.bandTopY[level] || CANVAS_PAD_TOP;
+}
+
+function getGroupTopY(level: number): number {
+  return levelLayoutMetrics.value.cardTopY[level] || (CANVAS_PAD_TOP + LEVEL_CARD_PAD_TOP);
+}
+
+function getMaxCardHeightForLevel(level: number): number {
+  return levelLayoutMetrics.value.maxCardHeights[level] || 50;
 }
 
 function extractSortableBirthYear(dateStr: string | null | undefined): number {
@@ -847,12 +1283,15 @@ function fitToScreen() {
 }
 
 watch(() => [props.activeProbandId, props.persons.length], () => {
-  buildInitialDesignLayout();
+  if (isApplyingLoadedState) return;
   loadProbandBackground(props.activeProbandId);
-}, { immediate: true });
+  if (hasInitialized && props.persons.length > 0) {
+    checkAndLoadLatestStateOrOffer();
+  }
+});
 
-onMounted(() => {
-  nextTick(() => centerOnOrigin());
+onMounted(async () => {
+  hasInitialized = true;
   if (viewportRef.value) {
     viewportRef.value.addEventListener('wheel', handleWheelZoom, { passive: false });
   }
@@ -860,6 +1299,10 @@ onMounted(() => {
 
   // Hintergrundbild und Konfiguration für aktiven Probanden initial laden
   loadProbandBackground(props.activeProbandId);
+
+  if (props.persons.length > 0) {
+    await checkAndLoadLatestStateOrOffer();
+  }
 });
 
 onUnmounted(() => {
@@ -875,20 +1318,6 @@ onUnmounted(() => {
   window.removeEventListener('mouseup', onBgMouseUp);
 });
 
-// Kumulative Ebenen-Geometrie mit individuell definierbarer Höhe pro Ebene
-function getLevelBandTopY(level: number): number {
-  let y = CANVAS_PAD_TOP;
-  for (let l = totalLevels.value; l > level; l--) {
-    y += getLevelHeight(l);
-  }
-  return y;
-}
-
-function getGroupTopY(level: number): number {
-  const bandTop = getLevelBandTopY(level);
-  const lvlH = getLevelHeight(level);
-  return bandTop + Math.round((lvlH - currentCardHeight.value) / 2);
-}
 
 function getLevelAtCanvasY(canvasY: number): { level: number; insertAboveLevel: number | null } {
   let y = CANVAS_PAD_TOP;
@@ -913,13 +1342,7 @@ function getLevelAtCanvasY(canvasY: number): { level: number; insertAboveLevel: 
   return { level: 1, insertAboveLevel: null };
 }
 
-const canvasHeight = computed<number>(() => {
-  let sum = CANVAS_PAD_TOP + CANVAS_PAD_BOTTOM;
-  for (let l = 1; l <= totalLevels.value; l++) {
-    sum += getLevelHeight(l);
-  }
-  return sum;
-});
+const canvasHeight = computed<number>(() => levelLayoutMetrics.value.totalCanvasHeight);
 
 const canvasWidth = computed<number>(() => {
   let maxRight = 1400;
@@ -1233,6 +1656,7 @@ interface CardBox {
   right: number;
   top: number;
   bottom: number;
+  height: number;
   centerX: number;
   centerY: number;
 }
@@ -1243,6 +1667,7 @@ interface SiblingSubGroup {
   parentPerson: Person | null;
   cards: CardBox[];
   isMultiSibling: boolean;
+  surname: string;
 }
 
 interface GroupLayoutInfo {
@@ -1258,20 +1683,6 @@ interface GroupLayoutInfo {
   siblingSubGroups: SiblingSubGroup[];
   canRegroup: boolean;
   isDocked: boolean;
-}
-
-function getBaptismInfo(person: Person): { date: string | null; place: string | null } {
-  const extra = person.gedcom_extra;
-  if (!extra || typeof extra !== 'object') return { date: null, place: null };
-  const chr = extra['CHR'];
-  if (!chr) return { date: null, place: null };
-  if (typeof chr === 'object') {
-    return {
-      date: chr['DATE'] ? String(chr['DATE']) : null,
-      place: chr['PLAC'] ? String(chr['PLAC']) : null,
-    };
-  }
-  return { date: null, place: null };
 }
 
 interface SpouseDateItem {
@@ -1292,6 +1703,7 @@ interface RenderedCardSpouse {
 
 interface RenderedCardData {
   henryCode: string | null;
+  firstName: string;
   fullName: string;
   birthText: string;
   chrText: string;
@@ -1312,11 +1724,12 @@ const cardDataByPersonId = computed<Map<string, RenderedCardData>>(() => {
       ? (person.proband_data[activeProband]?.henry_code || null)
       : null;
 
-    const fullName = `${person.given_name || 'N.N.'} ${person.surname || ''}`.trim();
+    const firstName = (person.given_name || 'N.N.').trim();
+    const fullName = `${firstName} ${person.surname || ''}`.trim();
 
     let birthText = '';
     if (cfg.showBirthDate && person.birth_date) {
-      const dateStr = formatLocalizedDate(person.birth_date, loc);
+      const dateStr = formatLocalizedDate(person.birth_date, loc, cfg.showOnlyYears);
       const placePart = cfg.showBirthPlace && person.birth_place ? ` (${person.birth_place})` : '';
       birthText = `* ${dateStr}${placePart}`;
     }
@@ -1325,7 +1738,7 @@ const cardDataByPersonId = computed<Map<string, RenderedCardData>>(() => {
     if (cfg.showChrDate) {
       const chr = getBaptismInfo(person);
       if (chr.date) {
-        const dateStr = formatLocalizedDate(chr.date, loc);
+        const dateStr = formatLocalizedDate(chr.date, loc, cfg.showOnlyYears);
         const placePart = cfg.showChrPlace && chr.place ? ` (${chr.place})` : '';
         chrText = `~ ${dateStr}${placePart}`;
       }
@@ -1333,7 +1746,7 @@ const cardDataByPersonId = computed<Map<string, RenderedCardData>>(() => {
 
     let deathText = '';
     if (cfg.showDeathDate && person.death_date) {
-      const dateStr = formatLocalizedDate(person.death_date, loc);
+      const dateStr = formatLocalizedDate(person.death_date, loc, cfg.showOnlyYears);
       const placePart = cfg.showDeathPlace && person.death_place ? ` (${person.death_place})` : '';
       deathText = `† ${dateStr}${placePart}`;
     }
@@ -1356,10 +1769,10 @@ const cardDataByPersonId = computed<Map<string, RenderedCardData>>(() => {
           ? (spPerson.proband_data[activeProband]?.henry_code || null)
           : null;
 
-        const dateStr = spConn.date ? formatLocalizedDate(spConn.date, loc) : null;
-        const bDateStr = spPerson?.birth_date ? formatLocalizedDate(spPerson.birth_date, loc) : null;
-        const dDateStr = spPerson?.death_date ? formatLocalizedDate(spPerson.death_date, loc) : null;
-        const divDateStr = spConn.divorce_date ? formatLocalizedDate(spConn.divorce_date, loc) : null;
+        const dateStr = spConn.date ? formatLocalizedDate(spConn.date, loc, cfg.showOnlyYears) : null;
+        const bDateStr = spPerson?.birth_date ? formatLocalizedDate(spPerson.birth_date, loc, cfg.showOnlyYears) : null;
+        const dDateStr = spPerson?.death_date ? formatLocalizedDate(spPerson.death_date, loc, cfg.showOnlyYears) : null;
+        const divDateStr = spConn.divorce_date ? formatLocalizedDate(spConn.divorce_date, loc, cfg.showOnlyYears) : null;
         const isDivorced = Boolean(spConn.is_divorced);
 
         const dateItems: SpouseDateItem[] = [];
@@ -1396,6 +1809,7 @@ const cardDataByPersonId = computed<Map<string, RenderedCardData>>(() => {
 
     map.set(person.id, {
       henryCode,
+      firstName,
       fullName,
       birthText,
       chrText,
@@ -1416,6 +1830,23 @@ function getLineStyle(bold: boolean, italic: boolean) {
   };
 }
 
+function getSiblingSubGroupSurname(cards: CardBox[], parentPerson: Person | null): string {
+  const surnames: string[] = [];
+  for (const cb of cards) {
+    const s = cb.person.surname?.trim();
+    if (s && !surnames.includes(s)) {
+      surnames.push(s);
+    }
+  }
+  if (surnames.length > 0) {
+    return surnames.join(' / ');
+  }
+  if (parentPerson?.surname?.trim()) {
+    return parentPerson.surname.trim();
+  }
+  return '';
+}
+
 const groupLayouts = computed<GroupLayoutInfo[]>(() => {
   const countByParentId = new Map<string, number>();
   siblingGroups.value.forEach(g => {
@@ -1432,7 +1863,11 @@ const groupLayouts = computed<GroupLayoutInfo[]>(() => {
     const left = Math.round(group.x - width / 2);
     const right = left + width;
     const top = getGroupTopY(group.level);
-    const bottom = top + currentCardHeight.value;
+
+    // Größte dynamische Höhe innerhalb dieser Gruppe ermitteln
+    const groupCardHeight = visibleMemberIds.length > 0
+      ? Math.max(...visibleMemberIds.map(id => getCardHeightForPerson(id, group.generation)), 50)
+      : 50;
 
     const cards: CardBox[] = [];
     visibleMemberIds.forEach((pid, idx) => {
@@ -1440,6 +1875,8 @@ const groupLayouts = computed<GroupLayoutInfo[]>(() => {
       if (!p) return;
       const cLeft = left + idx * CARD_WIDTH;
       const cRight = cLeft + CARD_WIDTH;
+      // Bei Gruppierung (> 1 Kachel) Höhe aller Kacheln aneinander anpassen (größte dynamische Höhe dieser Gruppe)
+      const cardH = groupCardHeight;
       cards.push({
         person: p,
         groupId: group.id,
@@ -1448,11 +1885,14 @@ const groupLayouts = computed<GroupLayoutInfo[]>(() => {
         left: cLeft,
         right: cRight,
         top,
-        bottom,
+        bottom: top + cardH,
+        height: cardH,
         centerX: cLeft + CARD_WIDTH / 2,
-        centerY: top + currentCardHeight.value / 2,
+        centerY: top + cardH / 2,
       });
     });
+
+    const groupHeight = groupCardHeight;
 
     // Geschwister-Subgruppen innerhalb dieses Gruppenverbands ermitteln (biologische Geschwister)
     const siblingSubGroups: SiblingSubGroup[] = [];
@@ -1468,12 +1908,17 @@ const groupLayouts = computed<GroupLayoutInfo[]>(() => {
           parentPerson: pId ? (personById.value.get(pId) || null) : null,
           cards: [cb],
           isMultiSibling: false,
+          surname: '',
         };
         siblingSubGroups.push(currentSubGroup);
       } else {
         currentSubGroup.cards.push(cb);
         currentSubGroup.isMultiSibling = true;
       }
+    });
+
+    siblingSubGroups.forEach(sub => {
+      sub.surname = getSiblingSubGroupSurname(sub.cards, sub.parentPerson);
     });
 
     const canRegroup = group.memberIds.some(id => canRegroupPerson(id));
@@ -1492,9 +1937,9 @@ const groupLayouts = computed<GroupLayoutInfo[]>(() => {
       left,
       right,
       top,
-      bottom,
+      bottom: top + groupHeight,
       width,
-      height: currentCardHeight.value,
+      height: groupHeight,
       parentPerson: group.parentId ? (personById.value.get(group.parentId) || null) : null,
       cards,
       siblingSubGroups,
@@ -2969,357 +3414,17 @@ interface ArrowHead {
   isHighlighted: boolean;
 }
 
-interface SiblingGroupRelation {
-  parentId: string;
-  childLevel: number;
-  pBox: CardBox;
-  cBoxes: CardBox[];
-  minChildX: number;
-  maxChildX: number;
-}
-
-// Optimiert die Ebenen-Zuweisung (Lanes) der horizontalen Querlinien, um Kreuzungen / Linienbrücken zu minimieren
-function optimizeSiblingGroupLanes(
-  groupRels: SiblingGroupRelation[],
-  maxLanes: number,
-  _mode: 'up' | 'down' | 'same'
-): number[] {
-  const n = groupRels.length;
-  if (n <= 1) return [0];
-  if (maxLanes <= 1) return new Array(n).fill(0);
-
-  const isDragging = draggingGroupId.value !== null;
-
-  const items = groupRels.map(rel => {
-    const parentX = rel.pBox.centerX;
-    const barMin = Math.min(parentX, rel.minChildX);
-    const barMax = Math.max(parentX, rel.maxChildX);
-    const childrenX = rel.cBoxes.map(c => c.centerX);
-    const span = barMax - barMin;
-    return { parentX, barMin, barMax, childrenX, span };
-  });
-
-  const pairCosts: { iBelowJ: number; jBelowI: number; overlap: boolean }[][] = [];
-  for (let i = 0; i < n; i++) {
-    pairCosts[i] = [];
-    for (let j = 0; j < n; j++) {
-      if (i === j) {
-        pairCosts[i][j] = { iBelowJ: 0, jBelowI: 0, overlap: false };
-        continue;
-      }
-      const itemI = items[i];
-      const itemJ = items[j];
-      const overlap = Math.max(itemI.barMin, itemJ.barMin) <= Math.min(itemI.barMax, itemJ.barMax) - 4;
-
-      let iBelowJ = 0;
-      let jBelowI = 0;
-
-      // i auf niedrigerem Lane-Index als j (l_i < l_j):
-      // i liegt näher an den Kindern (Ebene 0),
-      // j liegt weiter weg / näher am Elternteil (höhere Lanes).
-      // 1) i's Elternstamm startet am Elternknoten und läuft zu i's Querlinie.
-      //    Falls j's Querlinie dazwischen liegt und nicht vom selben Elternteil ausgeht, kreuzt i's Elternstamm j's Querlinie:
-      const sameParent = Math.abs(itemI.parentX - itemJ.parentX) < 2;
-      if (!sameParent && itemI.parentX > itemJ.barMin + 2 && itemI.parentX < itemJ.barMax - 2) {
-        iBelowJ += 500;
-      }
-      // 2) j's Kinder-Abgangslinien starten an j's Querlinie und laufen zu den Kindern.
-      //    Falls eines von j's Kindern im horizontalen Bereich von i liegt,
-      //    kreuzt diese Abgangslinie i's Querlinie:
-      for (const cx of itemJ.childrenX) {
-        if (cx > itemI.barMin + 2 && cx < itemI.barMax - 2) {
-          iBelowJ += 500;
-        }
-      }
-
-      // j auf niedrigerem Lane-Index als i (l_j < l_i):
-      if (!sameParent && itemJ.parentX > itemI.barMin + 2 && itemJ.parentX < itemI.barMax - 2) {
-        jBelowI += 500;
-      }
-      for (const cx of itemI.childrenX) {
-        if (cx > itemJ.barMin + 2 && cx < itemJ.barMax - 2) {
-          jBelowI += 500;
-        }
-      }
-
-      pairCosts[i][j] = { iBelowJ, jBelowI, overlap };
-    }
-  }
-
-  function evaluate(assignment: number[]): number {
-    let cost = 0;
-    for (let i = 0; i < n; i++) {
-      cost += assignment[i] * 0.002;
-      for (let j = i + 1; j < n; j++) {
-        const pc = pairCosts[i][j];
-        const lI = assignment[i];
-        const lJ = assignment[j];
-        if (lI === lJ) {
-          if (pc.overlap) cost += 5000;
-        } else if (lI < lJ) {
-          cost += pc.iBelowJ;
-          const spanI = items[i].span;
-          const spanJ = items[j].span;
-          if (spanI > spanJ + 8) {
-            cost += 0.5;
-          }
-        } else {
-          cost += pc.jBelowI;
-          const spanI = items[i].span;
-          const spanJ = items[j].span;
-          if (spanJ > spanI + 8) {
-            cost += 0.5;
-          }
-        }
-      }
-    }
-    return cost;
-  }
-
-  // 1. Initial-Kandidaten
-  const innerRanked = items.map((it, idx) => {
-    let enclosedByCount = 0;
-    for (let other = 0; other < n; other++) {
-      if (other === idx) continue;
-      if (items[other].barMin <= it.barMin + 4 && items[other].barMax >= it.barMax - 4) {
-        enclosedByCount++;
-      }
-    }
-    const score = enclosedByCount * 10000 - it.span;
-    return { idx, score };
-  }).sort((a, b) => b.score - a.score);
-
-  const innerOuterLanes = new Array(n).fill(0);
-  const laneIntervals: { min: number; max: number }[][] = Array.from({ length: maxLanes }, () => []);
-
-  for (const item of innerRanked) {
-    const idx = item.idx;
-    const it = items[idx];
-    let bestL = 0;
-    let bestIncr = Infinity;
-
-    for (let l = 0; l < maxLanes; l++) {
-      let curCost = 0;
-      let hasOverlapOnSameLane = false;
-
-      for (const existing of laneIntervals[l]) {
-        if (Math.max(it.barMin, existing.min) <= Math.min(it.barMax, existing.max) - 4) {
-          hasOverlapOnSameLane = true;
-          break;
-        }
-      }
-
-      if (hasOverlapOnSameLane) {
-        curCost += 5000;
-      }
-
-      for (let other = 0; other < n; other++) {
-        if (other === idx || innerOuterLanes[other] === undefined) continue;
-        const pc = idx < other ? pairCosts[idx][other] : pairCosts[other][idx];
-        const lA = idx < other ? l : innerOuterLanes[other];
-        const lB = idx < other ? innerOuterLanes[other] : l;
-        if (lA === lB) {
-          if (pc.overlap) curCost += 5000;
-        } else if (lA < lB) {
-          curCost += pc.iBelowJ;
-          const aIdx = idx < other ? idx : other;
-          const bIdx = idx < other ? other : idx;
-          if (items[aIdx].span > items[bIdx].span + 8) {
-            curCost += 0.5;
-          }
-        } else {
-          curCost += pc.jBelowI;
-          const aIdx = idx < other ? idx : other;
-          const bIdx = idx < other ? other : idx;
-          if (items[bIdx].span > items[aIdx].span + 8) {
-            curCost += 0.5;
-          }
-        }
-      }
-
-      curCost += l * 0.002;
-
-      if (curCost < bestIncr) {
-        bestIncr = curCost;
-        bestL = l;
-      }
-    }
-
-    innerOuterLanes[idx] = bestL;
-    laneIntervals[bestL].push({ min: it.barMin, max: it.barMax });
-  }
-
-  if (isDragging) {
-    return innerOuterLanes;
-  }
-
-  const candidates: number[][] = [];
-  candidates.push(innerOuterLanes);
-
-  // Greedy nach Spannweiten-Breite (kleinste Spannen zuerst)
-  const sortedByWidth = items.map((it, idx) => ({ idx, width: it.span }))
-    .sort((a, b) => a.width - b.width)
-    .map(x => x.idx);
-
-  const greedyLanes = new Array(n).fill(0);
-  for (const idx of sortedByWidth) {
-    let bestL = 0;
-    let bestIncr = Infinity;
-    for (let l = 0; l < maxLanes; l++) {
-      greedyLanes[idx] = l;
-      let curCost = 0;
-      for (let other = 0; other < n; other++) {
-        if (other === idx) continue;
-        const pc = idx < other ? pairCosts[idx][other] : pairCosts[other][idx];
-        const lA = idx < other ? l : greedyLanes[other];
-        const lB = idx < other ? greedyLanes[other] : l;
-        if (lA === lB) {
-          if (pc.overlap) curCost += 1000;
-        } else if (lA < lB) {
-          curCost += pc.iBelowJ;
-          const aIdx = idx < other ? idx : other;
-          const bIdx = idx < other ? other : idx;
-          if (items[aIdx].span > items[bIdx].span + 8) {
-            curCost += 0.8;
-          }
-        } else {
-          curCost += pc.jBelowI;
-          const aIdx = idx < other ? idx : other;
-          const bIdx = idx < other ? other : idx;
-          if (items[bIdx].span > items[aIdx].span + 8) {
-            curCost += 0.8;
-          }
-        }
-      }
-      curCost += l * 0.1;
-      if (curCost < bestIncr) {
-        bestIncr = curCost;
-        bestL = l;
-      }
-    }
-    greedyLanes[idx] = bestL;
-  }
-  candidates.push(greedyLanes);
-
-  // Greedy nach Spannweiten-Breite absteigend (äußere Verbindungen bevorzugt auf höheren Lanes)
-  const sortedByWidthDesc = items.map((it, idx) => ({ idx, width: it.span }))
-    .sort((a, b) => b.width - a.width)
-    .map(x => x.idx);
-  const greedyLanesDesc = new Array(n).fill(0);
-  for (const idx of sortedByWidthDesc) {
-    let bestL = maxLanes - 1;
-    let bestIncr = Infinity;
-    for (let l = maxLanes - 1; l >= 0; l--) {
-      greedyLanesDesc[idx] = l;
-      let curCost = 0;
-      for (let other = 0; other < n; other++) {
-        if (other === idx) continue;
-        const pc = idx < other ? pairCosts[idx][other] : pairCosts[other][idx];
-        const lA = idx < other ? l : greedyLanesDesc[other];
-        const lB = idx < other ? greedyLanesDesc[other] : l;
-        if (lA === lB) {
-          if (pc.overlap) curCost += 1000;
-        } else if (lA < lB) {
-          curCost += pc.iBelowJ;
-        } else {
-          curCost += pc.jBelowI;
-        }
-      }
-      curCost += l * 0.05;
-      if (curCost < bestIncr) {
-        bestIncr = curCost;
-        bestL = l;
-      }
-    }
-    greedyLanesDesc[idx] = bestL;
-  }
-  candidates.push(greedyLanesDesc);
-
-  // Intervall-Packen (nicht-überlappende Spannen teilen sich dieselbe Lane)
-  const sortedByLeft = items.map((it, idx) => ({ idx, minX: it.barMin }))
-    .sort((a, b) => a.minX - b.minX)
-    .map(x => x.idx);
-  const packedLanes = new Array(n).fill(0);
-  const laneMaxX: number[] = new Array(maxLanes).fill(-Infinity);
-  for (const idx of sortedByLeft) {
-    let placed = false;
-    for (let l = 0; l < maxLanes; l++) {
-      if (items[idx].barMin >= laneMaxX[l] - 2) {
-        packedLanes[idx] = l;
-        laneMaxX[l] = items[idx].barMax;
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) {
-      packedLanes[idx] = idx % maxLanes;
-    }
-  }
-  candidates.push(packedLanes);
-  candidates.push(groupRels.map((_, idx) => idx % maxLanes));
-
-  let bestAssignment = candidates[0];
-  let bestScore = evaluate(bestAssignment);
-
-  for (let c = 1; c < candidates.length; c++) {
-    const score = evaluate(candidates[c]);
-    if (score < bestScore) {
-      bestScore = score;
-      bestAssignment = candidates[c];
-    }
-  }
-
-  // 2. Schnelle Lokale Suche (bis n <= 80 Relationen)
-  if (n <= 80) {
-    const currentAssignment = [...bestAssignment];
-    let improved = true;
-    let iterations = 0;
-
-    while (improved && iterations < 4) {
-      improved = false;
-      iterations++;
-
-      for (let i = 0; i < n; i++) {
-        const origLane = currentAssignment[i];
-        for (let l = 0; l < maxLanes; l++) {
-          if (l === origLane) continue;
-          currentAssignment[i] = l;
-          const score = evaluate(currentAssignment);
-          if (score < bestScore) {
-            bestScore = score;
-            improved = true;
-          } else {
-            currentAssignment[i] = origLane;
-          }
-        }
-      }
-
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          if (currentAssignment[i] === currentAssignment[j]) continue;
-          const tmp = currentAssignment[i];
-          currentAssignment[i] = currentAssignment[j];
-          currentAssignment[j] = tmp;
-          const score = evaluate(currentAssignment);
-          if (score < bestScore) {
-            bestScore = score;
-            improved = true;
-          } else {
-            currentAssignment[j] = currentAssignment[i];
-            currentAssignment[i] = tmp;
-          }
-        }
-      }
-    }
-    return currentAssignment;
-  }
-
-  return bestAssignment;
+interface AnchorPoint {
+  x: number;
+  y: number;
+  d: string;
+  isHighlighted: boolean;
 }
 
 const edgeGeometry = computed(() => {
   const rawSegments: LineSegment[] = [];
   const arrows: ArrowHead[] = [];
+  const anchors: AnchorPoint[] = [];
 
   // 1. Alle sichtbaren Eltern-Kind-Verbindungen sammeln (biologische Abstammung)
   // Jedes Kind wird exakt mit seinem Elternteil verbunden, unabhängig davon, wie Karten visuell gruppiert sind
@@ -3352,10 +3457,21 @@ const edgeGeometry = computed(() => {
     lvlMap.get(cb.level)!.push(cb);
   });
 
-  // 2. Geschwister-Gruppen je Ziel-Ebene sammeln, damit Querlinien verschiedener Geschwistergruppen
-  // sichtbar gestaffelt in unterschiedlichen Höhen (Lanes) verlaufen.
-  // Nur für Kinder derselben Geschwistergruppe liegen die Querlinien auf exakt gleicher Höhe.
-  const relationsByLevel = new Map<number, SiblingGroupRelation[]>();
+  // 2. Geschwister-Gruppen je physischem Korridor sammeln, damit alle Querlinien im selben
+  // Zwischenbereich (Verbindungen nach oben, selbe Ebene und nach unten) gemeinsam und kollisionsfrei
+  // in Lanes eingeteilt werden.
+  interface CorridorRelation {
+    parentId: string;
+    childLevel: number;
+    corridorLevel: number;
+    direction: 'up' | 'same' | 'down';
+    pBox: CardBox;
+    cBoxes: CardBox[];
+    minChildX: number;
+    maxChildX: number;
+  }
+
+  const relationsByCorridor = new Map<number, CorridorRelation[]>();
 
   childrenByParentAndLevel.forEach((levelMap, parentId) => {
     const pBox = cardBoxByPersonId.value.get(parentId);
@@ -3366,12 +3482,20 @@ const edgeGeometry = computed(() => {
       const minChildX = Math.min(...cBoxes.map(c => c.centerX));
       const maxChildX = Math.max(...cBoxes.map(c => c.centerX));
 
-      if (!relationsByLevel.has(childLevel)) {
-        relationsByLevel.set(childLevel, []);
+      const direction: 'up' | 'same' | 'down' =
+        childLevel > pBox.level ? 'up' : (childLevel === pBox.level ? 'same' : 'down');
+      // Physischer Korridor: Bei Verbindungen nach unten liegt der Korridor unterhalb des Elternteils (pBox.level),
+      // bei Verbindungen nach oben oder gleicher Ebene unterhalb der Kinderebene (childLevel).
+      const corridorLevel = direction === 'down' ? pBox.level : childLevel;
+
+      if (!relationsByCorridor.has(corridorLevel)) {
+        relationsByCorridor.set(corridorLevel, []);
       }
-      relationsByLevel.get(childLevel)!.push({
+      relationsByCorridor.get(corridorLevel)!.push({
         parentId,
         childLevel,
+        corridorLevel,
+        direction,
         pBox,
         cBoxes,
         minChildX,
@@ -3385,262 +3509,165 @@ const edgeGeometry = computed(() => {
   const bridgeRadius = Math.max(4, Math.min(20, props.bridgeRadius || 8));
   const enableBridges = props.enableLineBridges !== false;
 
-  // 3. Für jede Ebene die Geschwistergruppen einordnen und Linienbrücken durch optimierte Ebenen-Zuweisung minimieren
-  relationsByLevel.forEach((relations, childLevel) => {
+  // 3. Für jeden physischen Korridor die Querlinien gemeinsam konfliktfrei auf Lanes verteilen
+  relationsByCorridor.forEach((relations, corridorLevel) => {
     relations.sort((a, b) => {
       const aCenter = (a.minChildX + a.maxChildX) / 2;
       const bCenter = (b.minChildX + b.maxChildX) / 2;
       return aCenter - bCenter;
     });
 
-    // Partitionieren nach Richtung relativ zum Elternknoten
-    const upRelations = relations.filter(r => childLevel > r.pBox.level);
-    const sameRelations = relations.filter(r => childLevel === r.pBox.level);
-    const downRelations = relations.filter(r => childLevel < r.pBox.level);
+    const items: SiblingBarItem[] = relations.map(r => {
+      // Jede Geschwistergruppe hat genau einen Zielpunkt (Zentrum der Gruppe)
+      const cBoxesByGroup = new Map<string, CardBox[]>();
+      r.cBoxes.forEach(cb => {
+        const gId = cb.groupId || cb.person.id;
+        if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
+        cBoxesByGroup.get(gId)!.push(cb);
+      });
+      const targetXs: number[] = [];
+      cBoxesByGroup.forEach(boxes => {
+        const minL = Math.min(...boxes.map(c => c.left));
+        const maxR = Math.max(...boxes.map(c => c.right));
+        targetXs.push(Math.round((minL + maxR) / 2));
+      });
+      const minChildX = Math.min(...targetXs);
+      const maxChildX = Math.max(...targetXs);
+      return {
+        parentId: r.parentId,
+        parentX: r.pBox.centerX,
+        minChildX,
+        maxChildX,
+        childrenX: targetXs,
+      };
+    });
 
-    // 3a. Verbindungen nach oben (Kinderebene liegt über Elternteil)
-    if (upRelations.length > 0) {
-      const minTopDist = Math.min(...upRelations.map(r => r.pBox.top - r.cBoxes[0].bottom));
-      const corridorHeight = Math.max(36, minTopDist);
-      const maxLanes = props.autoSubLanes !== false
-        ? Math.max(3, Math.min(24, Math.floor(corridorHeight / gap)))
-        : 6;
+    const corridorDir = relations[0]?.direction || 'up';
+    const { lanes } = assignNonOverlappingLanes(items, corridorDir);
 
-      const upLanes = (props.minimizeBridges !== false)
-        ? optimizeSiblingGroupLanes(upRelations, maxLanes, 'up')
-        : upRelations.map((_, idx) => idx % maxLanes);
+    relations.forEach((rel, idx) => {
+      const { parentId, childLevel, direction, pBox, cBoxes } = rel;
+      const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
+      const activeSel = activeDesignPersonId.value || props.selectedId;
+      const isCommonHighlighted =
+        Boolean(activeSel && (activeSel === parentId || cBoxes.some(c => c.person.id === activeSel))) ||
+        Boolean(
+          props.highlightedPathIds && props.highlightedPathIds.size > 0 &&
+          props.highlightedPathIds.has(parentId) &&
+          cBoxes.some(c => props.highlightedPathIds?.has(c.person.id))
+        );
 
-      upRelations.forEach((rel, idx) => {
-        const { parentId, pBox, cBoxes, minChildX, maxChildX } = rel;
-        const startX = pBox.centerX;
-        const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
-        const activeSel = activeDesignPersonId.value || props.selectedId;
-        const isCommonHighlighted =
-          Boolean(activeSel && (activeSel === parentId || cBoxes.some(c => c.person.id === activeSel))) ||
+      // Der Start-Anknüpfpunkt und der Stamm beginnen immer exakt mittig oben/unten auf der Kachel
+      const stemX = pBox.centerX;
+
+      const laneOffset = lanes[idx] * gap;
+      const levelMaxBottom = levelLayoutMetrics.value.levelMaxCardBottom[corridorLevel]
+        || (getLevelBandTopY(corridorLevel) + LEVEL_CARD_PAD_TOP + getMaxCardHeightForLevel(corridorLevel));
+      const jogY = levelMaxBottom + CORRIDOR_PAD_TOP + laneOffset;
+
+      const startY = direction === 'up' ? pBox.top : pBox.bottom;
+
+      // 1. Ausgangs-Anknüpfpunkt (Halbkreis) an der Kante des Elternknotens
+      const anchorRadius = 7;
+      const anchorD = direction === 'up'
+        ? `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 0 ${stemX + anchorRadius} ${startY} Z`
+        : `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
+
+      const existingAnchor = anchors.find(a => Math.abs(a.x - stemX) < 1 && Math.abs(a.y - startY) < 1);
+      if (existingAnchor) {
+        if (isCommonHighlighted) existingAnchor.isHighlighted = true;
+      } else {
+        anchors.push({
+          x: stemX,
+          y: startY,
+          d: anchorD,
+          isHighlighted: isCommonHighlighted,
+        });
+      }
+
+      // 2. Stamm vom Elternteil bis zur Höhenstufe (Lane)
+      rawSegments.push({
+        id: `${commonEdgeKey}-stem`,
+        edgeKey: commonEdgeKey,
+        x1: stemX,
+        y1: startY,
+        x2: stemX,
+        y2: jogY,
+        isHighlighted: isCommonHighlighted,
+      });
+
+      // 3. Pro Geschwistergruppe genau EINE eingehende Verbindungslinie ermitteln
+      const cBoxesByGroup = new Map<string, CardBox[]>();
+      cBoxes.forEach(cb => {
+        const gId = cb.groupId || cb.person.id;
+        if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
+        cBoxesByGroup.get(gId)!.push(cb);
+      });
+
+      const groupTargets: { targetX: number; targetY: number; isHighlighted: boolean; key: string }[] = [];
+      let targetIdx = 0;
+      cBoxesByGroup.forEach((boxes) => {
+        const minL = Math.min(...boxes.map(c => c.left));
+        const maxR = Math.max(...boxes.map(c => c.right));
+        const targetX = Math.round((minL + maxR) / 2);
+        const targetY = direction === 'down'
+          ? Math.min(...boxes.map(c => c.top))
+          : Math.max(...boxes.map(c => c.bottom));
+
+        const isTargetHighlighted =
+          Boolean(activeSel && (activeSel === parentId || boxes.some(c => c.person.id === activeSel))) ||
           Boolean(
             props.highlightedPathIds && props.highlightedPathIds.size > 0 &&
             props.highlightedPathIds.has(parentId) &&
-            cBoxes.some(c => props.highlightedPathIds?.has(c.person.id))
+            boxes.some(c => props.highlightedPathIds?.has(c.person.id))
           );
 
-        const barMinX = Math.min(startX, minChildX);
-        const barMaxX = Math.max(startX, maxChildX);
-        const laneOffset = upLanes[idx] * gap;
-        const startY = pBox.top;
-        const jogY = cBoxes[0].bottom + 16 + laneOffset;
+        groupTargets.push({
+          targetX,
+          targetY,
+          isHighlighted: isTargetHighlighted,
+          key: `${commonEdgeKey}-grp${targetIdx++}`,
+        });
+      });
 
-        // Stamm vom Elternteil
+      // 4. Horizontale Querlinie zwischen Stamm und Ziel-Geschwistergruppen
+      const allTargetXs = groupTargets.map(t => t.targetX);
+      const barMinX = Math.min(stemX, ...allTargetXs);
+      const barMaxX = Math.max(stemX, ...allTargetXs);
+
+      if (barMaxX - barMinX > 1) {
         rawSegments.push({
-          id: `${commonEdgeKey}-stem`,
+          id: `${commonEdgeKey}-bar`,
           edgeKey: commonEdgeKey,
-          x1: startX,
-          y1: startY,
-          x2: startX,
+          x1: barMinX,
+          y1: jogY,
+          x2: barMaxX,
           y2: jogY,
           isHighlighted: isCommonHighlighted,
         });
+      }
 
-        // Horizontale Querlinie
-        if (barMaxX - barMinX > 1) {
-          rawSegments.push({
-            id: `${commonEdgeKey}-bar`,
-            edgeKey: commonEdgeKey,
-            x1: barMinX,
-            y1: jogY,
-            x2: barMaxX,
-            y2: jogY,
-            isHighlighted: isCommonHighlighted,
-          });
-        }
-
-        // Abgänge zu den Kindern
-        cBoxes.forEach((cb, cIdx) => {
-          const isChildHighlighted =
-            Boolean(activeSel && (activeSel === parentId || activeSel === cb.person.id)) ||
-            Boolean(
-              props.highlightedPathIds && props.highlightedPathIds.size > 0 &&
-              props.highlightedPathIds.has(parentId) &&
-              props.highlightedPathIds.has(cb.person.id)
-            );
-
-          rawSegments.push({
-            id: `${commonEdgeKey}-c${cIdx}`,
-            edgeKey: commonEdgeKey,
-            x1: cb.centerX,
-            y1: jogY,
-            x2: cb.centerX,
-            y2: cb.bottom,
-            isHighlighted: isChildHighlighted,
-          });
-
-          arrows.push({
-            x: cb.centerX,
-            y: cb.bottom,
-            direction: 'up',
-            isHighlighted: isChildHighlighted,
-          });
-        });
-      });
-    }
-
-    // 3b. Verbindungen auf derselben Ebene
-    if (sameRelations.length > 0) {
-      const maxLanesSame = 8;
-      const sameLanes = (props.minimizeBridges !== false)
-        ? optimizeSiblingGroupLanes(sameRelations, maxLanesSame, 'same')
-        : sameRelations.map((_, idx) => idx % maxLanesSame);
-
-      sameRelations.forEach((rel, idx) => {
-        const { parentId, pBox, cBoxes, minChildX, maxChildX } = rel;
-        const startX = pBox.centerX;
-        const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
-        const activeSel = activeDesignPersonId.value || props.selectedId;
-        const isCommonHighlighted =
-          Boolean(activeSel && (activeSel === parentId || cBoxes.some(c => c.person.id === activeSel))) ||
-          Boolean(
-            props.highlightedPathIds && props.highlightedPathIds.size > 0 &&
-            props.highlightedPathIds.has(parentId) &&
-            cBoxes.some(c => props.highlightedPathIds?.has(c.person.id))
-          );
-
-        const barMinX = Math.min(startX, minChildX);
-        const barMaxX = Math.max(startX, maxChildX);
-        const laneOffset = sameLanes[idx] * gap;
-        const startY = pBox.bottom;
-        const jogY = pBox.bottom + 18 + laneOffset;
-
+      // 5. Einzelne eingehende Verbindungslinie und Pfeil pro Geschwistergruppe
+      const arrowDir = direction === 'down' ? 'down' : 'up';
+      groupTargets.forEach(tgt => {
         rawSegments.push({
-          id: `${commonEdgeKey}-same-stem`,
+          id: tgt.key,
           edgeKey: commonEdgeKey,
-          x1: startX,
-          y1: startY,
-          x2: startX,
-          y2: jogY,
-          isHighlighted: isCommonHighlighted,
+          x1: tgt.targetX,
+          y1: jogY,
+          x2: tgt.targetX,
+          y2: tgt.targetY,
+          isHighlighted: tgt.isHighlighted,
         });
 
-        if (barMaxX - barMinX > 1) {
-          rawSegments.push({
-            id: `${commonEdgeKey}-same-bar`,
-            edgeKey: commonEdgeKey,
-            x1: barMinX,
-            y1: jogY,
-            x2: barMaxX,
-            y2: jogY,
-            isHighlighted: isCommonHighlighted,
-          });
-        }
-
-        cBoxes.forEach((cb, cIdx) => {
-          const isChildHighlighted =
-            Boolean(activeSel && (activeSel === parentId || activeSel === cb.person.id)) ||
-            Boolean(
-              props.highlightedPathIds && props.highlightedPathIds.size > 0 &&
-              props.highlightedPathIds.has(parentId) &&
-              props.highlightedPathIds.has(cb.person.id)
-            );
-
-          rawSegments.push({
-            id: `${commonEdgeKey}-same-c${cIdx}`,
-            edgeKey: commonEdgeKey,
-            x1: cb.centerX,
-            y1: jogY,
-            x2: cb.centerX,
-            y2: cb.bottom,
-            isHighlighted: isChildHighlighted,
-          });
-
-          arrows.push({
-            x: cb.centerX,
-            y: cb.bottom,
-            direction: 'up',
-            isHighlighted: isChildHighlighted,
-          });
+        arrows.push({
+          x: tgt.targetX,
+          y: tgt.targetY,
+          direction: arrowDir,
+          isHighlighted: tgt.isHighlighted,
         });
       });
-    }
-
-    // 3c. Verbindungen nach unten (Kinderebene liegt unter Elternteil)
-    if (downRelations.length > 0) {
-      const minBottomDist = Math.min(...downRelations.map(r => r.cBoxes[0].top - r.pBox.bottom));
-      const corridorHeightDown = Math.max(36, minBottomDist);
-      const maxLanesDown = props.autoSubLanes !== false
-        ? Math.max(3, Math.min(24, Math.floor(corridorHeightDown / gap)))
-        : 6;
-
-      const downLanes = (props.minimizeBridges !== false)
-        ? optimizeSiblingGroupLanes(downRelations, maxLanesDown, 'down')
-        : downRelations.map((_, idx) => idx % maxLanesDown);
-
-      downRelations.forEach((rel, idx) => {
-        const { parentId, pBox, cBoxes, minChildX, maxChildX } = rel;
-        const startX = pBox.centerX;
-        const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
-        const activeSel = activeDesignPersonId.value || props.selectedId;
-        const isCommonHighlighted =
-          Boolean(activeSel && (activeSel === parentId || cBoxes.some(c => c.person.id === activeSel))) ||
-          Boolean(
-            props.highlightedPathIds && props.highlightedPathIds.size > 0 &&
-            props.highlightedPathIds.has(parentId) &&
-            cBoxes.some(c => props.highlightedPathIds?.has(c.person.id))
-          );
-
-        const barMinX = Math.min(startX, minChildX);
-        const barMaxX = Math.max(startX, maxChildX);
-        const laneOffset = downLanes[idx] * gap;
-        const startY = pBox.bottom;
-        const jogY = cBoxes[0].top - 16 - laneOffset;
-
-        rawSegments.push({
-          id: `${commonEdgeKey}-down-stem`,
-          edgeKey: commonEdgeKey,
-          x1: startX,
-          y1: startY,
-          x2: startX,
-          y2: jogY,
-          isHighlighted: isCommonHighlighted,
-        });
-
-        if (barMaxX - barMinX > 1) {
-          rawSegments.push({
-            id: `${commonEdgeKey}-down-bar`,
-            edgeKey: commonEdgeKey,
-            x1: barMinX,
-            y1: jogY,
-            x2: barMaxX,
-            y2: jogY,
-            isHighlighted: isCommonHighlighted,
-          });
-        }
-
-        cBoxes.forEach((cb, cIdx) => {
-          const isChildHighlighted =
-            Boolean(activeSel && (activeSel === parentId || activeSel === cb.person.id)) ||
-            Boolean(
-              props.highlightedPathIds && props.highlightedPathIds.size > 0 &&
-              props.highlightedPathIds.has(parentId) &&
-              props.highlightedPathIds.has(cb.person.id)
-            );
-
-          rawSegments.push({
-            id: `${commonEdgeKey}-down-c${cIdx}`,
-            edgeKey: commonEdgeKey,
-            x1: cb.centerX,
-            y1: jogY,
-            x2: cb.centerX,
-            y2: cb.top,
-            isHighlighted: isChildHighlighted,
-          });
-
-          arrows.push({
-            x: cb.centerX,
-            y: cb.top,
-            direction: 'down',
-            isHighlighted: isChildHighlighted,
-          });
-        });
-      });
-    }
+    });
   });
 
   // 4. Schnittpunkte zwischen Kanten-Segmenten berechnen und Linienbrücken (Line Bridges) erzeugen
@@ -3785,6 +3812,7 @@ const edgeGeometry = computed(() => {
     normalPaths,
     highlightedPaths,
     arrows,
+    anchors,
     totalBridgesCount,
   };
 });
@@ -3918,7 +3946,7 @@ function handleGroupDragMove(e: MouseEvent) {
   }
 
   // Ziel-Ebene aus der vertikalen Position berechnen
-  const startCenterY = getGroupTopY(groupDragStartPos.level) + currentCardHeight.value / 2;
+  const startCenterY = getGroupTopY(groupDragStartPos.level) + getMaxCardHeightForLevel(groupDragStartPos.level) / 2;
   const currentCenterY = startCenterY + dyCanvas;
   const { level: targetLevel, insertAboveLevel } = getLevelAtCanvasY(currentCenterY);
 
@@ -4053,62 +4081,6 @@ function onWindowGroupDragEnd() {
   activeSnapGuideX.value = null;
   window.removeEventListener('mousemove', onWindowGroupDragMove);
   window.removeEventListener('mouseup', onWindowGroupDragEnd);
-}
-
-// Ebenen-Höhe per Ziehen am unteren Ebenenrand anpassen
-let resizeRafId: number | null = null;
-let pendingResizeEvent: MouseEvent | null = null;
-
-function startLevelResize(e: MouseEvent, level: number) {
-  if (e.button !== 0) return;
-  e.stopPropagation();
-  preResizeSnapshot = captureCurrentSnapshot();
-  didResizeLevel = false;
-  resizingLevel.value = level;
-  resizeStartY = e.clientY;
-  resizeStartHeight = getLevelHeight(level);
-  window.addEventListener('mousemove', onWindowLevelResizeMove);
-  window.addEventListener('mouseup', onWindowLevelResizeEnd);
-}
-
-function handleLevelResizeMove(e: MouseEvent) {
-  if (resizingLevel.value === null) return;
-  const dy = (e.clientY - resizeStartY) / zoom.value;
-  if (Math.abs(dy) > 2) didResizeLevel = true;
-  setLevelHeight(resizingLevel.value, resizeStartHeight + dy);
-}
-
-function onWindowLevelResizeMove(e: MouseEvent) {
-  pendingResizeEvent = e;
-  if (resizeRafId === null) {
-    resizeRafId = requestAnimationFrame(() => {
-      resizeRafId = null;
-      if (pendingResizeEvent) {
-        handleLevelResizeMove(pendingResizeEvent);
-        pendingResizeEvent = null;
-      }
-    });
-  }
-}
-
-function onWindowLevelResizeEnd() {
-  if (resizeRafId !== null) {
-    cancelAnimationFrame(resizeRafId);
-    resizeRafId = null;
-  }
-  if (pendingResizeEvent) {
-    handleLevelResizeMove(pendingResizeEvent);
-    pendingResizeEvent = null;
-  }
-
-  if (didResizeLevel && preResizeSnapshot) {
-    pushHistorySnapshot(preResizeSnapshot);
-  }
-  preResizeSnapshot = null;
-  didResizeLevel = false;
-  resizingLevel.value = null;
-  window.removeEventListener('mousemove', onWindowLevelResizeMove);
-  window.removeEventListener('mouseup', onWindowLevelResizeEnd);
 }
 
 // Geschwistergruppe / Gruppenverband auflösen (nach links oder nach rechts auflösen)
@@ -5017,6 +4989,12 @@ interface DesignPersistedState {
   zoom?: number;
   backgroundConfig?: DesignBackgroundConfig | null;
   backgroundImageData?: string | null;
+  cardConfig?: DesignCardConfig;
+  horizontalLaneGap?: number;
+  autoSubLanes?: boolean;
+  enableLineBridges?: boolean;
+  bridgeRadius?: number;
+  minimizeBridges?: boolean;
 }
 
 interface DesignLayoutEntry {
@@ -5034,6 +5012,13 @@ const isSaving = ref(false);
 const existingPresets = ref<DesignLayoutEntry[]>([]);
 const saveMode = ref<'new' | 'overwrite'>('new');
 const selectedOverwriteId = ref('');
+const isInitialOffer = ref(false);
+const currentLayoutId = ref<string | null>(null);
+const currentLayoutName = ref<string>('');
+const autoLoadToast = ref<string>('');
+let isApplyingLoadedState = false;
+let hasInitialized = false;
+let isCheckingLayout = false;
 
 const showLoadModal = ref(false);
 const savedLayoutsList = ref<DesignLayoutEntry[]>([]);
@@ -5093,10 +5078,22 @@ function getSerializedDesignState(name: string): DesignPersistedState {
     zoom: zoom.value,
     backgroundConfig: bgImageData.value ? { ...bgConfig.value } : null,
     backgroundImageData: bgImageData.value || null,
+    cardConfig: { ...activeCardConfig.value },
+    horizontalLaneGap: props.horizontalLaneGap,
+    autoSubLanes: props.autoSubLanes,
+    enableLineBridges: props.enableLineBridges,
+    bridgeRadius: props.bridgeRadius,
+    minimizeBridges: props.minimizeBridges,
   };
 }
 
-async function openSaveModal() {
+function closeSaveModal() {
+  showSaveModal.value = false;
+  isInitialOffer.value = false;
+  saveFeedbackMessage.value = '';
+}
+
+function openInitialOfferModal() {
   const probandPerson = props.activeProbandId ? personById.value.get(props.activeProbandId) : null;
   const rawName = probandPerson
     ? `${probandPerson.given_name || ''}_${probandPerson.surname || ''}`.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_\-äöüÄÖÜß]/g, '')
@@ -5106,6 +5103,104 @@ async function openSaveModal() {
   saveFeedbackMessage.value = '';
   saveMode.value = 'new';
   selectedOverwriteId.value = '';
+  existingPresets.value = [];
+  isInitialOffer.value = true;
+  showSaveModal.value = true;
+}
+
+async function checkAndLoadLatestStateOrOffer() {
+  if (props.persons.length === 0 || isCheckingLayout) return;
+  isCheckingLayout = true;
+  isApplyingLoadedState = true;
+  try {
+    let layouts: DesignLayoutEntry[] = [];
+    const currentProband = props.activeProbandId || '';
+
+    // 1. Zuerst Layouts für aktuellen Probanden abrufen
+    if (currentProband) {
+      try {
+        layouts = await invoke<DesignLayoutEntry[]>('get_design_layouts', { probandId: currentProband });
+      } catch (err) {
+        console.error('Error fetching layouts for proband', err);
+      }
+    }
+
+    // 2. Falls für aktuellen Probanden keine Layouts vorliegen: alle Layouts des Stammbaums prüfen
+    if (layouts.length === 0) {
+      try {
+        const all = await invoke<DesignLayoutEntry[]>('get_design_layouts', { probandId: '' });
+        if (all.length > 0) {
+          layouts = all;
+        }
+      } catch (err) {
+        console.error('Error fetching all layouts', err);
+      }
+    }
+
+    // 3. Wenn gespeicherte Stände existieren: den zuletzt bearbeiteten laden!
+    if (layouts.length > 0) {
+      const lastId = localStorage.getItem('stammbaum_last_design_layout_id');
+      const targetLayout = (lastId ? layouts.find(l => l.id === lastId) : null) || layouts[0];
+
+      try {
+        const parsed = JSON.parse(targetLayout.layout_data) as DesignPersistedState;
+        applyLoadedState(parsed);
+        currentLayoutId.value = targetLayout.id;
+        currentLayoutName.value = targetLayout.name;
+        saveFileName.value = targetLayout.name;
+        selectedOverwriteId.value = targetLayout.id;
+        saveMode.value = 'overwrite';
+        localStorage.setItem('stammbaum_last_design_layout_id', targetLayout.id);
+
+        if (targetLayout.proband_id && targetLayout.proband_id !== props.activeProbandId) {
+          emit('select-proband', targetLayout.proband_id);
+        }
+
+        autoLoadToast.value = t('design_auto_loaded_toast', { name: targetLayout.name });
+        setTimeout(() => {
+          autoLoadToast.value = '';
+        }, 3200);
+
+        nextTick(() => {
+          if (!parsed.pan) {
+            centerOnOrigin();
+          }
+        });
+        return;
+      } catch (err) {
+        console.error('Failed to parse and apply saved layout', err);
+      }
+    }
+
+    // 4. Wurde noch kein Stand bearbeitet: Ausgangs-Layout erstellen und Erstellen einer neuen Datei anbieten
+    buildInitialDesignLayout();
+    nextTick(() => {
+      centerOnOrigin();
+      openInitialOfferModal();
+    });
+  } finally {
+    isApplyingLoadedState = false;
+    isCheckingLayout = false;
+  }
+}
+
+async function openSaveModal() {
+  isInitialOffer.value = false;
+  const probandPerson = props.activeProbandId ? personById.value.get(props.activeProbandId) : null;
+  const rawName = probandPerson
+    ? `${probandPerson.given_name || ''}_${probandPerson.surname || ''}`.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_\-äöüÄÖÜß]/g, '')
+    : 'Stammbaum';
+  const dateStr = new Date().toISOString().slice(0, 10);
+  if (currentLayoutName.value) {
+    saveFileName.value = currentLayoutName.value;
+    saveMode.value = 'overwrite';
+    selectedOverwriteId.value = currentLayoutId.value || '';
+  } else {
+    saveFileName.value = `${rawName || 'Design'}_${dateStr}`;
+    saveMode.value = 'new';
+    selectedOverwriteId.value = '';
+  }
+  saveFeedbackMessage.value = '';
   showSaveModal.value = true;
   try {
     existingPresets.value = await invoke<DesignLayoutEntry[]>('get_design_layouts', {
@@ -5128,13 +5223,21 @@ async function saveCurrentStateToDb() {
     const overwriteId = (saveMode.value === 'overwrite' && selectedOverwriteId.value)
       ? selectedOverwriteId.value
       : (matchingExistingPreset.value ? matchingExistingPreset.value.id : null);
-    await invoke('save_design_layout', {
+    const savedEntry = await invoke<DesignLayoutEntry>('save_design_layout', {
       probandId: props.activeProbandId || '',
       name,
       createdAt: new Date().toISOString(),
       layoutData: jsonStr,
       overwriteId,
     });
+    if (savedEntry) {
+      currentLayoutId.value = savedEntry.id;
+      selectedOverwriteId.value = savedEntry.id;
+      localStorage.setItem('stammbaum_last_design_layout_id', savedEntry.id);
+    }
+    currentLayoutName.value = name;
+    saveMode.value = 'overwrite';
+    isInitialOffer.value = false;
     saveFeedbackMessage.value = overwriteId
       ? t('design_overwrite_success', { name })
       : t('design_save_success', { name });
@@ -5156,14 +5259,23 @@ async function exportStateToFile() {
 
   try {
     let filePath: string | null = null;
+    let dialogCancelled = false;
     try {
       const res = await save({
         defaultPath: `${name}.json`,
         filters: [{ name: 'Stammbaum Design (*.json)', extensions: ['json'] }],
       });
-      if (typeof res === 'string') filePath = res;
+      if (typeof res === 'string') {
+        filePath = res;
+      } else {
+        dialogCancelled = true;
+      }
     } catch {
       filePath = null;
+    }
+
+    if (dialogCancelled) {
+      return;
     }
 
     if (filePath) {
@@ -5178,13 +5290,21 @@ async function exportStateToFile() {
       ? selectedOverwriteId.value
       : (matchingExistingPreset.value ? matchingExistingPreset.value.id : null);
     try {
-      await invoke('save_design_layout', {
+      const savedEntry = await invoke<DesignLayoutEntry>('save_design_layout', {
         probandId: props.activeProbandId || '',
         name,
         createdAt: new Date().toISOString(),
         layoutData: jsonStr,
         overwriteId,
       });
+      if (savedEntry) {
+        currentLayoutId.value = savedEntry.id;
+        selectedOverwriteId.value = savedEntry.id;
+        localStorage.setItem('stammbaum_last_design_layout_id', savedEntry.id);
+      }
+      currentLayoutName.value = name;
+      saveMode.value = 'overwrite';
+      isInitialOffer.value = false;
     } catch {}
 
     setTimeout(() => {
@@ -5245,6 +5365,17 @@ function applyLoadedState(state: DesignPersistedState) {
     });
     branchWidths.value = bwMap;
   }
+  if (state.cardConfig) {
+    emit('update-card-config', state.cardConfig);
+  }
+  emit('update-design-config', {
+    cardConfig: state.cardConfig,
+    horizontalLaneGap: state.horizontalLaneGap,
+    autoSubLanes: state.autoSubLanes,
+    enableLineBridges: state.enableLineBridges,
+    bridgeRadius: state.bridgeRadius,
+    minimizeBridges: state.minimizeBridges,
+  });
   if (state.expandedParentIds && Array.isArray(state.expandedParentIds)) {
     expandedParentIds.value = new Set(state.expandedParentIds);
   }
@@ -5273,6 +5404,12 @@ function loadStateFromEntry(entry: DesignLayoutEntry) {
   try {
     const parsed = JSON.parse(entry.layout_data) as DesignPersistedState;
     applyLoadedState(parsed);
+    currentLayoutId.value = entry.id;
+    currentLayoutName.value = entry.name;
+    saveFileName.value = entry.name;
+    selectedOverwriteId.value = entry.id;
+    saveMode.value = 'overwrite';
+    localStorage.setItem('stammbaum_last_design_layout_id', entry.id);
     loadFeedbackMessage.value = t('design_save_success', { name: entry.name });
     setTimeout(() => {
       showLoadModal.value = false;
@@ -5366,13 +5503,22 @@ async function processLoadedJsonString(content: string, fallbackName: string) {
     const entryName = parsed.name || fallbackName;
 
     try {
-      await invoke('save_design_layout', {
+      const savedEntry = await invoke<DesignLayoutEntry>('save_design_layout', {
         probandId: props.activeProbandId || parsed.probandId || '',
         name: entryName,
         createdAt: new Date().toISOString(),
         layoutData: content,
       });
+      if (savedEntry) {
+        currentLayoutId.value = savedEntry.id;
+        selectedOverwriteId.value = savedEntry.id;
+        localStorage.setItem('stammbaum_last_design_layout_id', savedEntry.id);
+      }
     } catch {}
+
+    currentLayoutName.value = entryName;
+    saveFileName.value = entryName;
+    saveMode.value = 'overwrite';
 
     loadFeedbackMessage.value = t('design_load_file_success');
     setTimeout(() => {
@@ -5438,6 +5584,14 @@ function formatDateStr(iso: string): string {
 
     <!-- 2. Design-Mode Arbeitsfläche mit ausgewähltem Stammahnen (Darstellung von unten nach oben) -->
     <template v-else>
+      <!-- Auto-Load Notification Toast -->
+      <transition name="fade">
+        <div v-if="autoLoadToast" class="design-toast-notification">
+          <span class="toast-icon">✨</span>
+          <span>{{ autoLoadToast }}</span>
+        </div>
+      </transition>
+
       <div class="design-toolbar" @mousedown.stop>
         <div class="design-toolbar-left">
           <!-- Undo-Button zum Zurücksetzen der letzten Aktionen -->
@@ -5457,13 +5611,6 @@ function formatDateStr(iso: string): string {
           </button>
           <button class="btn-design-tool btn-reset-design" @click="buildInitialDesignLayout">
             {{ t('design_reset_layout') }}
-          </button>
-          <button
-            class="btn-design-tool btn-design-settings"
-            :title="t('design_settings_tooltip')"
-            @click="emit('open-settings')"
-          >
-            ⚙️ {{ t('design_settings_btn') }}
           </button>
 
           <!-- Button & Popover für Hintergrundbild -->
@@ -5731,30 +5878,10 @@ function formatDateStr(iso: string): string {
               </div>
             </div>
 
-            <!-- Individuell definierbare Höhe des Ebenenabstandes pro Ebene -->
+            <!-- Dynamische Höhe des Ebenenabstandes pro Ebene -->
             <div class="flp-height-row">
               <span class="flp-h-label">{{ t('design_level_height') }}:</span>
-              <button
-                class="flp-h-step"
-                @click.stop="setLevelHeight(lvlInfo.level, lvlInfo.height - 20)"
-              >
-                −
-              </button>
-              <input
-                type="number"
-                class="flp-h-input"
-                :min="MIN_LEVEL_HEIGHT"
-                :max="MAX_LEVEL_HEIGHT"
-                step="10"
-                :value="lvlInfo.height"
-                @change="setLevelHeight(lvlInfo.level, parseInt(($event.target as HTMLInputElement).value, 10))"
-              />
-              <button
-                class="flp-h-step"
-                @click.stop="setLevelHeight(lvlInfo.level, lvlInfo.height + 20)"
-              >
-                +
-              </button>
+              <span class="flp-h-badge">{{ lvlInfo.height }} px</span>
             </div>
 
             <div class="flp-badges-row">
@@ -5826,13 +5953,7 @@ function formatDateStr(iso: string): string {
               top: lvlInfo.bandTopY + 'px',
               height: lvlInfo.height + 'px',
             }"
-          >
-            <!-- Ziehbare untere Trennlinie zur direkten Höhenanpassung der Ebene per Maus -->
-            <div
-              class="level-resize-handle"
-              @mousedown="startLevelResize($event, lvlInfo.level)"
-            ></div>
-          </div>
+          ></div>
 
           <!-- Drop-Indikator zum Einfügen einer neuen Zwischen-Ebene beim vertikalen Ziehen -->
           <div
@@ -5915,6 +6036,14 @@ function formatDateStr(iso: string): string {
             :width="canvasWidth"
             :height="canvasHeight"
           >
+            <!-- Ausgangs-Anknüpfpunkte (Halbkreise) an den Kanten der Elternkacheln -->
+            <path
+              v-for="(anc, idx) in edgeGeometry.anchors"
+              :key="'anc-' + idx"
+              :d="anc.d"
+              class="design-edge-anchor"
+              :class="{ 'is-highlighted': anc.isHighlighted }"
+            />
             <path
               v-for="(d, idx) in edgeGeometry.normalPaths"
               :key="'np-' + idx"
@@ -6040,6 +6169,15 @@ function formatDateStr(iso: string): string {
                   'in-larger-union': gl.siblingSubGroups.length > 1,
                 }"
               >
+                <!-- Nachname pro Geschwistergruppe linksbündig oberhalb der Kachel -->
+                <div
+                  v-if="subGrp.surname"
+                  class="subgroup-surname-label"
+                  :title="subGrp.surname"
+                >
+                  {{ subGrp.surname }}
+                </div>
+
                 <div
                   v-for="cb in subGrp.cards"
                   :key="cb.person.id"
@@ -6051,7 +6189,7 @@ function formatDateStr(iso: string): string {
                     male: cb.person.sex === 'M',
                     female: cb.person.sex === 'F',
                   }"
-                  :style="{ width: CARD_WIDTH + 'px', height: gl.height + 'px' }"
+                  :style="{ width: CARD_WIDTH + 'px', height: cb.height + 'px' }"
                   @click.stop="selectCardPerson(cb.person)"
                 >
                 <!-- Button zum Gruppieren der Nachkommen des Eintrags & Reservierten Bereich setzen: sichtbar wenn Nachkommen vorhanden -->
@@ -6162,13 +6300,13 @@ function formatDateStr(iso: string): string {
                   </div>
                 </div>
 
-                <!-- Zeile #2: Name (mandatory, immer vollständig enthalten mit Zeilenumbruch nach Bedarf) -->
+                <!-- Zeile #2: Vorname (in der Kachel wird nur noch der Vorname angezeigt) -->
                 <div
                   class="d-card-name"
                   :style="getLineStyle(activeCardConfig.line2Bold, activeCardConfig.line2Italic)"
                   :title="cardDataByPersonId.get(cb.person.id)?.fullName"
                 >
-                  {{ cardDataByPersonId.get(cb.person.id)?.fullName }}
+                  {{ cardDataByPersonId.get(cb.person.id)?.firstName }}
                 </div>
 
                 <!-- Zeile #3: Geburts-, Tauf- und Todesdaten mit vorn angestellten Icons -->
@@ -6291,24 +6429,33 @@ function formatDateStr(iso: string): string {
       </div>
 
       <!-- Speichern-Modal -->
-      <div v-if="showSaveModal" class="design-modal-backdrop" @click="showSaveModal = false" @mousedown.stop>
+      <div v-if="showSaveModal" class="design-modal-backdrop" @click="closeSaveModal" @mousedown.stop>
         <div class="design-modal-window" @click.stop>
           <div class="design-modal-header">
             <div class="design-modal-title">
               <span class="design-modal-icon">💾</span>
-              <h3>{{ t('design_save_modal_title') }}</h3>
+              <h3>{{ isInitialOffer ? t('design_initial_offer_title') : t('design_save_modal_title') }}</h3>
             </div>
-            <button class="design-modal-close-btn" @click="showSaveModal = false">✕</button>
+            <button class="design-modal-close-btn" @click="closeSaveModal">✕</button>
           </div>
 
           <div class="design-modal-body">
+            <!-- Hinweis-Banner beim ersten Öffnen / wenn noch kein Stand existiert -->
+            <div v-if="isInitialOffer" class="design-initial-offer-banner">
+              <span class="offer-icon">💡</span>
+              <div class="offer-text">
+                <strong>{{ t('design_initial_offer_badge') }}</strong>
+                <p>{{ t('design_initial_offer_subtitle') }}</p>
+              </div>
+            </div>
+
             <div class="design-modal-proband-banner">
               <span class="proband-label">Stammahn:</span>
               <strong>{{ activeProbandName || '–' }}</strong>
             </div>
 
             <!-- Modus-Auswahl: Neuer Stand oder Bestehenden Stand überschreiben -->
-            <div v-if="existingPresets.length > 0" class="save-mode-selector">
+            <div v-if="!isInitialOffer && existingPresets.length > 0" class="save-mode-selector">
               <label class="save-mode-radio">
                 <input
                   type="radio"
@@ -6384,24 +6531,45 @@ function formatDateStr(iso: string): string {
           </div>
 
           <div class="design-modal-footer">
-            <button
-              class="d-modal-btn d-modal-btn-primary"
-              :class="{ 'btn-overwrite': saveMode === 'overwrite' || isMatchingExistingName }"
-              :disabled="!saveFileName.trim() || isSaving"
-              @click="saveCurrentStateToDb"
-            >
-              {{ (saveMode === 'overwrite' || isMatchingExistingName) ? t('design_overwrite_btn') : t('design_save_to_db_btn') }}
-            </button>
-            <button
-              class="d-modal-btn d-modal-btn-secondary"
-              :disabled="!saveFileName.trim() || isSaving"
-              @click="exportStateToFile"
-            >
-              {{ t('design_export_file_btn') }}
-            </button>
-            <button class="d-modal-btn d-modal-btn-cancel" @click="showSaveModal = false">
-              {{ t('cancel') || 'Abbrechen' }}
-            </button>
+            <template v-if="isInitialOffer">
+              <button
+                class="d-modal-btn d-modal-btn-primary"
+                :disabled="!saveFileName.trim() || isSaving"
+                @click="exportStateToFile"
+              >
+                {{ t('design_initial_offer_create_file_btn') }}
+              </button>
+              <button
+                class="d-modal-btn d-modal-btn-secondary"
+                :disabled="!saveFileName.trim() || isSaving"
+                @click="saveCurrentStateToDb"
+              >
+                {{ t('design_save_to_db_btn') }}
+              </button>
+              <button class="d-modal-btn d-modal-btn-cancel" @click="closeSaveModal">
+                {{ t('design_initial_offer_later_btn') }}
+              </button>
+            </template>
+            <template v-else>
+              <button
+                class="d-modal-btn d-modal-btn-primary"
+                :class="{ 'btn-overwrite': saveMode === 'overwrite' || isMatchingExistingName }"
+                :disabled="!saveFileName.trim() || isSaving"
+                @click="saveCurrentStateToDb"
+              >
+                {{ (saveMode === 'overwrite' || isMatchingExistingName) ? t('design_overwrite_btn') : t('design_save_to_db_btn') }}
+              </button>
+              <button
+                class="d-modal-btn d-modal-btn-secondary"
+                :disabled="!saveFileName.trim() || isSaving"
+                @click="exportStateToFile"
+              >
+                {{ t('design_export_file_btn') }}
+              </button>
+              <button class="d-modal-btn d-modal-btn-cancel" @click="closeSaveModal">
+                {{ t('cancel') || 'Abbrechen' }}
+              </button>
+            </template>
           </div>
         </div>
       </div>
@@ -6895,12 +7063,21 @@ function formatDateStr(iso: string): string {
 .flp-height-row {
   display: flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
   font-size: 0.7rem;
   color: #475569;
 }
 .flp-h-label {
   font-weight: 600;
+}
+.flp-h-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #1e40af;
+  background: #eff6ff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid #bfdbfe;
 }
 .flp-h-input {
   width: 44px;
@@ -7229,40 +7406,37 @@ function formatDateStr(iso: string): string {
 .design-edge-arrow.is-highlighted {
   fill: #e67e22;
 }
+.design-edge-anchor {
+  fill: #1e293b;
+  stroke: #1e293b;
+  stroke-width: 1.5px;
+  transition: fill 0.12s ease, stroke 0.12s ease;
+}
+.design-edge-anchor.is-highlighted {
+  fill: #e67e22;
+  stroke: #e67e22;
+}
 
-/* Geschwistergruppen-Container: stärkere Gruppierungsumrandung direkt um die aneinanderstoßenden Kästchen */
+/* Geschwistergruppen-Container: Hält die Kacheln zusammen beim Verschieben */
 .sibling-group-container {
   position: absolute;
-  background: white;
-  border: 2px solid #1e293b;
+  background: transparent;
   box-sizing: border-box;
   cursor: move;
   z-index: 10;
   transition: box-shadow 0.12s;
-}
-.sibling-group-container.is-multi-sibling-group {
-  border: 3px solid #0f172a;
-  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.18);
-}
-.sibling-group-container.is-origin-group {
-  border: 3px solid #0e6251;
-}
-.sibling-group-container.is-docked {
-  box-shadow: 0 0 0 1.5px #27ae60, 0 3px 8px rgba(39, 174, 96, 0.22);
 }
 .sibling-group-container:hover {
   z-index: 25;
 }
 .sibling-group-container.is-dragging {
   z-index: 40;
-  border: 3.5px solid #e67e22 !important;
-  box-shadow: 0 8px 22px rgba(230, 126, 34, 0.35) !important;
 }
 
 /* Schwebende Steuerleiste der Gruppe (erscheint dynamisch bei selektiertem Eintrag) */
 .group-floating-controls {
   position: absolute;
-  bottom: -24px;
+  bottom: -28px;
   right: 0;
   display: flex;
   align-items: center;
@@ -7318,47 +7492,55 @@ function formatDateStr(iso: string): string {
   color: white;
 }
 
-/* Geschwisterkästchen-Reihe ohne Zwischenraum (Rahmenlinien stoßen direkt aneinander an) */
+/* Geschwisterkästchen-Reihe: Kacheln oben bündig ausgerichtet */
 .sibling-cards-row {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 0;
   margin: 0;
   padding: 0;
   width: 100%;
-  height: 100%;
 }
 
 /* Subgruppen-Block für Geschwistergruppen innerhalb eines größeren Gruppenverbandes */
 .sibling-subgroup-block {
+  position: relative;
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   gap: 0;
   margin: 0;
   padding: 0;
-  height: 100%;
   box-sizing: border-box;
+  box-shadow: 0 0 0 3px #1e293b;
+  border-radius: 4px;
 }
 
-/* Geschwistergruppen innerhalb eines größeren Gruppenverbandes sind über stärkere Rahmenlinien gekennzeichnet (gleiche Breite auf allen 4 Seiten) */
-.sibling-subgroup-block.in-larger-union {
-  border: 3px solid #0f172a;
-  box-sizing: border-box;
-  position: relative;
-  z-index: 2;
-}
-.sibling-subgroup-block.in-larger-union + .sibling-subgroup-block.in-larger-union {
-  margin-left: -3px;
-}
-.sibling-subgroup-block.in-larger-union.is-multi-sibling {
-  box-shadow: inset 0 0 0 1px #1e293b;
+.subgroup-surname-label {
+  position: absolute;
+  bottom: calc(100% + 3px);
+  left: 0;
+  font-size: 0.82rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: #0f172a;
+  white-space: nowrap;
+  pointer-events: none;
+  line-height: 1.25;
+  user-select: none;
+  background: rgba(248, 250, 252, 0.94);
+  padding: 1px 7px;
+  border-radius: 4px;
+  border-left: 3px solid #2563eb;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+  z-index: 15;
 }
 
-/* Personen-Boxen */
+/* Personen-Boxen: Jede Kachel passt sich dynamisch ihrem Inhalt an */
 .design-person-card {
   position: relative;
   background: white;
-  border-right: 1.5px solid #334155;
+  border: 3px solid #1e293b;
+  border-bottom: 3.5px solid #64748b;
   padding: 5px 6px;
   box-sizing: border-box;
   display: flex;
@@ -7367,18 +7549,19 @@ function formatDateStr(iso: string): string {
   gap: 2px;
   cursor: grab;
   overflow: visible;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
 }
-.design-person-card:last-child {
-  border-right: none;
+.design-person-card + .design-person-card {
+  margin-left: -3px;
 }
 .design-person-card:active {
   cursor: grabbing;
 }
 .design-person-card.male {
-  border-bottom: 3px solid #2980b9;
+  border-bottom: 3.5px solid #2980b9 !important;
 }
 .design-person-card.female {
-  border-bottom: 3px solid #e84393;
+  border-bottom: 3.5px solid #e84393 !important;
 }
 .design-person-card.selected {
   background: #fffde7 !important;
@@ -7389,6 +7572,25 @@ function formatDateStr(iso: string): string {
 }
 .design-person-card.in-partner-path {
   background: #fef5e7;
+}
+
+/* Zustände der Gruppe auf die Kacheln übertragen */
+.sibling-group-container.is-multi-sibling-group .design-person-card {
+  border-top-width: 3.5px;
+  border-left-width: 3.5px;
+  border-right-width: 3.5px;
+}
+.sibling-group-container.is-origin-group .design-person-card {
+  border-top-color: #0e6251;
+  border-left-color: #0e6251;
+  border-right-color: #0e6251;
+}
+.sibling-group-container.is-docked .design-person-card {
+  box-shadow: 0 0 0 1.5px #27ae60;
+}
+.sibling-group-container.is-dragging .design-person-card {
+  border-color: #e67e22 !important;
+  box-shadow: 0 8px 22px rgba(230, 126, 34, 0.35) !important;
 }
 
 /* Button auf dem Eintrag zum Gruppieren der Nachkommen je Ebene */
@@ -7922,6 +8124,54 @@ function formatDateStr(iso: string): string {
   gap: 14px;
   overflow-y: auto;
   max-height: 70vh;
+}
+
+.design-toast-notification {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.92);
+  color: #f8fafc;
+  padding: 8px 18px;
+  border-radius: 20px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+  font-size: 0.85rem;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 1200;
+  pointer-events: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  backdrop-filter: blur(4px);
+}
+
+.design-initial-offer-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  padding: 12px 14px;
+  border-radius: 8px;
+  font-size: 0.88rem;
+}
+.design-initial-offer-banner .offer-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+.design-initial-offer-banner .offer-text strong {
+  display: block;
+  font-size: 0.92rem;
+  color: #1e40af;
+  margin-bottom: 3px;
+}
+.design-initial-offer-banner .offer-text p {
+  margin: 0;
+  color: #1e3a8a;
+  line-height: 1.35;
 }
 
 .design-modal-proband-banner {

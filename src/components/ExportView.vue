@@ -8,12 +8,27 @@ import {
   generateInteractiveTreeHtml,
   type ExportPersonInput,
 } from '../utils/htmlExport';
+import {
+  generateDesignExportSvg,
+  renderSvgToRaster,
+  type DesignPersistedState,
+  type DesignExportResult,
+} from '../utils/designExport';
+import { loadBackgroundImageFromDB } from '../utils/designBgStorage';
 
 interface RootAncestorConfig {
   person_id: string;
   starting_code: string;
   given_name: string | null;
   surname: string | null;
+}
+
+interface DesignLayoutEntry {
+  id: string;
+  proband_id: string;
+  name: string;
+  created_at: string;
+  layout_data: string;
 }
 
 const props = defineProps<{
@@ -28,8 +43,8 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n();
 
-// Export Modul Tabs (HTML Export ist die aktive Ansicht im Export-Modul)
-const activeExportModuleTab = ref<'html' | 'pdf' | 'csv' | 'gedcom'>('html');
+// Export Modul Tabs (HTML Export und Stammbaum Design Mode Bild-Export)
+const activeExportModuleTab = ref<'html' | 'design_image' | 'pdf' | 'csv' | 'gedcom'>('html');
 
 const selectedExportRootId = ref<string>('');
 const exportStartCode = ref<string>('1');
@@ -102,6 +117,9 @@ onMounted(() => {
     }
     selectRootPerson(bestId, '1');
   }
+
+  // Pre-fetch saved design layouts so they are immediately available
+  fetchSavedDesignLayouts();
 });
 
 watch(
@@ -226,6 +244,286 @@ async function saveHtmlFile() {
     saveErrorMsg.value = t('export_save_error', { error: String(err) });
   }
 }
+
+// ----------------------------------------------------
+// Stammbaum Design Mode Bild-Export (PNG, JPG, SVG)
+// ----------------------------------------------------
+const savedDesignLayouts = ref<DesignLayoutEntry[]>([]);
+const isLoadingDesignLayouts = ref<boolean>(false);
+const selectedDesignLayoutId = ref<string>('');
+const selectedDesignState = ref<DesignPersistedState | null>(null);
+
+const designExportGrid = ref<boolean>(false);
+const designExportIncludeBg = ref<boolean>(true);
+const designExportOnlyYears = ref<boolean>(false);
+const designExportFormat = ref<'png' | 'jpg' | 'svg'>('png');
+const designExportScale = ref<number>(2);
+const isExportingDesign = ref<boolean>(false);
+
+const designViewportRef = ref<HTMLElement | null>(null);
+const designPreviewZoom = ref<number>(1);
+const designPreviewPan = ref<{ x: number; y: number }>({ x: 0, y: 0 });
+let isDesignPanning = false;
+let designPanStartClient = { x: 0, y: 0 };
+let designPanOrigin = { x: 0, y: 0 };
+
+function formatLayoutDate(isoStr: string): string {
+  if (!isoStr) return '';
+  try {
+    const d = new Date(isoStr);
+    return d.toLocaleDateString(locale.value === 'en' ? 'en-US' : 'de-DE', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return isoStr;
+  }
+}
+
+async function fetchSavedDesignLayouts() {
+  isLoadingDesignLayouts.value = true;
+  saveStatusMsg.value = '';
+  saveErrorMsg.value = '';
+  try {
+    const list = await invoke<DesignLayoutEntry[]>('get_design_layouts', { probandId: '' });
+    savedDesignLayouts.value = list || [];
+    if (savedDesignLayouts.value.length > 0) {
+      let chosen = savedDesignLayouts.value[0];
+      if (selectedDesignLayoutId.value) {
+        const found = savedDesignLayouts.value.find(l => l.id === selectedDesignLayoutId.value);
+        if (found) chosen = found;
+      } else if (props.activeProbandId) {
+        const matching = savedDesignLayouts.value.find(l => l.proband_id === props.activeProbandId);
+        if (matching) chosen = matching;
+      }
+      await selectDesignLayout(chosen);
+    } else {
+      selectedDesignState.value = null;
+      selectedDesignLayoutId.value = '';
+    }
+  } catch (err) {
+    console.error('Failed to load design layouts', err);
+    savedDesignLayouts.value = [];
+    selectedDesignState.value = null;
+  } finally {
+    isLoadingDesignLayouts.value = false;
+  }
+}
+
+async function selectDesignLayout(entry: DesignLayoutEntry) {
+  selectedDesignLayoutId.value = entry.id;
+  try {
+    const parsed = JSON.parse(entry.layout_data) as DesignPersistedState;
+    if (!parsed.backgroundImageData && parsed.backgroundConfig) {
+      try {
+        const pId = parsed.probandId || 'default';
+        let stored = await loadBackgroundImageFromDB(`proband_${pId}`);
+        if (!stored || !stored.dataUrl) {
+          stored = await loadBackgroundImageFromDB(`design_bg_${parsed.probandId}`);
+        }
+        if (!stored || !stored.dataUrl) {
+          stored = await loadBackgroundImageFromDB();
+        }
+        if (stored && stored.dataUrl) {
+          parsed.backgroundImageData = stored.dataUrl;
+        }
+      } catch {}
+    }
+    selectedDesignState.value = parsed;
+    if (parsed.cardConfig && typeof parsed.cardConfig.showOnlyYears === 'boolean') {
+      designExportOnlyYears.value = parsed.cardConfig.showOnlyYears;
+    }
+    setTimeout(() => {
+      fitDesignPreview();
+    }, 120);
+  } catch (err) {
+    console.error('Failed to parse design layout_data', err);
+    selectedDesignState.value = null;
+  }
+}
+
+function onDesignLayoutDropdownChange(id: string) {
+  const found = savedDesignLayouts.value.find(l => l.id === id);
+  if (found) {
+    selectDesignLayout(found);
+  }
+}
+
+const designExportResult = computed<DesignExportResult | null>(() => {
+  if (!selectedDesignState.value) return null;
+  return generateDesignExportSvg(selectedDesignState.value, props.persons as any, {
+    includeGrid: designExportGrid.value,
+    includeBackground: designExportIncludeBg.value,
+    format: designExportFormat.value,
+    scale: designExportScale.value,
+    onlyYears: designExportOnlyYears.value,
+    locale: locale.value === 'en' ? 'en' : 'de',
+  });
+});
+
+watch(
+  () => designExportResult.value,
+  newVal => {
+    if (newVal) {
+      setTimeout(fitDesignPreview, 60);
+    }
+  }
+);
+
+function fitDesignPreview() {
+  if (!designExportResult.value || !designViewportRef.value) return;
+  const viewport = designViewportRef.value;
+  const vW = viewport.clientWidth - 48;
+  const vH = viewport.clientHeight - 48;
+  const sW = designExportResult.value.width;
+  const sH = designExportResult.value.height;
+  if (sW <= 0 || sH <= 0) return;
+  if (vW <= 0 || vH <= 0) {
+    setTimeout(fitDesignPreview, 50);
+    return;
+  }
+  const scale = Math.min(1.2, Math.max(0.005, Math.min(vW / sW, vH / sH)));
+  designPreviewZoom.value = +scale.toFixed(4);
+  designPreviewPan.value = {
+    x: Math.round((viewport.clientWidth - sW * scale) / 2),
+    y: Math.round((viewport.clientHeight - sH * scale) / 2),
+  };
+}
+
+function resetDesignZoom() {
+  designPreviewZoom.value = 1;
+  if (!designExportResult.value || !designViewportRef.value) return;
+  const viewport = designViewportRef.value;
+  designPreviewPan.value = {
+    x: Math.round((viewport.clientWidth - designExportResult.value.width) / 2),
+    y: Math.round((viewport.clientHeight - designExportResult.value.height) / 2),
+  };
+}
+
+function zoomDesignIn() {
+  designPreviewZoom.value = Math.min(3.5, +(designPreviewZoom.value * 1.25).toFixed(4));
+}
+
+function zoomDesignOut() {
+  designPreviewZoom.value = Math.max(0.005, +(designPreviewZoom.value / 1.25).toFixed(4));
+}
+
+function onDesignWheel(e: WheelEvent) {
+  e.preventDefault();
+  const delta = e.deltaY < 0 ? 1.15 : 0.85;
+  designPreviewZoom.value = Math.min(3.5, Math.max(0.005, +(designPreviewZoom.value * delta).toFixed(4)));
+}
+
+function onDesignMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return;
+  isDesignPanning = true;
+  designPanStartClient = { x: e.clientX, y: e.clientY };
+  designPanOrigin = { x: designPreviewPan.value.x, y: designPreviewPan.value.y };
+  window.addEventListener('mousemove', onDesignMouseMove);
+  window.addEventListener('mouseup', onDesignMouseUp);
+}
+
+function onDesignMouseMove(e: MouseEvent) {
+  if (!isDesignPanning) return;
+  const dx = e.clientX - designPanStartClient.x;
+  const dy = e.clientY - designPanStartClient.y;
+  designPreviewPan.value = {
+    x: designPanOrigin.x + dx,
+    y: designPanOrigin.y + dy,
+  };
+}
+
+function onDesignMouseUp() {
+  isDesignPanning = false;
+  window.removeEventListener('mousemove', onDesignMouseMove);
+  window.removeEventListener('mouseup', onDesignMouseUp);
+}
+
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+async function saveDesignImageFile() {
+  if (!designExportResult.value || !selectedDesignState.value) return;
+  saveStatusMsg.value = '';
+  saveErrorMsg.value = '';
+  isExportingDesign.value = true;
+
+  const stateName = selectedDesignState.value.name || 'stammbaum_design';
+  const cleanName = stateName.replace(/[^a-zA-Z0-9äöüÄÖÜß_-]+/g, '_').replace(/^_+|_+$/g, '');
+  const fmt = designExportFormat.value;
+  const defaultFileName = `${cleanName || 'stammbaum_design'}.${fmt}`;
+
+  try {
+    let filePath: string | null = null;
+    try {
+      const res = await save({
+        title: t('export_design_save_dialog_title'),
+        defaultPath: defaultFileName,
+        filters: [
+          fmt === 'png'
+            ? { name: 'PNG Bild (*.png)', extensions: ['png'] }
+            : fmt === 'jpg'
+            ? { name: 'JPEG Bild (*.jpg, *.jpeg)', extensions: ['jpg', 'jpeg'] }
+            : { name: 'SVG Vektorgrafik (*.svg)', extensions: ['svg'] },
+        ],
+      });
+      if (typeof res === 'string') filePath = res;
+    } catch {
+      filePath = null;
+    }
+
+    if (fmt === 'svg') {
+      const svgStr = designExportResult.value.svgString;
+      if (filePath) {
+        await invoke('save_design_file', { filePath, content: svgStr });
+        saveStatusMsg.value = t('export_design_save_success', { path: filePath });
+      } else {
+        const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+        downloadBlob(blob, defaultFileName);
+        saveStatusMsg.value = t('export_design_save_success', { path: defaultFileName });
+      }
+    } else {
+      const { blob } = await renderSvgToRaster(
+        designExportResult.value.svgString,
+        designExportResult.value.width,
+        designExportResult.value.height,
+        fmt,
+        designExportScale.value
+      );
+
+      if (filePath) {
+        const buffer = await blob.arrayBuffer();
+        const data = Array.from(new Uint8Array(buffer));
+        await invoke('save_binary_file', { filePath, data });
+        saveStatusMsg.value = t('export_design_save_success', { path: filePath });
+      } else {
+        downloadBlob(blob, defaultFileName);
+        saveStatusMsg.value = t('export_design_save_success', { path: defaultFileName });
+      }
+    }
+  } catch (err: any) {
+    saveErrorMsg.value = t('export_design_save_error', { error: String(err) });
+  } finally {
+    isExportingDesign.value = false;
+  }
+}
+
+watch(activeExportModuleTab, newTab => {
+  if (newTab === 'design_image') {
+    fetchSavedDesignLayouts();
+  }
+});
 </script>
 
 <template>
@@ -242,6 +540,13 @@ async function saveHtmlFile() {
           @click="activeExportModuleTab = 'html'"
         >
           🌐 {{ t('export_tab_html') }}
+        </button>
+        <button
+          class="module-tab-btn"
+          :class="{ active: activeExportModuleTab === 'design_image' }"
+          @click="activeExportModuleTab = 'design_image'"
+        >
+          🖼️ {{ t('export_tab_design_image') }}
         </button>
         <button
           class="module-tab-btn disabled-tab"
@@ -528,6 +833,252 @@ async function saveHtmlFile() {
           <div class="empty-card">
             <h3>🌐 {{ t('export_panel_title') }}</h3>
             <p>{{ t('export_empty_hint') }}</p>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Modul-Ansicht 2: Stammbaum Design Mode Bild-Export -->
+    <div v-else-if="activeExportModuleTab === 'design_image'" class="export-workspace">
+      <!-- Linke Seitenleiste: Konfiguration & Zustandsauswahl -->
+      <aside class="export-sidebar" :class="{ collapsed: isLeftPanelCollapsed }">
+        <button
+          class="sidebar-collapse-toggle"
+          @click="isLeftPanelCollapsed = !isLeftPanelCollapsed"
+          :title="isLeftPanelCollapsed ? t('export_show_panel') : t('export_hide_panel')"
+        >
+          {{ isLeftPanelCollapsed ? '▶' : '◀' }}
+        </button>
+
+        <div v-if="!isLeftPanelCollapsed" class="export-sidebar-inner">
+          <div class="export-panel-header">
+            <h2>🖼️ {{ t('export_design_panel_title') }}</h2>
+            <p class="export-panel-subtitle">{{ t('export_design_panel_subtitle') }}</p>
+          </div>
+
+          <!-- 1. Gespeicherter Zustand auswählen -->
+          <div class="export-section">
+            <label class="export-section-label">💾 {{ t('export_design_select_state_label') }}</label>
+            <div v-if="savedDesignLayouts.length > 0">
+              <select
+                class="export-dropdown"
+                :value="selectedDesignLayoutId"
+                @change="onDesignLayoutDropdownChange(($event.target as HTMLSelectElement).value)"
+              >
+                <option
+                  v-for="l in savedDesignLayouts"
+                  :key="'layout-' + l.id"
+                  :value="l.id"
+                >
+                  {{ l.name }} ({{ formatLayoutDate(l.created_at) }})
+                </option>
+              </select>
+            </div>
+            <div v-else class="empty-state-notice">
+              <p>{{ t('export_design_no_states') }}</p>
+            </div>
+          </div>
+
+          <!-- 2. Export-Optionen -->
+          <template v-if="selectedDesignState">
+            <!-- Ebenenraster Checkbox -->
+            <div class="export-section">
+              <label class="export-section-label">📏 {{ t('export_design_grid_option_title') }}</label>
+              <label class="cfg-checkbox-label">
+                <input type="checkbox" v-model="designExportGrid" />
+                <span class="cfg-label-text">{{ t('export_design_include_grid') }}</span>
+              </label>
+              <span class="cfg-sub-hint">
+                {{ designExportGrid ? t('export_design_include_grid_hint') : t('export_design_boxes_only') }}
+              </span>
+            </div>
+
+            <!-- Hintergrundbild Checkbox / Info -->
+            <div class="export-section">
+              <label class="export-section-label">🖼️ {{ t('export_design_bg_option_title') }}</label>
+              <div v-if="selectedDesignState.backgroundImageData" class="bg-config-block">
+                <label class="cfg-checkbox-label">
+                  <input type="checkbox" v-model="designExportIncludeBg" />
+                  <span class="cfg-label-text">{{ t('export_design_include_bg') }}</span>
+                </label>
+                <span class="cfg-sub-hint" :style="{ color: designExportIncludeBg ? '#16a34a' : '#d97706' }">
+                  {{ designExportIncludeBg ? t('export_design_bg_present', { name: selectedDesignState.backgroundConfig?.fileName || 'Bild' }) : t('export_design_bg_disabled') }}
+                </span>
+              </div>
+              <div v-else class="bg-none-notice">
+                <span>⚪ {{ t('export_design_bg_none_transparent') }}</span>
+              </div>
+            </div>
+
+            <!-- Datumsanzeige (Jahreszahlen vs. volles Datum) -->
+            <div class="export-section">
+              <label class="export-section-label">📅 {{ t('design_cfg_only_years') }}</label>
+              <label class="cfg-checkbox-label">
+                <input type="checkbox" v-model="designExportOnlyYears" />
+                <span class="cfg-label-text">{{ t('export_design_only_years') }}</span>
+              </label>
+            </div>
+
+            <!-- Dateiformat Auswahl (PNG, JPG, SVG) -->
+            <div class="export-section">
+              <label class="export-section-label">🎨 {{ t('export_design_format_label') }}</label>
+              <div class="format-button-group">
+                <button
+                  type="button"
+                  class="format-pill-btn"
+                  :class="{ active: designExportFormat === 'png' }"
+                  @click="designExportFormat = 'png'"
+                >
+                  PNG
+                </button>
+                <button
+                  type="button"
+                  class="format-pill-btn"
+                  :class="{ active: designExportFormat === 'jpg' }"
+                  @click="designExportFormat = 'jpg'"
+                >
+                  JPG
+                </button>
+                <button
+                  type="button"
+                  class="format-pill-btn"
+                  :class="{ active: designExportFormat === 'svg' }"
+                  @click="designExportFormat = 'svg'"
+                >
+                  SVG
+                </button>
+              </div>
+              <span class="cfg-sub-hint">
+                {{ designExportFormat === 'png' ? t('export_design_format_png') : designExportFormat === 'jpg' ? t('export_design_format_jpg') : t('export_design_format_svg') }}
+              </span>
+              <span v-if="designExportFormat !== 'jpg' && !selectedDesignState.backgroundImageData" class="cfg-transparency-hint">
+                💡 {{ t('export_design_transparent_hint') }}
+              </span>
+            </div>
+
+            <!-- Auflösung / Skalierung bei PNG/JPG -->
+            <div v-if="designExportFormat !== 'svg'" class="export-section">
+              <label class="export-section-label">🔍 {{ t('export_design_scale_label') }}</label>
+              <div class="scale-button-group">
+                <button
+                  type="button"
+                  class="scale-pill-btn"
+                  :class="{ active: designExportScale === 1 }"
+                  @click="designExportScale = 1"
+                >
+                  {{ t('export_design_scale_1x') }}
+                </button>
+                <button
+                  type="button"
+                  class="scale-pill-btn"
+                  :class="{ active: designExportScale === 2 }"
+                  @click="designExportScale = 2"
+                >
+                  {{ t('export_design_scale_2x') }}
+                </button>
+              </div>
+            </div>
+
+            <!-- Details & Statistik -->
+            <div v-if="designExportResult" class="export-section stats-section">
+              <label class="export-section-label">📊 {{ t('export_design_stats_title') }}</label>
+              <div class="design-stats-grid">
+                <div class="d-stat-pill">
+                  <span class="stat-num">{{ designExportResult.stats.totalLevels }}</span>
+                  <span class="stat-lbl">{{ t('export_design_stat_levels') }}</span>
+                </div>
+                <div class="d-stat-pill">
+                  <span class="stat-num">{{ designExportResult.stats.totalPersons }}</span>
+                  <span class="stat-lbl">{{ t('export_design_stat_persons') }}</span>
+                </div>
+                <div class="d-stat-pill">
+                  <span class="stat-num">{{ designExportResult.stats.totalGroups }}</span>
+                  <span class="stat-lbl">{{ t('export_design_stat_groups') }}</span>
+                </div>
+              </div>
+              <span class="dimension-note">
+                📐 {{ t('export_design_dimensions', { width: designExportResult.width * (designExportFormat === 'svg' ? 1 : designExportScale), height: designExportResult.height * (designExportFormat === 'svg' ? 1 : designExportScale) }) }}
+              </span>
+            </div>
+
+            <!-- Export Action Button -->
+            <div class="export-action-box">
+              <button
+                class="btn-primary-export"
+                :disabled="!designExportResult || isExportingDesign"
+                @click="saveDesignImageFile"
+              >
+                💾 {{ isExportingDesign ? 'Exportiere...' : t('export_design_save_btn') }} (.{{ designExportFormat.toUpperCase() }})
+              </button>
+
+              <div v-if="saveStatusMsg" class="save-feedback success">
+                ✅ {{ saveStatusMsg }}
+              </div>
+              <div v-if="saveErrorMsg" class="save-feedback error">
+                ⚠️ {{ saveErrorMsg }}
+              </div>
+            </div>
+          </template>
+        </div>
+      </aside>
+
+      <!-- Rechter Bereich: Live-Vorschau -->
+      <section class="export-preview-pane">
+        <div class="export-preview-topbar">
+          <div class="preview-info-left">
+            <span class="badge-preview-mode">
+              🖼️ {{ t('export_design_preview_badge') }}: {{ selectedDesignState?.name || '-' }}
+            </span>
+            <span v-if="designExportResult" class="dimensions-badge">
+              {{ designExportResult.width }} × {{ designExportResult.height }} px
+            </span>
+          </div>
+
+          <!-- Zoom Controls -->
+          <div class="design-preview-zoom-bar">
+            <button class="btn-zoom-step" @click="zoomDesignOut" :title="t('export_design_zoom_out')">➖</button>
+            <span class="zoom-value">{{ designPreviewZoom < 0.1 ? (designPreviewZoom * 100).toFixed(1) : Math.round(designPreviewZoom * 100) }}%</span>
+            <button class="btn-zoom-step" @click="zoomDesignIn" :title="t('export_design_zoom_in')">➕</button>
+            <button class="btn-zoom-action" @click="resetDesignZoom" :title="t('export_design_zoom_reset')">100%</button>
+            <button class="btn-zoom-action" @click="fitDesignPreview" :title="t('export_design_fit_screen')">🔄 {{ t('export_design_fit_screen') }}</button>
+          </div>
+
+          <div class="preview-info-right">
+            <button
+              class="btn-topbar-save"
+              :disabled="!designExportResult || isExportingDesign"
+              @click="saveDesignImageFile"
+            >
+              💾 {{ t('export_design_save_btn') }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Preview Viewport -->
+        <div
+          v-if="designExportResult"
+          ref="designViewportRef"
+          class="design-export-viewport"
+          :class="{ 'is-transparent-bg': (!designExportIncludeBg || !selectedDesignState?.backgroundImageData) && designExportFormat !== 'jpg' }"
+          @wheel="onDesignWheel"
+          @mousedown="onDesignMouseDown"
+        >
+          <div
+            class="design-svg-stage"
+            :style="{
+              transform: `translate(${designPreviewPan.x}px, ${designPreviewPan.y}px) scale(${designPreviewZoom})`,
+              transformOrigin: '0 0',
+              width: designExportResult.width + 'px',
+              height: designExportResult.height + 'px',
+            }"
+            v-html="designExportResult.svgString"
+          ></div>
+        </div>
+
+        <div v-else class="export-empty-state">
+          <div class="empty-card">
+            <h3>🖼️ {{ t('export_design_panel_title') }}</h3>
+            <p>{{ savedDesignLayouts.length === 0 ? t('export_design_no_states') : 'Wählen Sie einen gespeicherten Zustand aus, um die Vorschau anzuzeigen.' }}</p>
           </div>
         </div>
       </section>
@@ -1207,5 +1758,260 @@ async function saveHtmlFile() {
   font-size: 0.84rem;
   font-weight: 600;
   cursor: pointer;
+}
+
+/* -------------------------------------------------------------------------- */
+/* Stammbaum Design Mode Bild-Export Styles                                     */
+/* -------------------------------------------------------------------------- */
+.cfg-checkbox-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.84rem;
+  color: #1e293b;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+}
+
+.cfg-checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+
+.cfg-sub-hint {
+  font-size: 0.74rem;
+  color: #64748b;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+.cfg-transparency-hint {
+  font-size: 0.72rem;
+  color: #0369a1;
+  background: #e0f2fe;
+  padding: 4px 8px;
+  border-radius: 4px;
+  margin-top: 4px;
+  line-height: 1.3;
+}
+
+.bg-config-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bg-none-notice {
+  font-size: 0.75rem;
+  color: #475569;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+  border-radius: 4px;
+  padding: 5px 8px;
+}
+
+.empty-state-notice {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 0.8rem;
+  color: #92400e;
+}
+
+.format-button-group,
+.scale-button-group {
+  display: flex;
+  gap: 4px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+}
+
+.format-pill-btn,
+.scale-pill-btn {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #475569;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: center;
+}
+
+.format-pill-btn.active,
+.scale-pill-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(37, 99, 235, 0.25);
+}
+
+.design-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.d-stat-pill {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 6px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.d-stat-pill .stat-num {
+  font-size: 1.05rem;
+  font-weight: 800;
+  color: #1e293b;
+  line-height: 1;
+}
+
+.d-stat-pill .stat-lbl {
+  font-size: 0.68rem;
+  color: #64748b;
+  margin-top: 3px;
+  text-transform: uppercase;
+}
+
+.dimension-note {
+  font-size: 0.74rem;
+  color: #475569;
+  font-weight: 600;
+  margin-top: 4px;
+  display: block;
+}
+
+.export-action-box {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn-primary-export {
+  width: 100%;
+  padding: 10px 14px;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.28);
+  transition: background 0.15s, transform 0.1s;
+}
+
+.btn-primary-export:hover:not(:disabled) {
+  background: #1d4ed8;
+  transform: translateY(-1px);
+}
+
+.btn-primary-export:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.save-feedback {
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.save-feedback.success {
+  background: #dcfce7;
+  color: #166534;
+  border: 1px solid #bbf7d0;
+}
+
+.save-feedback.error {
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.design-preview-zoom-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+.btn-zoom-step,
+.btn-zoom-action {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 3px 6px;
+  font-size: 0.75rem;
+  color: #334155;
+  cursor: pointer;
+}
+
+.btn-zoom-step:hover,
+.btn-zoom-action:hover {
+  background: #e2e8f0;
+}
+
+.zoom-value {
+  font-size: 0.75rem;
+  font-weight: 700;
+  color: #1e293b;
+  min-width: 42px;
+  text-align: center;
+}
+
+.design-export-viewport {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #f8fafc;
+  cursor: grab;
+  user-select: none;
+}
+
+.design-export-viewport:active {
+  cursor: grabbing;
+}
+
+.design-export-viewport.is-transparent-bg {
+  background-color: #f8fafc;
+  background-image:
+    linear-gradient(45deg, #e2e8f0 25%, transparent 25%),
+    linear-gradient(-45deg, #e2e8f0 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #e2e8f0 75%),
+    linear-gradient(-45deg, transparent 75%, #e2e8f0 75%);
+  background-size: 20px 20px;
+  background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+}
+
+.design-svg-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.design-svg-stage :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 </style>

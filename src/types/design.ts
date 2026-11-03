@@ -25,6 +25,7 @@ export interface DesignCardConfig {
   showDeathPlace: boolean;
   showChrDate: boolean;
   showChrPlace: boolean;
+  showOnlyYears?: boolean;
 
   // #4: Ehe & Partner
   showMarriageCounter: boolean;
@@ -37,10 +38,6 @@ export interface DesignCardConfig {
   showSpouseDeathDate: boolean;
   showSpouseDeathPlace: boolean;
   showDivorce: boolean;
-
-  // Manuelle Kachelhöhe
-  customCardHeightEnabled?: boolean;
-  customCardHeight?: number;
 }
 
 export interface DesignBackgroundConfig {
@@ -84,6 +81,7 @@ export const DEFAULT_CARD_CONFIG: DesignCardConfig = {
   showDeathPlace: false,
   showChrDate: false,
   showChrPlace: false,
+  showOnlyYears: false,
 
   showMarriageCounter: true,
   showMarriageDate: true,
@@ -94,16 +92,9 @@ export const DEFAULT_CARD_CONFIG: DesignCardConfig = {
   showSpouseDeathDate: false,
   showSpouseDeathPlace: false,
   showDivorce: true,
-
-  customCardHeightEnabled: false,
-  customCardHeight: 180,
 };
 
 export function computeCardHeight(cfg: DesignCardConfig, maxSpouseCount: number = 0): number {
-  if (cfg.customCardHeightEnabled && typeof cfg.customCardHeight === 'number' && cfg.customCardHeight > 0) {
-    return Math.max(60, Math.min(500, cfg.customCardHeight));
-  }
-
   let h = 16; // padding top 6px + bottom 6px + 4px safety buffer
 
   // Line #1: Henry ID & Gen badge row
@@ -164,6 +155,148 @@ export function computeCardHeight(cfg: DesignCardConfig, maxSpouseCount: number 
   return Math.max(50, h);
 }
 
+export interface PersonHeightInput {
+  given_name?: string | null;
+  surname?: string | null;
+  sex?: string | null;
+  birth_date?: string | null;
+  birth_place?: string | null;
+  death_date?: string | null;
+  death_place?: string | null;
+  chr_date?: string | null;
+  chr_place?: string | null;
+  has_henry_code?: boolean;
+  generation?: number;
+  spouses?: {
+    id: string;
+    given_name?: string | null;
+    surname?: string | null;
+    date?: string | null;
+    divorce_date?: string | null;
+    is_divorced?: boolean;
+    birth_date?: string | null;
+    birth_place?: string | null;
+    death_date?: string | null;
+    death_place?: string | null;
+    has_henry_code?: boolean;
+  }[];
+}
+
+/**
+ * Berechnet die minimal benötigte Kachelhöhe für eine Person dynamisch anhand ihres konkreten Inhalts.
+ * Sie ist möglichst gering, aber stets so groß, dass alle Inhalte der Kachel vollständig dargestellt werden.
+ */
+export function computePersonCardNeededHeight(
+  p: PersonHeightInput,
+  cfg: DesignCardConfig,
+  currentLocale: string = 'de'
+): number {
+  // Basis-Polsterung: oben 5px + unten 5px + Geschlechterbalken 3px + 2px Rahmen = 15px
+  let needed = 15;
+
+  // Zeile #1: Henry-ID & Generations-Badge
+  const showHenry = cfg.showHenryId && Boolean(p.has_henry_code);
+  const showGen = cfg.showGeneration && Boolean(p.generation);
+  if (showHenry || showGen) {
+    needed += 18;
+  }
+
+  // Zeile #2: Vorname (in der Kachel wird nur der Vorname angezeigt)
+  const firstName = (p.given_name || 'N.N.').trim();
+  if (firstName.length > 18 || (firstName.includes(' ') && firstName.length > 13)) {
+    needed += 30; // 2 Zeilen Umbruch
+  } else {
+    needed += 16; // 1 Zeile
+  }
+
+  // Zeile #3: Lebensdaten (Geburt, Taufe, Tod)
+  const dateTexts: string[] = [];
+  if (cfg.showBirthDate && p.birth_date) {
+    const bDate = formatLocalizedDate(p.birth_date, currentLocale, cfg.showOnlyYears);
+    const bPlace = cfg.showBirthPlace && p.birth_place ? ` (${p.birth_place})` : '';
+    dateTexts.push(`* ${bDate}${bPlace}`);
+  }
+  if (cfg.showChrDate && p.chr_date) {
+    const cDate = formatLocalizedDate(p.chr_date, currentLocale, cfg.showOnlyYears);
+    const cPlace = cfg.showChrPlace && p.chr_place ? ` (${p.chr_place})` : '';
+    dateTexts.push(`~ ${cDate}${cPlace}`);
+  }
+  if (cfg.showDeathDate && p.death_date) {
+    const dDate = formatLocalizedDate(p.death_date, currentLocale, cfg.showOnlyYears);
+    const dPlace = cfg.showDeathPlace && p.death_place ? ` (${p.death_place})` : '';
+    dateTexts.push(`† ${dDate}${dPlace}`);
+  }
+
+  if (dateTexts.length > 0) {
+    if (cfg.lifeDatesLayout === 'single') {
+      const totalLen = dateTexts.join(', ').length;
+      if (totalLen > 52) {
+        needed += 40; // 3 Zeilen
+      } else if (totalLen > 24) {
+        needed += 26; // 2 Zeilen
+      } else {
+        needed += 14; // 1 Zeile
+      }
+    } else {
+      needed += dateTexts.length * 13;
+    }
+  }
+
+  // Zeilen #4 & #5: Ehen / Ehepartner
+  const showMarriage =
+    cfg.showSpouseName ||
+    cfg.showMarriageCounter ||
+    cfg.showMarriageDate ||
+    cfg.showDivorce ||
+    cfg.showSpouseBirthDate ||
+    cfg.showSpouseDeathDate;
+
+  if (p.spouses && p.spouses.length > 0 && showMarriage) {
+    needed += 6; // Trennlinie & Abstand
+    p.spouses.forEach((sp, spIdx) => {
+      let spH = 0;
+      // Name
+      if (cfg.showSpouseName || (cfg.showHenryId && sp.has_henry_code)) {
+        const spName = `${sp.given_name || ''} ${sp.surname || ''}`.trim() || 'N.N.';
+        const prefix = p.spouses!.length > 1 && cfg.showMarriageCounter ? `(${spIdx + 1}) ` : '';
+        const fullSpName = prefix + spName;
+        spH += fullSpName.length > 20 ? 26 : 14;
+      }
+      // Daten
+      const spDates: string[] = [];
+      if (cfg.showMarriageDate && sp.date) {
+        spDates.push(`oo ${formatLocalizedDate(sp.date, currentLocale, cfg.showOnlyYears)}`);
+      }
+      if (cfg.showDivorce && (sp.is_divorced || sp.divorce_date)) {
+        const divDate = sp.divorce_date
+          ? formatLocalizedDate(sp.divorce_date, currentLocale, cfg.showOnlyYears)
+          : (currentLocale === 'en' ? 'div.' : 'gesch.');
+        spDates.push(`o|o ${divDate}`);
+      }
+      if (cfg.showSpouseBirthDate && sp.birth_date) {
+        const bPlace = cfg.showSpouseBirthPlace && sp.birth_place ? ` (${sp.birth_place})` : '';
+        spDates.push(`* ${formatLocalizedDate(sp.birth_date, currentLocale, cfg.showOnlyYears)}${bPlace}`);
+      }
+      if (cfg.showSpouseDeathDate && sp.death_date) {
+        const dPlace = cfg.showSpouseDeathPlace && sp.death_place ? ` (${sp.death_place})` : '';
+        spDates.push(`† ${formatLocalizedDate(sp.death_date, currentLocale, cfg.showOnlyYears)}${dPlace}`);
+      }
+      if (spDates.length > 0) {
+        if (cfg.lifeDatesLayout === 'multi') {
+          spH += spDates.length * 12;
+        } else {
+          const totalDateLen = spDates.join(', ').length;
+          spH += totalDateLen > 26 ? 24 : 13;
+        }
+      }
+      needed += Math.max(16, spH) + 4; // Abstand zwischen Partnern
+    });
+  }
+
+  // Sicherheitsabstand von 4px, damit Text niemals anstößt
+  return Math.max(50, needed + 4);
+}
+
 export function computeCardWidthForPerson(name: string): number {
   const cleanName = (name || 'N.N.').trim();
   const words = cleanName.split(/\s+/).filter(Boolean);
@@ -205,12 +338,16 @@ const dateCache = new Map<string, string>();
  * - 'de': TT.MM.JJJJ (bzw. Monatsname auf Deutsch, ca., vor, nach, zw. ... u. ...)
  * - 'en': DD MMM YYYY (z. B. 12 May 1875, abt., bef., aft., bet. ... and ...)
  */
-export function formatLocalizedDate(raw: string | null | undefined, currentLocale: string = 'de'): string {
+export function formatLocalizedDate(
+  raw: string | null | undefined,
+  currentLocale: string = 'de',
+  onlyYear: boolean = false
+): string {
   if (!raw) return '';
   const sRaw = raw.trim();
   if (!sRaw) return '';
 
-  const cacheKey = `${sRaw}___${currentLocale}`;
+  const cacheKey = `${sRaw}___${currentLocale}___${onlyYear ? 'Y' : 'F'}`;
   const cached = dateCache.get(cacheKey);
   if (cached !== undefined) return cached;
 
@@ -220,6 +357,15 @@ export function formatLocalizedDate(raw: string | null | undefined, currentLocal
   function formatSingleDate(chunk: string): string {
     const c = chunk.trim();
     if (!c) return '';
+
+    if (onlyYear) {
+      // Find 3-4 digit year in chunk (e.g. 1875 or 850)
+      const yearMatch = c.match(/\b(\d{3,4})\b/);
+      if (yearMatch) {
+        return yearMatch[1];
+      }
+      return c;
+    }
 
     // "DD MMM YYYY" / "D MMM YYYY" e.g. "12 MAY 1875" oder "12 MAI 1875"
     const dmyWordMatch = c.match(/^(\d{1,2})\s+([A-Za-zÄÖÜäöü.]+)\s+(\d{3,4})$/);
@@ -294,7 +440,15 @@ export function formatLocalizedDate(raw: string | null | undefined, currentLocal
       : `von ${formatSingleDate(d1)} bis ${formatSingleDate(d2)}`;
   });
 
-  const result = formatSingleDate(s);
+  // Präfixe wie "ca. ", "abt. ", "vor ", "bef. ", "nach ", "aft. " beibehalten
+  let prefix = '';
+  const prefixMatch = s.match(/^(ca\.|abt\.|vor|bef\.|nach|aft\.)\s*/i);
+  if (prefixMatch) {
+    prefix = prefixMatch[0];
+    s = s.slice(prefix.length).trim();
+  }
+
+  const result = prefix + formatSingleDate(s);
   dateCache.set(cacheKey, result);
   return result;
 }
