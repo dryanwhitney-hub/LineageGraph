@@ -28,6 +28,13 @@ export interface LatexTemplateConfig {
   includeHeaderInfo: boolean;
 }
 
+export interface LatexTemplateEntry {
+  id: string;
+  name: string;
+  created_at: string;
+  config_data: string;
+}
+
 export interface LatexExportOptions {
   mode: LatexExportMode;
   rootPersonId: string;
