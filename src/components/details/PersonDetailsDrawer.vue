@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 import ShortestPathModal from '../modals/ShortestPathModal.vue';
 import {
@@ -7,9 +7,10 @@ import {
   type Person,
   type PersonDetails,
   type ColumnConfig,
+  type EditableSpouseData,
 } from '../../composables/usePersons';
 
-defineProps<{
+const props = defineProps<{
   currentView: 'table' | 'tree' | 'design' | 'export';
   isDetailsOpen: boolean;
   selectedPerson: Person | null;
@@ -25,6 +26,10 @@ defineProps<{
   selectedMotherId: string;
   malePersons: Person[];
   femalePersons: Person[];
+  allPersons?: Person[];
+  editedSpouses?: Map<string, EditableSpouseData>;
+  marriageEditError?: string;
+  relationActionError?: string;
   shortestPathSearchQuery: string;
   shortestPathSearchResults: Person[];
   shortestPathIncludeSpouses: boolean;
@@ -42,6 +47,12 @@ const emit = defineEmits<{
   'update:selectedMotherId': [val: string];
   'update:shortestPathSearchQuery': [val: string];
   'update:shortestPathIncludeSpouses': [val: boolean];
+  'update-spouse': [payload: { familyId: string; field: 'marriage_date' | 'divorce_date' | 'is_divorced'; value: any }];
+  'save-marriage': [familyId: string];
+  'link-spouses': [partnerId: string];
+  'unlink-family': [familyId: string];
+  'add-child-link': [childId: string];
+  'remove-child-link': [childId: string];
   'save-changes': [];
   'save-parents': [];
   'jump-to': [personId: string];
@@ -50,6 +61,61 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const activeIdField = ref<string | null>(null);
+
+const selectedNewPartnerId = ref<string>('');
+const selectedNewChildId = ref<string>('');
+
+const availablePartnerCandidates = computed<Person[]>(() => {
+  if (!props.allPersons || !props.selectedPerson) return [];
+  const currentSpouseIds = new Set(
+    (props.personDetails?.spouses || []).map(s => s.partner_id).filter(Boolean)
+  );
+  return props.allPersons.filter(
+    p => p.id !== props.selectedPerson!.id && !currentSpouseIds.has(p.id)
+  );
+});
+
+const availableChildCandidates = computed<Person[]>(() => {
+  if (!props.allPersons || !props.selectedPerson) return [];
+  const currentChildIds = new Set(
+    (props.personDetails?.children || []).map(c => c.id)
+  );
+  const currentParentIds = new Set(
+    (props.personDetails?.parents || []).map(p => p.id)
+  );
+  return props.allPersons.filter(
+    p =>
+      p.id !== props.selectedPerson!.id &&
+      !currentChildIds.has(p.id) &&
+      !currentParentIds.has(p.id)
+  );
+});
+
+function handleLinkSpouse() {
+  if (selectedNewPartnerId.value) {
+    emit('link-spouses', selectedNewPartnerId.value);
+    selectedNewPartnerId.value = '';
+  }
+}
+
+function handleUnlinkSpouse(familyId: string) {
+  if (window.confirm(t('confirm_unlink_spouse'))) {
+    emit('unlink-family', familyId);
+  }
+}
+
+function handleAddChild() {
+  if (selectedNewChildId.value) {
+    emit('add-child-link', selectedNewChildId.value);
+    selectedNewChildId.value = '';
+  }
+}
+
+function handleRemoveChild(childId: string) {
+  if (window.confirm(t('confirm_unlink_child'))) {
+    emit('remove-child-link', childId);
+  }
+}
 </script>
 
 <template>
@@ -199,6 +265,10 @@ const activeIdField = ref<string | null>(null);
         <div class="detail-section" v-if="personDetails">
           <h3>{{ t('section_relations') }}</h3>
 
+          <div v-if="relationActionError" class="parent-error-alert mb-1">
+            ⚠️ {{ relationActionError }}
+          </div>
+
           <h4>{{ t('parents') }}</h4>
 
           <!-- Edit-Modus: Verwandtschaftsverhältnisse editieren -->
@@ -278,7 +348,54 @@ const activeIdField = ref<string | null>(null);
                 (* {{ sp.partner_birth || '?'
                 }}<span v-if="sp.partner_death"> - † {{ sp.partner_death }}</span>)
               </div>
-              <div class="marriage-info">
+
+              <!-- Edit-Modus: Eheeintrag bearbeiten -->
+              <div v-if="isEditing" class="edit-spouse-box">
+                <div v-if="marriageEditError" class="parent-error-alert mb-1">
+                  ⚠️ {{ marriageEditError }}
+                </div>
+                <div class="form-group mb-1">
+                  <label><small><strong>⚭ {{ t('wedding_date') }}:</strong></small></label>
+                  <input
+                    type="text"
+                    class="w-100"
+                    placeholder="z. B. 12.05.1950 oder 12 MAY 1950"
+                    :value="editedSpouses?.get(sp.family_id)?.marriage_date ?? sp.marriage_date ?? ''"
+                    @input="emit('update-spouse', { familyId: sp.family_id, field: 'marriage_date', value: ($event.target as HTMLInputElement).value })"
+                  />
+                </div>
+                <div class="form-group mb-1">
+                  <label><small><strong>⚮ {{ t('divorce_date') }}:</strong></small></label>
+                  <input
+                    type="text"
+                    class="w-100"
+                    placeholder="z. B. 01.06.1970 oder 01 JUN 1970"
+                    :value="editedSpouses?.get(sp.family_id)?.divorce_date ?? sp.divorce_date ?? ''"
+                    @input="emit('update-spouse', { familyId: sp.family_id, field: 'divorce_date', value: ($event.target as HTMLInputElement).value })"
+                  />
+                </div>
+                <div class="form-group mb-1">
+                  <label class="checkbox-label" style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 0.85rem;">
+                    <input
+                      type="checkbox"
+                      :checked="editedSpouses?.get(sp.family_id)?.is_divorced ?? sp.is_divorced"
+                      @change="emit('update-spouse', { familyId: sp.family_id, field: 'is_divorced', value: ($event.target as HTMLInputElement).checked })"
+                    />
+                    <span>{{ t('is_divorced') }}</span>
+                  </label>
+                </div>
+                <div class="d-flex gap-1 mt-1">
+                  <button class="btn-save-marriage" @click="emit('save-marriage', sp.family_id)" :disabled="isLoading">
+                    💾 {{ t('save_marriage') }}
+                  </button>
+                  <button class="btn-unlink-spouse" @click="handleUnlinkSpouse(sp.family_id)" :disabled="isLoading">
+                    🗑️ {{ t('unlink_spouse_btn') }}
+                  </button>
+                </div>
+              </div>
+
+              <!-- Lese-Modus: Ehedaten anzeigen -->
+              <div v-else class="marriage-info">
                 ⚭ {{ t('wedding_date') }}: {{ sp.marriage_date || '-' }}
                 <span v-if="sp.is_divorced || sp.divorce_date">
                   | ⚮ {{ t('divorce_date') }}: {{ sp.divorce_date || 'Ja' }}
@@ -288,17 +405,58 @@ const activeIdField = ref<string | null>(null);
           </ul>
           <p v-else class="sub-empty">-</p>
 
+          <!-- Edit-Modus: Bestehende Person als Ehepartner hinzufügen -->
+          <div v-if="isEditing" class="add-relation-box">
+            <label><small><strong>{{ t('link_spouse_btn') }}:</strong></small></label>
+            <div class="d-flex gap-1 mt-1">
+              <select v-model="selectedNewPartnerId" class="w-100">
+                <option value="">{{ t('select_partner_placeholder') }}</option>
+                <option v-for="p in availablePartnerCandidates" :key="'sp-cand-' + p.id" :value="p.id">
+                  {{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }})
+                </option>
+              </select>
+              <button class="btn-add-relation" @click="handleLinkSpouse" :disabled="!selectedNewPartnerId || isLoading">
+                ➕
+              </button>
+            </div>
+          </div>
+
           <h4>{{ t('children') }}</h4>
           <ul class="relation-list" v-if="personDetails.children.length > 0">
             <li v-for="c in personDetails.children" :key="c.id">
               <strong>{{ c.surname }}, {{ c.given_name }}</strong>
               <span class="badge ml-1" v-if="getRelCode(c.id)">[{{ getRelCode(c.id) }}]</span>
+              <button
+                v-if="isEditing"
+                class="btn-unlink-child ml-1"
+                :title="t('unlink_child_btn')"
+                @click="handleRemoveChild(c.id)"
+                :disabled="isLoading"
+              >
+                ❌
+              </button>
               <div class="marriage-info">
                 (* {{ c.birth_date || '?' }}<span v-if="c.death_date"> - † {{ c.death_date }}</span>)
               </div>
             </li>
           </ul>
           <p v-else class="sub-empty">-</p>
+
+          <!-- Edit-Modus: Bestehendes Kind zuweisen -->
+          <div v-if="isEditing" class="add-relation-box">
+            <label><small><strong>{{ t('add_child_btn') }}:</strong></small></label>
+            <div class="d-flex gap-1 mt-1">
+              <select v-model="selectedNewChildId" class="w-100">
+                <option value="">{{ t('select_child_placeholder') }}</option>
+                <option v-for="p in availableChildCandidates" :key="'ch-cand-' + p.id" :value="p.id">
+                  {{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }})
+                </option>
+              </select>
+              <button class="btn-add-relation" @click="handleAddChild" :disabled="!selectedNewChildId || isLoading">
+                ➕
+              </button>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -525,6 +683,81 @@ table {
 }
 .btn-save-parents:hover:not(:disabled) {
   background-color: #219653 !important;
+}
+.edit-spouse-box {
+  background: #fffdf8;
+  border: 1px solid #fae8c8;
+  padding: 10px 12px;
+  border-radius: 6px;
+  margin-top: 6px;
+  margin-bottom: 8px;
+}
+.btn-save-marriage {
+  background-color: #27ae60 !important;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  width: 100%;
+  margin-top: 8px;
+  padding: 0.45rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+.btn-save-marriage:hover:not(:disabled) {
+  background-color: #219653 !important;
+}
+.btn-unlink-spouse {
+  background-color: #e74c3c !important;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.45rem;
+  font-weight: 600;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+.btn-unlink-spouse:hover:not(:disabled) {
+  background-color: #c0392b !important;
+}
+.btn-unlink-child {
+  background: transparent;
+  border: 1px solid #ffcdd2;
+  border-radius: 4px;
+  cursor: pointer;
+  color: #c0392b;
+  font-size: 0.75rem;
+  padding: 1px 5px;
+  vertical-align: middle;
+}
+.btn-unlink-child:hover:not(:disabled) {
+  background-color: #ffcdd2;
+}
+.add-relation-box {
+  background: #fbfbfc;
+  border: 1px dashed #cbd5e1;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+.btn-add-relation {
+  background-color: #3498db !important;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0.4rem 0.8rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+.btn-add-relation:hover:not(:disabled) {
+  background-color: #2980b9 !important;
+}
+.gap-1 {
+  display: flex;
+  gap: 6px;
 }
 .input-warning {
   border: 2px solid #e67e22 !important;

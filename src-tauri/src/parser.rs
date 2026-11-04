@@ -127,7 +127,7 @@ pub fn import_gedcom(conn: &mut Connection, path: &Path) -> Result<usize, String
                     if let Some(v) = &line.value {
                         active_l1_map.insert("_val".to_string(), serde_json::Value::String(v.clone()));
                     }
-                } else if line.level == 2 {
+                } else if line.level >= 2 {
                     if let Some(v) = &line.value {
                         active_l1_map.insert(line.tag.clone(), serde_json::Value::String(v.clone()));
                     }
@@ -199,7 +199,7 @@ pub fn import_gedcom(conn: &mut Connection, path: &Path) -> Result<usize, String
                     if let Some(v) = &line.value {
                         active_l1_map.insert("_val".to_string(), serde_json::Value::String(v.clone()));
                     }
-                } else if line.level == 2 {
+                } else if line.level >= 2 {
                     if let Some(v) = &line.value {
                         active_l1_map.insert(line.tag.clone(), serde_json::Value::String(v.clone()));
                     }

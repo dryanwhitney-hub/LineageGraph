@@ -56,6 +56,8 @@ const { t, locale } = useI18n();
 
 const showColDropdown = ref<boolean>(false);
 const showDetailAttrDropdown = ref<boolean>(false);
+const isCardConfigExpanded = ref<boolean>(true);
+const isDesignSectionExpanded = ref<boolean>(false);
 
 function onTreeSelectChange(event: Event) {
   const val = (event.target as HTMLSelectElement).value;
@@ -77,7 +79,7 @@ function onTreeSelectChange(event: Event) {
         <div class="settings-nav-sidebar">
           <button
             class="settings-nav-item"
-            :class="{ active: activeTab === 'general' }"
+            :class="{ active: activeTab === 'general' || activeTab === 'tree_view' }"
             @click="emit('update:activeTab', 'general')"
           >
             🌐 {{ t('settings_tab_general') || 'Allgemein' }}
@@ -91,13 +93,6 @@ function onTreeSelectChange(event: Event) {
           </button>
           <button
             class="settings-nav-item"
-            :class="{ active: activeTab === 'tree_view' }"
-            @click="emit('update:activeTab', 'tree_view')"
-          >
-            🌳 {{ t('settings_tab_tree') || 'Stammbaum Ansicht' }}
-          </button>
-          <button
-            class="settings-nav-item"
             :class="{ active: activeTab === 'design_mode' }"
             @click="emit('update:activeTab', 'design_mode')"
           >
@@ -107,8 +102,8 @@ function onTreeSelectChange(event: Event) {
 
         <!-- Rechter Bereich: Inhalt des ausgewählten Bereichs -->
         <div class="settings-main-pane">
-          <!-- 1. Allgemein -->
-          <div v-if="activeTab === 'general'" class="settings-tab-pane">
+          <!-- 1. Allgemein (inkl. Auswahl & Konfiguration der Probanden) -->
+          <div v-if="activeTab === 'general' || activeTab === 'tree_view'" class="settings-tab-pane">
             <div class="settings-section">
               <h3>{{ t('tree_management') }}</h3>
               <label>{{ t('active_tree') }}:</label>
@@ -137,6 +132,66 @@ function onTreeSelectChange(event: Event) {
                 />
                 <button @click="emit('create-tree')">{{ t('create_btn') }}</button>
               </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>{{ t('root_ancestor_config') }}</h3>
+              <div class="proband-list-box mb-1">
+                <label><strong>{{ t('proband_list') }}:</strong></label>
+                <ul v-if="rootAncestors.length > 0" class="proband-list">
+                  <li v-for="r in rootAncestors" :key="r.person_id">
+                    <span class="proband-info">
+                      [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }}
+                      <small>({{ r.person_id }})</small>
+                    </span>
+                    <button
+                      class="btn-sm btn-danger"
+                      @click="emit('remove-root-ancestor', r.person_id)"
+                    >
+                      {{ t('remove') }}
+                    </button>
+                  </li>
+                </ul>
+                <div v-else class="sub-empty mt-1">{{ t('no_probands') }}</div>
+              </div>
+              <label><strong>{{ t('add_proband') }}:</strong></label>
+              <input
+                :value="rootSearchQuery"
+                @input="emit('update:rootSearchQuery', ($event.target as HTMLInputElement).value)"
+                :placeholder="t('search_placeholder')"
+                class="w-100 mt-1 mb-1"
+              />
+              <select
+                :value="selectedRootId"
+                @change="emit('update:selectedRootId', ($event.target as HTMLSelectElement).value)"
+                class="w-100 mb-1"
+                size="4"
+              >
+                <option v-for="p in filteredPersons" :key="p.id" :value="p.id">
+                  {{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }})
+                </option>
+              </select>
+              <div class="d-flex align-items-center mt-1">
+                <input
+                  :value="newRootCode"
+                  @input="emit('update:newRootCode', ($event.target as HTMLInputElement).value)"
+                  :placeholder="t('starting_code')"
+                  class="flex-grow"
+                />
+                <button
+                  @click="emit('add-root-ancestor')"
+                  :disabled="!selectedRootId || !newRootCode"
+                >
+                  {{ t('add_btn') }}
+                </button>
+              </div>
+              <button
+                class="mt-1 btn-full btn-calculate"
+                @click="emit('calculate-codes')"
+                :disabled="rootAncestors.length === 0"
+              >
+                {{ t('calc_codes_btn') }}
+              </button>
             </div>
           </div>
 
@@ -203,82 +258,30 @@ function onTreeSelectChange(event: Event) {
             </div>
           </div>
 
-          <!-- 3. Stammbaum Ansicht -->
-          <div v-if="activeTab === 'tree_view'" class="settings-tab-pane">
-            <div class="settings-section">
-              <h3>{{ t('root_ancestor_config') }}</h3>
-              <div class="proband-list-box mb-1">
-                <label><strong>{{ t('proband_list') }}:</strong></label>
-                <ul v-if="rootAncestors.length > 0" class="proband-list">
-                  <li v-for="r in rootAncestors" :key="r.person_id">
-                    <span class="proband-info">
-                      [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }}
-                      <small>({{ r.person_id }})</small>
-                    </span>
-                    <button
-                      class="btn-sm btn-danger"
-                      @click="emit('remove-root-ancestor', r.person_id)"
-                    >
-                      {{ t('remove') }}
-                    </button>
-                  </li>
-                </ul>
-                <div v-else class="sub-empty mt-1">{{ t('no_probands') }}</div>
-              </div>
-              <label><strong>{{ t('add_proband') }}:</strong></label>
-              <input
-                :value="rootSearchQuery"
-                @input="emit('update:rootSearchQuery', ($event.target as HTMLInputElement).value)"
-                :placeholder="t('search_placeholder')"
-                class="w-100 mt-1 mb-1"
-              />
-              <select
-                :value="selectedRootId"
-                @change="emit('update:selectedRootId', ($event.target as HTMLSelectElement).value)"
-                class="w-100 mb-1"
-                size="4"
-              >
-                <option v-for="p in filteredPersons" :key="p.id" :value="p.id">
-                  {{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }})
-                </option>
-              </select>
-              <div class="d-flex align-items-center mt-1">
-                <input
-                  :value="newRootCode"
-                  @input="emit('update:newRootCode', ($event.target as HTMLInputElement).value)"
-                  :placeholder="t('starting_code')"
-                  class="flex-grow"
-                />
-                <button
-                  @click="emit('add-root-ancestor')"
-                  :disabled="!selectedRootId || !newRootCode"
-                >
-                  {{ t('add_btn') }}
-                </button>
-              </div>
+          <!-- 3. Stammbaum Design Mode -->
+          <div v-if="activeTab === 'design_mode'" class="settings-tab-pane design-expandables-container">
+            <!-- Expandable Section 1: Kachel-Informationen & Zeilenformatierung -->
+            <div class="expandable-section" :class="{ 'is-expanded': isCardConfigExpanded }">
               <button
-                class="mt-1 btn-full btn-calculate"
-                @click="emit('calculate-codes')"
-                :disabled="rootAncestors.length === 0"
+                type="button"
+                class="expandable-header"
+                @click="isCardConfigExpanded = !isCardConfigExpanded"
               >
-                {{ t('calc_codes_btn') }}
+                <div class="expandable-header-left">
+                  <span class="expandable-icon">🗂️</span>
+                  <div class="expandable-titles">
+                    <span class="expandable-title">{{ t('design_card_config_title') || 'Kachel-Informationen & Zeilenformatierung' }}</span>
+                    <span class="expandable-subtitle">{{ t('design_card_config_subtitle') || 'Definieren Sie, welche Angaben in den Kacheln der Einträge im Design Mode abgebildet werden, und formatieren Sie jede Zeile individuell.' }}</span>
+                  </div>
+                </div>
+                <span class="expandable-chevron">{{ isCardConfigExpanded ? '▼' : '▶' }}</span>
               </button>
-            </div>
-          </div>
 
-          <!-- 4. Stammbaum Design Mode -->
-          <div v-if="activeTab === 'design_mode'" class="settings-tab-pane">
-            <div class="settings-section">
-              <!-- Bereich: Konfigurierbare Kachel-Informationen -->
-              <h3>🗂️ {{ t('design_card_config_title') || 'Kachel-Informationen & Zeilenformatierung' }}</h3>
-              <p class="section-desc" style="color: #64748b; font-size: 0.82rem; margin-bottom: 1rem;">
-                {{ t('design_card_config_subtitle') || 'Definieren Sie, welche Angaben in den Kacheln der Einträge im Design Mode abgebildet werden, und formatieren Sie jede Zeile individuell.' }}
-              </p>
-
-              <div
-                class="card-config-wrapper"
-                style="display: flex; gap: 20px; align-items: flex-start; margin-bottom: 24px; flex-wrap: wrap;"
-              >
+              <div v-if="isCardConfigExpanded" class="expandable-body">
+                <div
+                  class="card-config-wrapper"
+                  style="display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap;"
+                >
                 <!-- Linke Spalte: Zeilen #1 bis #5 Konfiguration -->
                 <div
                   class="card-config-lines"
@@ -781,128 +784,153 @@ function onTreeSelectChange(event: Event) {
                         </div>
                       </div>
                     </div>
+                    </div>
                   </div>
                 </div>
               </div>
+            </div>
 
-              <h3>{{ t('design_lines_config_title') || 'Verbindungslinien & Querlinien' }}</h3>
-              <p class="section-desc" style="color: #64748b; font-size: 0.82rem; margin-bottom: 1rem;">
-                Konfiguration der Mindestabstände und automatischen Höhenstaffelung für die horizontale Querlinienführung im Design Mode.
-              </p>
-
-              <div
-                class="config-field mb-2"
-                style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
+            <!-- Expandable Section 2: Design -->
+            <div class="expandable-section" :class="{ 'is-expanded': isDesignSectionExpanded }">
+              <button
+                type="button"
+                class="expandable-header"
+                @click="isDesignSectionExpanded = !isDesignSectionExpanded"
               >
-                <label class="d-block mb-1" style="font-size: 0.88rem;">
-                  <strong>{{ t('design_lane_gap_label') || 'Mindestabstand horizontaler Abschnitte (Querlinien):' }}</strong>
-                  <span
-                    class="badge-val"
-                    style="background: #2563eb; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;"
-                    >{{ designConfig.horizontalLaneGap }} px</span
-                  >
-                </label>
-                <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
-                  <input
-                    type="range"
-                    min="10"
-                    max="36"
-                    step="2"
-                    v-model.number="designConfig.horizontalLaneGap"
-                    class="flex-grow"
-                  />
-                  <input
-                    type="number"
-                    min="10"
-                    max="50"
-                    v-model.number="designConfig.horizontalLaneGap"
-                    style="width: 65px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
-                  />
+                <div class="expandable-header-left">
+                  <span class="expandable-icon">🎨</span>
+                  <div class="expandable-titles">
+                    <span class="expandable-title">{{ t('design_section_design_title') || 'Design' }}</span>
+                    <span class="expandable-subtitle">{{ t('design_section_design_subtitle') || 'Verbindungslinien, Querlinien-Abstände und Linienbrücken bei Kreuzungen konfigurieren.' }}</span>
+                  </div>
                 </div>
-                <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px;">
-                  Definiert den vertikalen Abstand zwischen horizontalen Verbindungslinien verschiedener Geschwistergruppen.
-                </small>
-              </div>
+                <span class="expandable-chevron">{{ isDesignSectionExpanded ? '▼' : '▶' }}</span>
+              </button>
 
-              <div
-                class="config-field"
-                style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
-              >
-                <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
-                  <input type="checkbox" v-model="designConfig.autoSubLanes" style="cursor: pointer;" />
-                  <strong>{{ t('design_auto_sublanes_label') || 'Automatisch neue Ebenen für horizontale Querlinien hinzufügen' }}</strong>
-                </label>
-                <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
-                  Wenn ausreichend vertikaler Platz zwischen den Generationen vorhanden ist, werden dynamisch weitere Höhenebenen bereitgestellt, damit Querlinien verschiedener Geschwistergruppen sich nicht überdecken.
-                </small>
-              </div>
+              <div v-if="isDesignSectionExpanded" class="expandable-body">
+                <h4
+                  style="margin: 0 0 8px 0; font-size: 0.95rem; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;"
+                >
+                  📏 {{ t('design_lines_config_title') || 'Verbindungslinien & Querlinien' }}
+                </h4>
+                <p class="section-desc" style="color: #64748b; font-size: 0.82rem; margin-bottom: 0.85rem;">
+                  Konfiguration der Mindestabstände und automatischen Höhenstaffelung für die horizontale Querlinienführung im Design Mode.
+                </p>
 
-              <!-- Bereich Linienbrücken & Kreuzungen -->
-              <h4
-                style="margin: 18px 0 10px 0; font-size: 0.95rem; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;"
-              >
-                🌉 {{ t('design_bridges_config_title') || 'Linienbrücken & Kreuzungen' }}
-              </h4>
-
-              <div
-                class="config-field"
-                style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
-              >
-                <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
-                  <input type="checkbox" v-model="designConfig.enableLineBridges" style="cursor: pointer;" />
-                  <strong>{{ t('design_enable_bridges_label') || 'Linienbrücken bei Kreuzungen anzeigen' }}</strong>
-                </label>
-                <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
-                  Zeigt an Kreuzungspunkten sichtbare Bogenbrücken, damit überkreuzende Verbindungslinien deutlich unterscheidbar bleiben.
-                </small>
-              </div>
-
-              <div
-                v-if="designConfig.enableLineBridges"
-                class="config-field"
-                style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
-              >
-                <label class="d-block mb-1" style="font-size: 0.88rem;">
-                  <strong>{{ t('design_bridge_radius_label') || 'Linienbrücken-Bogenradius:' }}</strong>
-                  <span
-                    class="badge-val"
-                    style="background: #8e44ad; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;"
-                    >{{ designConfig.bridgeRadius }} px</span
-                  >
-                </label>
-                <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
-                  <input
-                    type="range"
-                    min="4"
-                    max="20"
-                    step="1"
-                    v-model.number="designConfig.bridgeRadius"
-                    class="flex-grow"
-                  />
-                  <input
-                    type="number"
-                    min="4"
-                    max="24"
-                    v-model.number="designConfig.bridgeRadius"
-                    style="width: 65px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
-                  />
+                <div
+                  class="config-field mb-2"
+                  style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
+                >
+                  <label class="d-block mb-1" style="font-size: 0.88rem;">
+                    <strong>{{ t('design_lane_gap_label') || 'Mindestabstand horizontaler Abschnitte (Querlinien):' }}</strong>
+                    <span
+                      class="badge-val"
+                      style="background: #2563eb; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;"
+                      >{{ designConfig.horizontalLaneGap }} px</span
+                    >
+                  </label>
+                  <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
+                    <input
+                      type="range"
+                      min="10"
+                      max="36"
+                      step="2"
+                      v-model.number="designConfig.horizontalLaneGap"
+                      class="flex-grow"
+                    />
+                    <input
+                      type="number"
+                      min="10"
+                      max="50"
+                      v-model.number="designConfig.horizontalLaneGap"
+                      style="width: 65px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
+                    />
+                  </div>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px;">
+                    Definiert den vertikalen Abstand zwischen horizontalen Verbindungslinien verschiedener Geschwistergruppen.
+                  </small>
                 </div>
-                <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px;">
-                  Bestimmt die Wölbungshöhe und Spannweite des Bogens an Linienkreuzungen.
-                </small>
-              </div>
 
-              <div
-                class="config-field"
-                style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
-              >
-                <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
-                  <input type="checkbox" v-model="designConfig.minimizeBridges" style="cursor: pointer;" />
-                  <strong>{{ t('design_minimize_bridges_label') || 'Ebenen-Anordnung der Querlinien optimieren (Linienbrücken minimieren)' }}</strong>
-                </label>
-                <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
-                  {{ t('design_minimize_bridges_hint') || 'Ordnet die horizontalen Abschnitte der Verbindungslinien automatisch so an, dass möglichst wenige Schnittpunkte mit vertikalen Verbindungslinien entstehen.' }}
-                </small>
+                <div
+                  class="config-field"
+                  style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
+                >
+                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
+                    <input type="checkbox" v-model="designConfig.autoSubLanes" style="cursor: pointer;" />
+                    <strong>{{ t('design_auto_sublanes_label') || 'Automatisch neue Ebenen für horizontale Querlinien hinzufügen' }}</strong>
+                  </label>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
+                    Wenn ausreichend vertikaler Platz zwischen den Generationen vorhanden ist, werden dynamisch weitere Höhenebenen bereitgestellt, damit Querlinien verschiedener Geschwistergruppen sich nicht überdecken.
+                  </small>
+                </div>
+
+                <!-- Bereich Linienbrücken & Kreuzungen -->
+                <h4
+                  style="margin: 18px 0 10px 0; font-size: 0.95rem; color: #1e293b; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px;"
+                >
+                  🌉 {{ t('design_bridges_config_title') || 'Linienbrücken & Kreuzungen' }}
+                </h4>
+
+                <div
+                  class="config-field mb-2"
+                  style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
+                >
+                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
+                    <input type="checkbox" v-model="designConfig.enableLineBridges" style="cursor: pointer;" />
+                    <strong>{{ t('design_enable_bridges_label') || 'Linienbrücken bei Kreuzungen anzeigen' }}</strong>
+                  </label>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
+                    Zeigt an Kreuzungspunkten sichtbare Bogenbrücken, damit überkreuzende Verbindungslinien deutlich unterscheidbar bleiben.
+                  </small>
+                </div>
+
+                <div
+                  v-if="designConfig.enableLineBridges"
+                  class="config-field mb-2"
+                  style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
+                >
+                  <label class="d-block mb-1" style="font-size: 0.88rem;">
+                    <strong>{{ t('design_bridge_radius_label') || 'Linienbrücken-Bogenradius:' }}</strong>
+                    <span
+                      class="badge-val"
+                      style="background: #8e44ad; color: white; padding: 2px 6px; border-radius: 4px; font-weight: bold; margin-left: 6px; font-size: 0.8rem;"
+                      >{{ designConfig.bridgeRadius }} px</span
+                    >
+                  </label>
+                  <div class="d-flex align-items-center" style="gap: 12px; margin-top: 6px;">
+                    <input
+                      type="range"
+                      min="4"
+                      max="20"
+                      step="1"
+                      v-model.number="designConfig.bridgeRadius"
+                      class="flex-grow"
+                    />
+                    <input
+                      type="number"
+                      min="4"
+                      max="24"
+                      v-model.number="designConfig.bridgeRadius"
+                      style="width: 65px; padding: 4px; border: 1px solid #cbd5e1; border-radius: 4px;"
+                    />
+                  </div>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px;">
+                    Bestimmt die Wölbungshöhe und Spannweite des Bogens an Linienkreuzungen.
+                  </small>
+                </div>
+
+                <div
+                  class="config-field"
+                  style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px;"
+                >
+                  <label class="d-flex align-items-center" style="gap: 8px; cursor: pointer; font-size: 0.88rem;">
+                    <input type="checkbox" v-model="designConfig.minimizeBridges" style="cursor: pointer;" />
+                    <strong>{{ t('design_minimize_bridges_label') || 'Ebenen-Anordnung der Querlinien optimieren (Linienbrücken minimieren)' }}</strong>
+                  </label>
+                  <small style="color: #64748b; font-size: 0.76rem; display: block; margin-top: 6px; padding-left: 22px;">
+                    {{ t('design_minimize_bridges_hint') || 'Ordnet die horizontalen Abschnitte der Verbindungslinien automatisch so an, dass möglichst wenige Schnittpunkte mit vertikalen Verbindungslinien entstehen.' }}
+                  </small>
+                </div>
               </div>
             </div>
           </div>
@@ -1387,6 +1415,84 @@ button:disabled {
 }
 .d-divorce-badge {
   color: #c0392b;
+}
+
+/* Expandable Sections im Stammbaum Design Mode */
+.design-expandables-container {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.expandable-section {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: hidden;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.expandable-section.is-expanded {
+  border-color: #94a3b8;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+}
+.expandable-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  background: #f8fafc;
+  color: #1e293b;
+  border: none;
+  border-radius: 0;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s ease;
+}
+.expandable-header:hover {
+  background: #f1f5f9 !important;
+}
+.expandable-section.is-expanded .expandable-header {
+  background: #f1f5f9;
+  border-bottom: 1px solid #e2e8f0;
+}
+.expandable-header-left {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.expandable-icon {
+  font-size: 1.15rem;
+  line-height: 1.3;
+  flex-shrink: 0;
+}
+.expandable-titles {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.expandable-title {
+  font-size: 0.96rem;
+  font-weight: 700;
+  color: #1e293b;
+}
+.expandable-subtitle {
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: #64748b;
+  line-height: 1.35;
+}
+.expandable-chevron {
+  font-size: 0.82rem;
+  color: #475569;
+  flex-shrink: 0;
+  padding: 2px 6px;
+}
+.expandable-body {
+  padding: 16px;
+  background: #ffffff;
 }
 </style>
 

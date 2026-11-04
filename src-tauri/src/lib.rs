@@ -12,6 +12,32 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tera::{Context, Tera};
+use chrono::{Datelike, Timelike};
+
+pub fn current_gedcom_chan() -> serde_json::Value {
+    let now = chrono::Local::now();
+    let month_str = match now.month() {
+        1 => "JAN",
+        2 => "FEB",
+        3 => "MAR",
+        4 => "APR",
+        5 => "MAY",
+        6 => "JUN",
+        7 => "JUL",
+        8 => "AUG",
+        9 => "SEP",
+        10 => "OCT",
+        11 => "NOV",
+        12 => "DEC",
+        _ => "JAN",
+    };
+    let date_str = format!("{:02} {} {:04}", now.day(), month_str, now.year());
+    let time_str = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+    serde_json::json!({
+        "DATE": date_str,
+        "TIME": time_str
+    })
+}
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
@@ -22,16 +48,18 @@ pub struct ProbandData {
     pub generation: i32,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct SpouseConnection {
     pub id: String,
     pub date: Option<String>,
     pub place: Option<String>,
     pub divorce_date: Option<String>,
     pub is_divorced: bool,
+    #[serde(default)]
+    pub family_id: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct Person {
     pub id: String,
     pub given_name: Option<String>,
@@ -45,6 +73,12 @@ pub struct Person {
     pub gedcom_extra: serde_json::Value,
     pub spouses: Vec<SpouseConnection>,
     pub parent_ids: Vec<String>,
+    #[serde(default)]
+    pub father_id: Option<String>,
+    #[serde(default)]
+    pub mother_id: Option<String>,
+    #[serde(default)]
+    pub children_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -301,6 +335,10 @@ fn delete_tree(state: State<AppState>, tree_name: String) -> Result<Vec<String>,
 #[tauri::command]
 fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    get_all_persons_internal(&conn)
+}
+
+pub fn get_all_persons_internal(conn: &Connection) -> Result<Vec<Person>, String> {
 
     let mut codes_stmt = conn
         .prepare("SELECT proband_id, person_id, henry_code, generation FROM proband_henry_codes")
@@ -328,6 +366,8 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
     let mut spouse_map: HashMap<String, Vec<SpouseConnection>> = HashMap::new();
     let mut parent_map: HashMap<String, Vec<String>> = HashMap::new();
     let mut family_parents: HashMap<String, Vec<String>> = HashMap::new();
+    let mut family_husband: HashMap<String, Option<String>> = HashMap::new();
+    let mut family_wife: HashMap<String, Option<String>> = HashMap::new();
 
     let mut fam_stmt = conn
         .prepare("SELECT id, husband_id, wife_id, marriage_date, divorce_date, is_divorced, json_data FROM families")
@@ -366,7 +406,9 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
         if let Some(ref w) = w_opt {
             parents.push(w.clone());
         }
-        family_parents.insert(fam_id, parents);
+        family_parents.insert(fam_id.clone(), parents);
+        family_husband.insert(fam_id.clone(), h_opt.clone());
+        family_wife.insert(fam_id.clone(), w_opt.clone());
 
         if let (Some(h), Some(w)) = (h_opt, w_opt) {
             let conn_w = SpouseConnection {
@@ -375,6 +417,7 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
                 place: m_place.clone(),
                 divorce_date: d_date.clone(),
                 is_divorced,
+                family_id: Some(fam_id.clone()),
             };
             let conn_h = SpouseConnection {
                 id: h.clone(),
@@ -382,6 +425,7 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
                 place: m_place,
                 divorce_date: d_date,
                 is_divorced,
+                family_id: Some(fam_id),
             };
 
             let h_spouses = spouse_map.entry(h.clone()).or_default();
@@ -396,6 +440,10 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
         }
     }
 
+    let mut father_map: HashMap<String, String> = HashMap::new();
+    let mut mother_map: HashMap<String, String> = HashMap::new();
+    let mut children_map: HashMap<String, Vec<String>> = HashMap::new();
+
     let mut pc_stmt = conn
         .prepare("SELECT family_id, child_id FROM parent_child")
         .map_err(|e| e.to_string())?;
@@ -407,6 +455,20 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
 
     for pc in pc_rows {
         let (fam_id, child_id) = pc.map_err(|e| e.to_string())?;
+        if let Some(Some(h)) = family_husband.get(&fam_id) {
+            father_map.insert(child_id.clone(), h.clone());
+            let c_list = children_map.entry(h.clone()).or_default();
+            if !c_list.contains(&child_id) {
+                c_list.push(child_id.clone());
+            }
+        }
+        if let Some(Some(w)) = family_wife.get(&fam_id) {
+            mother_map.insert(child_id.clone(), w.clone());
+            let c_list = children_map.entry(w.clone()).or_default();
+            if !c_list.contains(&child_id) {
+                c_list.push(child_id.clone());
+            }
+        }
         if let Some(parents) = family_parents.get(&fam_id) {
             let p_list = parent_map.entry(child_id).or_default();
             for p in parents {
@@ -430,6 +492,9 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
             let p_data = codes_map.remove(&id).unwrap_or_default();
             let spouses = spouse_map.remove(&id).unwrap_or_default();
             let parents = parent_map.remove(&id).unwrap_or_default();
+            let father = father_map.remove(&id);
+            let mother = mother_map.remove(&id);
+            let children = children_map.remove(&id).unwrap_or_default();
 
             Ok(Person {
                 id,
@@ -444,6 +509,9 @@ fn get_all_persons(state: State<AppState>) -> Result<Vec<Person>, String> {
                 gedcom_extra: extra_json,
                 spouses,
                 parent_ids: parents,
+                father_id: father,
+                mother_id: mother,
+                children_ids: children,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -1117,11 +1185,468 @@ fn update_person_parents(
         .map_err(|e| e.to_string())?;
     }
 
+    // CHAN (Letzte Änderung) auf Person aktualisieren
+    let chan = current_gedcom_chan();
+    let current_json: Option<String> = tx
+        .query_row(
+            "SELECT json_data FROM individuals WHERE id = ?1",
+            [&person_id],
+            |row| row.get(0),
+        )
+        .ok();
+    if let Some(json_str) = current_json {
+        let mut root_obj: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(&json_str).unwrap_or_default();
+        root_obj.insert("CHAN".to_string(), chan);
+        if let Ok(new_json) = serde_json::to_string(&root_obj) {
+            let _ = tx.execute(
+                "UPDATE individuals SET json_data = ?1 WHERE id = ?2",
+                rusqlite::params![new_json, person_id],
+            );
+        }
+    }
+
     tx.commit().map_err(|e| e.to_string())?;
 
     // Henry-Codes im Baum neu berechnen
     calculate_henry_codes_internal(&mut conn)?;
 
+    Ok(())
+}
+
+#[tauri::command]
+fn update_family_marriage(
+    state: State<AppState>,
+    family_id: String,
+    marriage_date: Option<String>,
+    divorce_date: Option<String>,
+    is_divorced: bool,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    update_family_marriage_internal(
+        &mut conn,
+        &family_id,
+        marriage_date,
+        divorce_date,
+        is_divorced,
+    )
+}
+
+pub fn update_family_marriage_internal(
+    conn: &mut Connection,
+    family_id: &str,
+    marriage_date: Option<String>,
+    divorce_date: Option<String>,
+    is_divorced: bool,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let (husband_id, wife_id, current_json): (Option<String>, Option<String>, String) = tx
+        .query_row(
+            "SELECT husband_id, wife_id, json_data FROM families WHERE id = ?1",
+            [family_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|e| format!("Familie '{}' nicht gefunden: {}", family_id, e))?;
+
+    let mut json_obj: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_str(&current_json).unwrap_or_default();
+
+    let m_opt = marriage_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if let Some(ref m_date) = m_opt {
+        let mut marr_map = match json_obj.remove("MARR") {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        marr_map.insert("DATE".to_string(), serde_json::Value::String(m_date.clone()));
+        json_obj.insert("MARR".to_string(), serde_json::Value::Object(marr_map));
+    } else if let Some(serde_json::Value::Object(mut marr_map)) = json_obj.remove("MARR") {
+        marr_map.remove("DATE");
+        if !marr_map.is_empty() {
+            json_obj.insert("MARR".to_string(), serde_json::Value::Object(marr_map));
+        }
+    }
+
+    let d_opt = divorce_date
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let divorced_flag = is_divorced || d_opt.is_some();
+    if divorced_flag {
+        let mut div_map = match json_obj.remove("DIV") {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        if let Some(ref d_date) = d_opt {
+            div_map.insert("DATE".to_string(), serde_json::Value::String(d_date.clone()));
+        } else {
+            div_map.remove("DATE");
+        }
+        json_obj.insert("DIV".to_string(), serde_json::Value::Object(div_map));
+    } else {
+        json_obj.remove("DIV");
+    }
+
+    let json_str = serde_json::to_string(&json_obj).unwrap_or_else(|_| "{}".to_string());
+
+    tx.execute(
+        "UPDATE families SET marriage_date = ?1, divorce_date = ?2, is_divorced = ?3, json_data = ?4 WHERE id = ?5",
+        rusqlite::params![m_opt, d_opt, divorced_flag, json_str, family_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    // CHAN (Letzte Änderung) auf beiden Ehepartnern aktualisieren
+    let chan = current_gedcom_chan();
+    for partner_id in [husband_id, wife_id].into_iter().flatten() {
+        let cur_ind_json: Option<String> = tx
+            .query_row(
+                "SELECT json_data FROM individuals WHERE id = ?1",
+                [&partner_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(ind_json_str) = cur_ind_json {
+            let mut ind_root: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&ind_json_str).unwrap_or_default();
+            ind_root.insert("CHAN".to_string(), chan.clone());
+            if let Ok(new_ind_json) = serde_json::to_string(&ind_root) {
+                let _ = tx.execute(
+                    "UPDATE individuals SET json_data = ?1 WHERE id = ?2",
+                    rusqlite::params![new_ind_json, partner_id],
+                );
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn link_spouses(
+    state: State<AppState>,
+    person_id: String,
+    partner_id: String,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    link_spouses_internal(&mut conn, &person_id, &partner_id)
+}
+
+pub fn link_spouses_internal(
+    conn: &mut Connection,
+    person_id: &str,
+    partner_id: &str,
+) -> Result<(), String> {
+    if person_id == partner_id {
+        return Err("Eine Person kann nicht mit sich selbst verheiratet werden.".to_string());
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let p1_sex: String = tx
+        .query_row(
+            "SELECT sex FROM individuals WHERE id = ?1",
+            [person_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("Person '{}' nicht gefunden.", person_id))?;
+
+    let p2_sex: String = tx
+        .query_row(
+            "SELECT sex FROM individuals WHERE id = ?1",
+            [partner_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| format!("Person '{}' nicht gefunden.", partner_id))?;
+
+    let already_spouses: bool = tx
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM families 
+                WHERE (husband_id = ?1 AND wife_id = ?2) OR (husband_id = ?2 AND wife_id = ?1)
+            )",
+            rusqlite::params![person_id, partner_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    if already_spouses {
+        return Err("Diese beiden Personen sind bereits als Ehepartner miteinander verknüpft.".to_string());
+    }
+
+    let (hid, wid) = if p1_sex == "M" || p2_sex == "F" {
+        (Some(person_id.to_string()), Some(partner_id.to_string()))
+    } else if p2_sex == "M" || p1_sex == "F" {
+        (Some(partner_id.to_string()), Some(person_id.to_string()))
+    } else {
+        (Some(person_id.to_string()), Some(partner_id.to_string()))
+    };
+
+    let fid = format!("F{}", uuid::Uuid::new_v4().simple());
+    tx.execute(
+        "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, '{}')",
+        rusqlite::params![fid, hid, wid],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let chan = current_gedcom_chan();
+    for p_id in [person_id, partner_id] {
+        let cur_ind_json: Option<String> = tx
+            .query_row(
+                "SELECT json_data FROM individuals WHERE id = ?1",
+                [p_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(ind_json_str) = cur_ind_json {
+            let mut ind_root: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&ind_json_str).unwrap_or_default();
+            ind_root.insert("CHAN".to_string(), chan.clone());
+            if let Ok(new_ind_json) = serde_json::to_string(&ind_root) {
+                let _ = tx.execute(
+                    "UPDATE individuals SET json_data = ?1 WHERE id = ?2",
+                    rusqlite::params![new_ind_json, p_id],
+                );
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    calculate_henry_codes_internal(conn)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn unlink_family(
+    state: State<AppState>,
+    family_id: String,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    unlink_family_internal(&mut conn, &family_id)
+}
+
+pub fn unlink_family_internal(
+    conn: &mut Connection,
+    family_id: &str,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let (husband_id, wife_id): (Option<String>, Option<String>) = tx
+        .query_row(
+            "SELECT husband_id, wife_id FROM families WHERE id = ?1",
+            [family_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| format!("Familie '{}' nicht gefunden: {}", family_id, e))?;
+
+    let child_ids: Vec<String> = {
+        let mut stmt = tx
+            .prepare("SELECT child_id FROM parent_child WHERE family_id = ?1")
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([family_id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .filter_map(Result::ok)
+            .collect()
+    };
+
+    tx.execute("DELETE FROM parent_child WHERE family_id = ?1", [family_id])
+        .map_err(|e| e.to_string())?;
+
+    tx.execute("DELETE FROM families WHERE id = ?1", [family_id])
+        .map_err(|e| e.to_string())?;
+
+    let chan = current_gedcom_chan();
+    for p_id in [husband_id, wife_id].into_iter().flatten().chain(child_ids.into_iter()) {
+        let cur_ind_json: Option<String> = tx
+            .query_row(
+                "SELECT json_data FROM individuals WHERE id = ?1",
+                [&p_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(ind_json_str) = cur_ind_json {
+            let mut ind_root: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&ind_json_str).unwrap_or_default();
+            ind_root.insert("CHAN".to_string(), chan.clone());
+            if let Ok(new_ind_json) = serde_json::to_string(&ind_root) {
+                let _ = tx.execute(
+                    "UPDATE individuals SET json_data = ?1 WHERE id = ?2",
+                    rusqlite::params![new_ind_json, p_id],
+                );
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    calculate_henry_codes_internal(conn)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn add_child_link(
+    state: State<AppState>,
+    parent_id: String,
+    child_id: String,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    add_child_link_internal(&mut conn, &parent_id, &child_id)
+}
+
+pub fn add_child_link_internal(
+    conn: &mut Connection,
+    parent_id: &str,
+    child_id: &str,
+) -> Result<(), String> {
+    if parent_id == child_id {
+        return Err("Eine Person kann nicht ihr eigenes Kind sein.".to_string());
+    }
+
+    if check_parent_recursion(conn, child_id, parent_id)? {
+        return Err(
+            "Rekursion erkannt: Die gewählte Person ist bereits ein Vorfahre/Nachfahre in dieser Beziehung."
+                .to_string(),
+        );
+    }
+
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let already_linked: bool = tx
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM parent_child pc 
+                JOIN families f ON pc.family_id = f.id 
+                WHERE pc.child_id = ?1 AND (f.husband_id = ?2 OR f.wife_id = ?2)
+            )",
+            rusqlite::params![child_id, parent_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+
+    if already_linked {
+        return Err("Dieses Kind ist diesem Elternteil bereits zugeordnet.".to_string());
+    }
+
+    let existing_fam_id: Option<String> = tx
+        .query_row(
+            "SELECT id FROM families WHERE husband_id = ?1 OR wife_id = ?1 LIMIT 1",
+            [parent_id],
+            |r| r.get(0),
+        )
+        .ok();
+
+    let target_fam_id = if let Some(fid) = existing_fam_id {
+        fid
+    } else {
+        let is_male = tx
+            .query_row(
+                "SELECT sex FROM individuals WHERE id = ?1",
+                [parent_id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_else(|_| "U".to_string())
+            == "M";
+        let fid = format!("F{}", uuid::Uuid::new_v4().simple());
+        let (hid, wid) = if is_male {
+            (Some(parent_id.to_string()), None)
+        } else {
+            (None, Some(parent_id.to_string()))
+        };
+        tx.execute(
+            "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES (?1, ?1, ?2, ?3, 0, '{}')",
+            rusqlite::params![fid, hid, wid],
+        )
+        .map_err(|e| e.to_string())?;
+        fid
+    };
+
+    tx.execute(
+        "INSERT INTO parent_child (family_id, child_id) VALUES (?1, ?2)",
+        rusqlite::params![target_fam_id, child_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let chan = current_gedcom_chan();
+    for p_id in [parent_id, child_id] {
+        let cur_ind_json: Option<String> = tx
+            .query_row(
+                "SELECT json_data FROM individuals WHERE id = ?1",
+                [p_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(ind_json_str) = cur_ind_json {
+            let mut ind_root: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&ind_json_str).unwrap_or_default();
+            ind_root.insert("CHAN".to_string(), chan.clone());
+            if let Ok(new_ind_json) = serde_json::to_string(&ind_root) {
+                let _ = tx.execute(
+                    "UPDATE individuals SET json_data = ?1 WHERE id = ?2",
+                    rusqlite::params![new_ind_json, p_id],
+                );
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    calculate_henry_codes_internal(conn)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn remove_child_link(
+    state: State<AppState>,
+    parent_id: String,
+    child_id: String,
+) -> Result<(), String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    remove_child_link_internal(&mut conn, &parent_id, &child_id)
+}
+
+pub fn remove_child_link_internal(
+    conn: &mut Connection,
+    parent_id: &str,
+    child_id: &str,
+) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "DELETE FROM parent_child 
+         WHERE child_id = ?1 AND family_id IN (
+             SELECT id FROM families WHERE husband_id = ?2 OR wife_id = ?2
+         )",
+        rusqlite::params![child_id, parent_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let chan = current_gedcom_chan();
+    for p_id in [parent_id, child_id] {
+        let cur_ind_json: Option<String> = tx
+            .query_row(
+                "SELECT json_data FROM individuals WHERE id = ?1",
+                [p_id],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(ind_json_str) = cur_ind_json {
+            let mut ind_root: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&ind_json_str).unwrap_or_default();
+            ind_root.insert("CHAN".to_string(), chan.clone());
+            if let Ok(new_ind_json) = serde_json::to_string(&ind_root) {
+                let _ = tx.execute(
+                    "UPDATE individuals SET json_data = ?1 WHERE id = ?2",
+                    rusqlite::params![new_ind_json, p_id],
+                );
+            }
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    calculate_henry_codes_internal(conn)?;
     Ok(())
 }
 
@@ -1229,8 +1754,9 @@ fn add_person(
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     let name_val = format!("{} /{}//", given_name, surname);
+    let chan = current_gedcom_chan();
     let json_val = serde_json::json!({
-        "NAME": name_val, "GIVN": given_name, "SURN": surname, "SEX": sex
+        "NAME": name_val, "GIVN": given_name, "SURN": surname, "SEX": sex, "CHAN": chan
     });
 
     tx.execute(
@@ -1458,9 +1984,15 @@ fn update_persons_batch_internal(
             rename_person_references(&tx, temp_id, &u.person.id, true)?;
         }
 
-        // Phase 3: Alle Datensatz-Felder der Personen aktualisieren
+        // Phase 3: Alle Datensatz-Felder der Personen aktualisieren (inkl. automatischem CHAN-Timestamp)
+        let chan = current_gedcom_chan();
         for u in &updates {
-            let json_str = serde_json::to_string(&u.person.gedcom_extra)
+            let mut extra_map = match u.person.gedcom_extra {
+                serde_json::Value::Object(ref map) => map.clone(),
+                _ => serde_json::Map::new(),
+            };
+            extra_map.insert("CHAN".to_string(), chan.clone());
+            let json_str = serde_json::to_string(&extra_map)
                 .unwrap_or_else(|_| "{}".to_string());
             tx.execute(
                 "UPDATE individuals SET given_name = ?1, surname = ?2, sex = ?3, birth_date = ?4, birth_place = ?5, death_date = ?6, death_place = ?7, json_data = ?8 WHERE id = ?9",
@@ -2009,6 +2541,11 @@ pub fn run() {
             update_persons_batch,
             get_next_person_id,
             update_person_parents,
+            update_family_marriage,
+            link_spouses,
+            unlink_family,
+            add_child_link,
+            remove_child_link,
             add_person,
             get_root_ancestors,
             add_root_ancestor,
@@ -2261,14 +2798,7 @@ mod tests {
                 given_name: Some("Vater".to_string()),
                 surname: Some("Ahne".to_string()),
                 sex: Some("M".to_string()),
-                birth_date: None,
-                birth_place: None,
-                death_date: None,
-                death_place: None,
-                proband_data: HashMap::new(),
-                gedcom_extra: serde_json::json!({}),
-                spouses: vec![],
-                parent_ids: vec![],
+                ..Default::default()
             },
         }];
         let err_empty = update_persons_batch_internal(&mut conn, empty_id_update);
@@ -2283,14 +2813,7 @@ mod tests {
                 given_name: Some("Kind".to_string()),
                 surname: Some("Ahne".to_string()),
                 sex: Some("M".to_string()),
-                birth_date: None,
-                birth_place: None,
-                death_date: None,
-                death_place: None,
-                proband_data: HashMap::new(),
-                gedcom_extra: serde_json::json!({}),
-                spouses: vec![],
-                parent_ids: vec![],
+                ..Default::default()
             },
         }];
         let err_col = update_persons_batch_internal(&mut conn, collision_update);
@@ -2307,14 +2830,7 @@ mod tests {
                 given_name: Some("VaterNeu".to_string()),
                 surname: Some("Ahne".to_string()),
                 sex: Some("M".to_string()),
-                birth_date: None,
-                birth_place: None,
-                death_date: None,
-                death_place: None,
-                proband_data: HashMap::new(),
-                gedcom_extra: serde_json::json!({}),
-                spouses: vec![],
-                parent_ids: vec![],
+                ..Default::default()
             },
         }];
         update_persons_batch_internal(&mut conn, rename_update).unwrap();
@@ -2362,14 +2878,7 @@ mod tests {
                     given_name: Some("VaterNeu".to_string()),
                     surname: Some("Ahne".to_string()),
                     sex: Some("M".to_string()),
-                    birth_date: None,
-                    birth_place: None,
-                    death_date: None,
-                    death_place: None,
-                    proband_data: HashMap::new(),
-                    gedcom_extra: serde_json::json!({}),
-                    spouses: vec![],
-                    parent_ids: vec![],
+                    ..Default::default()
                 },
             },
             PersonUpdate {
@@ -2379,14 +2888,7 @@ mod tests {
                     given_name: Some("Kind".to_string()),
                     surname: Some("Ahne".to_string()),
                     sex: Some("M".to_string()),
-                    birth_date: None,
-                    birth_place: None,
-                    death_date: None,
-                    death_place: None,
-                    proband_data: HashMap::new(),
-                    gedcom_extra: serde_json::json!({}),
-                    spouses: vec![],
-                    parent_ids: vec![],
+                    ..Default::default()
                 },
             },
         ];
@@ -2481,18 +2983,229 @@ mod tests {
                 given_name: Some("Test".to_string()),
                 surname: Some("Person".to_string()),
                 sex: Some("M".to_string()),
-                birth_date: None,
-                birth_place: None,
-                death_date: None,
-                death_place: None,
-                proband_data: HashMap::new(),
-                gedcom_extra: serde_json::json!({}),
-                spouses: vec![],
-                parent_ids: vec![],
+                ..Default::default()
             },
         }];
         let res = update_persons_batch_internal(&mut conn, invalid_update);
         assert!(res.is_err());
         assert!(res.unwrap_err().contains("Ungültige XREF-ID"));
+    }
+
+    #[test]
+    fn test_system_fields_chan_and_uid() {
+        let mut conn = db::init_in_memory_database().unwrap();
+
+        let gedcom_content = "0 HEAD\n\
+1 SOUR TEST\n\
+0 @I1@ INDI\n\
+1 NAME Max /Mustermann/\n\
+1 SEX M\n\
+1 _UID AABBCCDD11223344\n\
+1 CHAN\n\
+2 DATE 10 JAN 2020\n\
+3 TIME 12:00:00\n\
+0 TRLR\n";
+
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_chan_uid.ged");
+        fs::write(&test_file, gedcom_content).unwrap();
+        let count = parser::import_gedcom(&mut conn, &test_file).unwrap();
+        assert_eq!(count, 1);
+
+        let json_str: String = conn
+            .query_row("SELECT json_data FROM individuals WHERE id = 'I1'", [], |r| r.get(0))
+            .unwrap();
+        let val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(val["_UID"]["_val"], "AABBCCDD11223344");
+        assert_eq!(val["CHAN"]["DATE"], "10 JAN 2020");
+        assert_eq!(val["CHAN"]["TIME"], "12:00:00");
+
+        let updates = vec![PersonUpdate {
+            original_id: "I1".to_string(),
+            person: Person {
+                id: "I1".to_string(),
+                given_name: Some("Maximilian".to_string()),
+                surname: Some("Mustermann".to_string()),
+                sex: Some("M".to_string()),
+                gedcom_extra: val,
+                ..Default::default()
+            },
+        }];
+        update_persons_batch_internal(&mut conn, updates).unwrap();
+
+        let updated_json: String = conn
+            .query_row("SELECT json_data FROM individuals WHERE id = 'I1'", [], |r| r.get(0))
+            .unwrap();
+        let updated_val: serde_json::Value = serde_json::from_str(&updated_json).unwrap();
+        assert_eq!(updated_val["_UID"]["_val"], "AABBCCDD11223344");
+        assert_ne!(updated_val["CHAN"]["DATE"], "10 JAN 2020");
+        assert!(updated_val["CHAN"]["TIME"].is_string());
+
+        let _ = fs::remove_file(test_file);
+    }
+
+    #[test]
+    fn test_update_family_marriage() {
+        let mut conn = db::init_in_memory_database().unwrap();
+
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Johann', 'Bach', 'M', '{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I2', 'I2', 'Anna', 'Wülcken', 'F', '{}')",
+            [],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('F1', 'F1', 'I1', 'I2', 0, '{}')",
+            [],
+        ).unwrap();
+
+        update_family_marriage_internal(
+            &mut conn,
+            "F1",
+            Some("03 DEC 1721".to_string()),
+            None,
+            false,
+        ).unwrap();
+
+        let (m_date, is_div): (Option<String>, bool) = conn.query_row(
+            "SELECT marriage_date, is_divorced FROM families WHERE id = 'F1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).unwrap();
+        assert_eq!(m_date.as_deref(), Some("03 DEC 1721"));
+        assert!(!is_div);
+
+        let h_json: String = conn.query_row("SELECT json_data FROM individuals WHERE id = 'I1'", [], |r| r.get(0)).unwrap();
+        let w_json: String = conn.query_row("SELECT json_data FROM individuals WHERE id = 'I2'", [], |r| r.get(0)).unwrap();
+        let h_val: serde_json::Value = serde_json::from_str(&h_json).unwrap();
+        let w_val: serde_json::Value = serde_json::from_str(&w_json).unwrap();
+        assert!(h_val["CHAN"]["DATE"].is_string());
+        assert!(w_val["CHAN"]["DATE"].is_string());
+
+        update_family_marriage_internal(
+            &mut conn,
+            "F1",
+            Some("03 DEC 1721".to_string()),
+            Some("10 MAY 1730".to_string()),
+            true,
+        ).unwrap();
+
+        let (m_date2, d_date, is_div2): (Option<String>, Option<String>, bool) = conn.query_row(
+            "SELECT marriage_date, divorce_date, is_divorced FROM families WHERE id = 'F1'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+        assert_eq!(m_date2.as_deref(), Some("03 DEC 1721"));
+        assert_eq!(d_date.as_deref(), Some("10 MAY 1730"));
+        assert!(is_div2);
+    }
+
+    #[test]
+    fn test_link_and_unlink_spouses() {
+        let mut conn = db::init_in_memory_database().unwrap();
+
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Friedrich', 'Schiller', 'M', '{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I2', 'I2', 'Charlotte', 'von Lengefeld', 'F', '{}')",
+            [],
+        ).unwrap();
+
+        // 1. Verheiraten
+        link_spouses_internal(&mut conn, "I1", "I2").unwrap();
+
+        let fam_id: String = conn.query_row(
+            "SELECT id FROM families WHERE husband_id = 'I1' AND wife_id = 'I2'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+
+        // Zweiter Versuch muss fehlschlagen
+        let duplicate = link_spouses_internal(&mut conn, "I2", "I1");
+        assert!(duplicate.is_err());
+
+        // 2. Ehe auflösen
+        unlink_family_internal(&mut conn, &fam_id).unwrap();
+
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM families WHERE id = ?1",
+            [&fam_id],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_add_and_remove_child_link() {
+        let mut conn = db::init_in_memory_database().unwrap();
+
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('P1', 'P1', 'Vater', 'Test', 'M', '{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('C1', 'C1', 'Kind', 'Test', 'M', '{}')",
+            [],
+        ).unwrap();
+
+        // 1. Kind zuweisen
+        add_child_link_internal(&mut conn, "P1", "C1").unwrap();
+
+        let pc_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM parent_child pc JOIN families f ON pc.family_id = f.id WHERE pc.child_id = 'C1' AND f.husband_id = 'P1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(pc_count, 1);
+
+        // Rekursionsprüfung: P1 kann nicht als Kind von C1 zugewiesen werden
+        let rec_err = add_child_link_internal(&mut conn, "C1", "P1");
+        assert!(rec_err.is_err());
+
+        // 2. Kind entfernen
+        remove_child_link_internal(&mut conn, "P1", "C1").unwrap();
+
+        let pc_count2: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM parent_child pc JOIN families f ON pc.family_id = f.id WHERE pc.child_id = 'C1' AND f.husband_id = 'P1'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(pc_count2, 0);
+    }
+
+    #[test]
+    fn test_load_persons_relations() {
+        let conn = db::init_in_memory_database().unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('V1', 'V1', 'Vater', 'Ahne', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('M1', 'M1', 'Mutter', 'Ahne', 'F', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('K1', 'K1', 'Kind1', 'Ahne', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('K2', 'K2', 'Kind2', 'Ahne', 'F', '{}')", []).unwrap();
+        
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) VALUES ('FAM1', 'FAM1', 'V1', 'M1', 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('FAM1', 'K1')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('FAM1', 'K2')", []).unwrap();
+
+        let persons = get_all_persons_internal(&conn).unwrap();
+        let k1 = persons.iter().find(|p| p.id == "K1").unwrap();
+        assert_eq!(k1.father_id.as_deref(), Some("V1"));
+        assert_eq!(k1.mother_id.as_deref(), Some("M1"));
+
+        let v1 = persons.iter().find(|p| p.id == "V1").unwrap();
+        assert_eq!(v1.children_ids.len(), 2);
+        assert!(v1.children_ids.contains(&"K1".to_string()));
+        assert!(v1.children_ids.contains(&"K2".to_string()));
+        assert_eq!(v1.spouses.len(), 1);
+        assert_eq!(v1.spouses[0].id, "M1");
+        assert_eq!(v1.spouses[0].family_id.as_deref(), Some("FAM1"));
+
+        let m1 = persons.iter().find(|p| p.id == "M1").unwrap();
+        assert_eq!(m1.children_ids.len(), 2);
+        assert_eq!(m1.spouses[0].id, "V1");
+        assert_eq!(m1.spouses[0].family_id.as_deref(), Some("FAM1"));
     }
 }

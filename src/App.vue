@@ -82,6 +82,15 @@ const {
   toggleEditMode,
   saveChanges,
   savePersonParents,
+  editedSpouses,
+  marriageEditError,
+  relationActionError,
+  setSpouseAttr,
+  saveMarriageDetails,
+  linkSpouses,
+  unlinkFamily,
+  addChildLink,
+  removeChildLink,
   calculateNextIdFromPersons,
   moveColumn,
   handleTreeSwitch,
@@ -258,6 +267,8 @@ onMounted(initTrees);
       :visible="showAddModal"
       :selected-person="selectedPerson"
       :persons="persons"
+      :columns="columns"
+      :get-col-label="getColLabel"
       :fallback-next-id="calculateNextIdFromPersons"
       :server-error="addPersonError"
       @close="showAddModal = false"
@@ -303,6 +314,7 @@ onMounted(initTrees);
         v-if="currentView === 'table'"
         :active-table-columns="activeTableColumns"
         :display-persons="displayPersons"
+        :all-persons="persons"
         :selected-person="selectedPerson"
         :is-editing="isEditing"
         :edited-persons="editedPersons"
@@ -310,14 +322,24 @@ onMounted(initTrees);
         :sort-asc="sortAsc"
         :column-filters="columnFilters"
         :save-error-alert="saveErrorAlert"
+        :male-persons="malePersons"
+        :female-persons="femalePersons"
         :get-col-label="getColLabel"
         :get-code="getCode"
         :get-gen="getGen"
         :get-person-attr="getPersonAttr"
         :set-person-attr="setPersonAttr"
         @select="p => selectedPerson = p"
+        @select-by-id="id => {
+          const found = persons.find(p => p.id === id);
+          if (found) selectedPerson = found;
+        }"
         @sort="sortBy"
         @clear-save-error="saveErrorAlert = ''"
+        @link-spouses="({ personId, partnerId }) => linkSpouses(partnerId, personId)"
+        @unlink-family="({ personId, familyId }) => unlinkFamily(familyId, personId)"
+        @add-child-link="({ parentId, childId }) => addChildLink(childId, parentId)"
+        @remove-child-link="({ parentId, childId }) => removeChildLink(childId, parentId)"
       />
 
       <!-- 2. Grafische Stammbaum-Ansicht (Volle Breite) -->
@@ -360,7 +382,7 @@ onMounted(initTrees);
         @select="p => { selectedPerson = p; if (!p) activePartnerPath = []; }"
         @clear-selection="() => { selectedPerson = null; activePartnerPath = []; }"
         @select-proband="pid => setProbandTab(pid)"
-        @open-settings="showSettings = true; activeSettingsTab = 'design_mode'; loadRootAncestors()"
+        @open-settings="showSettings = true; activeSettingsTab = 'general'; loadRootAncestors()"
         @update-card-config="cfg => { designConfig.cardConfig = { ...designConfig.cardConfig, ...cfg }; }"
         @update-design-config="cfg => {
           if (cfg.cardConfig) {
@@ -391,16 +413,20 @@ onMounted(initTrees);
         :selected-person="selectedPerson"
         :person-details="personDetails"
         :active-detail-columns="activeDetailColumns"
+        :all-persons="persons"
         :is-editing="isEditing"
         :is-loading="isLoading"
         :has-invalid-edited-person="hasInvalidEditedPerson"
         :edited-persons="editedPersons"
         :save-error-alert="saveErrorAlert"
         :parent-edit-error="parentEditError"
+        :relation-action-error="relationActionError"
         v-model:selected-father-id="selectedFatherId"
         v-model:selected-mother-id="selectedMotherId"
         :male-persons="malePersons"
         :female-persons="femalePersons"
+        :edited-spouses="editedSpouses"
+        :marriage-edit-error="marriageEditError"
         v-model:shortest-path-search-query="shortestPathSearchQuery"
         v-model:shortest-path-include-spouses="shortestPathIncludeSpouses"
         :shortest-path-search-results="shortestPathSearchResults"
@@ -412,6 +438,12 @@ onMounted(initTrees);
         :get-rel-code="getRelCode"
         @save-changes="saveChanges"
         @save-parents="savePersonParents"
+        @update-spouse="({ familyId, field, value }) => setSpouseAttr(familyId, field, value)"
+        @save-marriage="familyId => saveMarriageDetails(familyId)"
+        @link-spouses="partnerId => linkSpouses(partnerId)"
+        @unlink-family="familyId => unlinkFamily(familyId)"
+        @add-child-link="childId => addChildLink(childId)"
+        @remove-child-link="childId => removeChildLink(childId)"
         @jump-to="jumpToTreePerson"
         @start-shortest-path="startShortestPathTo"
       />

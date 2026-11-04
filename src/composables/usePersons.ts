@@ -15,6 +15,7 @@ export interface SpouseConnection {
   place: string | null;
   divorce_date: string | null;
   is_divorced: boolean;
+  family_id?: string | null;
 }
 
 export interface RelationInfo {
@@ -39,6 +40,9 @@ export interface Person {
   gedcom_extra: Record<string, any>;
   spouses: SpouseConnection[];
   parent_ids: string[];
+  father_id?: string | null;
+  mother_id?: string | null;
+  children_ids?: string[];
 }
 
 export interface TreeNodeData {
@@ -71,6 +75,13 @@ export interface SpouseInfo {
   partner_death: string | null;
   marriage_date: string | null;
   divorce_date: string | null;
+  is_divorced: boolean;
+}
+
+export interface EditableSpouseData {
+  family_id: string;
+  marriage_date: string;
+  divorce_date: string;
   is_divorced: boolean;
 }
 
@@ -148,10 +159,11 @@ export function normalizeGedcomXref(val: string | null | undefined): string {
 export function clonePerson(p: Person): Person {
   return {
     ...p,
-    proband_data: p.proband_data ? JSON.parse(JSON.stringify(p.proband_data)) : {},
-    gedcom_extra: p.gedcom_extra ? JSON.parse(JSON.stringify(p.gedcom_extra)) : {},
+    proband_data: p.proband_data ? { ...p.proband_data } : {},
+    gedcom_extra: p.gedcom_extra ? { ...p.gedcom_extra } : {},
     spouses: p.spouses ? [...p.spouses] : [],
     parent_ids: p.parent_ids ? [...p.parent_ids] : [],
+    children_ids: p.children_ids ? [...p.children_ids] : [],
   };
 }
 
@@ -159,6 +171,21 @@ export function extractYear(val: any): number {
   if (!val) return 0;
   const match = String(val).match(/\d{4}/);
   return match ? parseInt(match[0], 10) : 0;
+}
+
+export function formatCurrentGedcomChan(): { DATE: string; TIME: string } {
+  const now = new Date();
+  const months = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+  const day = String(now.getDate()).padStart(2, '0');
+  const month = months[now.getMonth()];
+  const year = now.getFullYear();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  const seconds = String(now.getSeconds()).padStart(2, '0');
+  return {
+    DATE: `${day} ${month} ${year}`,
+    TIME: `${hours}:${minutes}:${seconds}`,
+  };
 }
 
 export function readGedcomSub(
@@ -298,6 +325,13 @@ export function usePersons(
   const newTreeName = ref<string>('');
 
   const persons = ref<Person[]>([]);
+  const personsMap = computed(() => {
+    const m = new Map<string, Person>();
+    for (const p of persons.value) {
+      m.set(p.id, p);
+    }
+    return m;
+  });
   const rootAncestors = ref<RootAncestorConfig[]>([]);
   const editedPersons = ref<Map<string, Person>>(new Map());
   const selectedPerson = ref<Person | null>(null);
@@ -306,6 +340,9 @@ export function usePersons(
   const selectedFatherId = ref<string>('');
   const selectedMotherId = ref<string>('');
   const parentEditError = ref<string>('');
+  const editedSpouses = ref<Map<string, EditableSpouseData>>(new Map());
+  const marriageEditError = ref<string>('');
+  const relationActionError = ref<string>('');
 
   const selectedRootId = ref<string>('');
   const newRootCode = ref<string>('1');
@@ -371,6 +408,10 @@ export function usePersons(
     { key: 'death_place', labelKey: 'col_death_place', visible: true, detailVisible: true, editable: true },
     { key: 'sex', labelKey: 'col_sex', visible: false, detailVisible: true, editable: true },
     { key: 'id', labelKey: 'col_id', visible: true, detailVisible: true, editable: true },
+    { key: 'father', labelKey: 'col_father', visible: true, detailVisible: false, editable: true },
+    { key: 'mother', labelKey: 'col_mother', visible: true, detailVisible: false, editable: true },
+    { key: 'spouses', labelKey: 'col_spouses', visible: true, detailVisible: false, editable: true },
+    { key: 'children', labelKey: 'col_children', visible: true, detailVisible: false, editable: true },
     { key: 'chr_date', labelKey: 'col_chr_date', visible: false, detailVisible: true, editable: true, isDate: true },
     { key: 'chr_place', labelKey: 'col_chr_place', visible: false, detailVisible: true, editable: true },
     { key: 'buri_date', labelKey: 'col_buri_date', visible: false, detailVisible: true, editable: true, isDate: true },
@@ -383,6 +424,82 @@ export function usePersons(
     { key: 'sour', labelKey: 'col_sour', visible: false, detailVisible: true, editable: true },
     { key: 'chan', labelKey: 'col_chan', visible: false, detailVisible: true, editable: false },
   ]);
+
+  // Spalten- & Attributanzeige-Konfiguration (Persistenz in localStorage)
+  const COLUMNS_STORAGE_KEY = 'stammbaum_columns_config';
+  const savedColumnPrefs = new Map<
+    string,
+    { visible: boolean; detailVisible: boolean; order: number }
+  >();
+
+  try {
+    const rawSavedCols = localStorage.getItem(COLUMNS_STORAGE_KEY);
+    if (rawSavedCols) {
+      const parsed = JSON.parse(rawSavedCols);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item: any, idx: number) => {
+          if (item && typeof item.key === 'string') {
+            savedColumnPrefs.set(item.key, {
+              visible: typeof item.visible === 'boolean' ? item.visible : false,
+              detailVisible: typeof item.detailVisible === 'boolean' ? item.detailVisible : true,
+              order: idx,
+            });
+          }
+        });
+      }
+    }
+  } catch {}
+
+  if (savedColumnPrefs.size > 0) {
+    columns.value.forEach(c => {
+      const pref = savedColumnPrefs.get(c.key);
+      if (pref) {
+        c.visible = pref.visible;
+        c.detailVisible = pref.detailVisible;
+      }
+    });
+    columns.value.sort((a, b) => {
+      const oa = savedColumnPrefs.get(a.key)?.order ?? 9999;
+      const ob = savedColumnPrefs.get(b.key)?.order ?? 9999;
+      return oa - ob;
+    });
+  }
+
+  watch(
+    columns,
+    newCols => {
+      try {
+        const presentKeys = new Set<string>();
+        newCols.forEach((c, idx) => {
+          presentKeys.add(c.key);
+          savedColumnPrefs.set(c.key, {
+            visible: c.visible,
+            detailVisible: c.detailVisible,
+            order: idx,
+          });
+        });
+        const serialized: { key: string; visible: boolean; detailVisible: boolean }[] = newCols.map(
+          c => ({
+            key: c.key,
+            visible: c.visible,
+            detailVisible: c.detailVisible,
+          })
+        );
+        // Bewahre auch dynamische GEDCOM-Attribute, falls aktuell noch kein Baum mit diesen geladen ist
+        for (const [k, pref] of savedColumnPrefs.entries()) {
+          if (!presentKeys.has(k)) {
+            serialized.push({
+              key: k,
+              visible: pref.visible,
+              detailVisible: pref.detailVisible,
+            });
+          }
+        }
+        localStorage.setItem(COLUMNS_STORAGE_KEY, JSON.stringify(serialized));
+      } catch {}
+    },
+    { deep: true }
+  );
 
   const sortKey = ref<string>('henry_code');
   const sortAsc = ref<boolean>(true);
@@ -412,20 +529,35 @@ export function usePersons(
         });
       }
     });
+    let addedWithSavedOrder = false;
     extraKeys.forEach(colKey => {
       if (!columns.value.some(c => c.key === colKey)) {
         const rawTag = colKey.replace(/^ged_/, '');
-        const isUid = rawTag === '_UID' || rawTag === 'UID';
+        const isSystem =
+          rawTag === '_UID' ||
+          rawTag === 'UID' ||
+          rawTag.toLowerCase() === '_uid' ||
+          rawTag.toLowerCase() === 'uid' ||
+          rawTag.toUpperCase() === 'CHAN';
+        const pref = savedColumnPrefs.get(colKey);
+        if (pref) addedWithSavedOrder = true;
         columns.value.push({
           key: colKey,
           labelKey: colKey,
           customLabel: `GEDCOM: ${rawTag}`,
-          visible: false,
-          detailVisible: true,
-          editable: !isUid,
+          visible: pref ? pref.visible : false,
+          detailVisible: pref ? pref.detailVisible : true,
+          editable: !isSystem,
         });
       }
     });
+    if (addedWithSavedOrder) {
+      columns.value.sort((a, b) => {
+        const oa = savedColumnPrefs.get(a.key)?.order ?? 9999;
+        const ob = savedColumnPrefs.get(b.key)?.order ?? 9999;
+        return oa - ob;
+      });
+    }
     ensureColumnFilters();
   }
 
@@ -460,6 +592,34 @@ export function usePersons(
   function getPersonAttr(person: Person, key: string): any {
     if (key === 'henry_code') return getCode(person);
     if (key === 'generation') return getGen(person);
+    if (key === 'father') {
+      if (!person.father_id) return null;
+      const f = personsMap.value.get(person.father_id);
+      return f ? `${f.surname || ''}, ${f.given_name || 'N.N.'}` : person.father_id;
+    }
+    if (key === 'mother') {
+      if (!person.mother_id) return null;
+      const m = personsMap.value.get(person.mother_id);
+      return m ? `${m.surname || ''}, ${m.given_name || 'N.N.'}` : person.mother_id;
+    }
+    if (key === 'spouses') {
+      if (!person.spouses || person.spouses.length === 0) return null;
+      return person.spouses
+        .map(s => {
+          const sp = personsMap.value.get(s.id);
+          return sp ? `${sp.surname || ''}, ${sp.given_name || 'N.N.'}` : s.id;
+        })
+        .join('; ');
+    }
+    if (key === 'children') {
+      if (!person.children_ids || person.children_ids.length === 0) return null;
+      return person.children_ids
+        .map(cid => {
+          const c = personsMap.value.get(cid);
+          return c ? `${c.surname || ''}, ${c.given_name || 'N.N.'}` : cid;
+        })
+        .join('; ');
+    }
     if (key in person) return (person as any)[key];
     const extra = person.gedcom_extra;
     switch (key) {
@@ -483,9 +643,19 @@ export function usePersons(
         return readGedcomSub(extra, 'NOTE', '_val');
       case 'sour':
         return readGedcomSub(extra, 'SOUR', '_val');
-      case 'chan':
-        return readGedcomSub(extra, 'CHAN', 'DATE') || readGedcomSub(extra, 'CHAN', '_val');
+      case 'chan': {
+        const d = readGedcomSub(extra, 'CHAN', 'DATE');
+        const t = readGedcomSub(extra, 'CHAN', 'TIME');
+        if (d && t) return `${d} ${t}`;
+        return d || readGedcomSub(extra, 'CHAN', '_val') || null;
+      }
       default:
+        if (key.toLowerCase() === 'ged_chan') {
+          const d = readGedcomSub(extra, 'CHAN', 'DATE');
+          const t = readGedcomSub(extra, 'CHAN', 'TIME');
+          if (d && t) return `${d} ${t}`;
+          return d || readGedcomSub(extra, 'CHAN', '_val') || null;
+        }
         if (key.startsWith('ged_')) {
           const rawTag = key.slice(4);
           return readGedcomSub(extra, rawTag, '_val');
@@ -499,6 +669,12 @@ export function usePersons(
     switch (key) {
       case 'id':
         person.id = value;
+        break;
+      case 'father':
+        person.father_id = valOrNull;
+        break;
+      case 'mother':
+        person.mother_id = valOrNull;
         break;
       case 'surname':
         person.surname = valOrNull;
@@ -551,8 +727,16 @@ export function usePersons(
       case 'sour':
         writeGedcomSub(person, 'SOUR', '_val', value);
         break;
+      case 'chan':
+        return;
       default:
-        if (key === 'ged__UID' || key === 'ged_UID' || key.toLowerCase() === 'ged__uid') {
+        if (
+          key === 'ged__UID' ||
+          key === 'ged_UID' ||
+          key.toLowerCase() === 'ged__uid' ||
+          key.toLowerCase() === 'ged_uid' ||
+          key.toLowerCase() === 'ged_chan'
+        ) {
           return;
         }
         if (key.startsWith('ged_')) {
@@ -565,7 +749,7 @@ export function usePersons(
 
   function getRelCode(relId: string | null) {
     if (!relId || !activeProbandTab.value) return null;
-    const p = persons.value.find(x => x.id === relId);
+    const p = personsMap.value.get(relId);
     return p ? getCode(p) : null;
   }
 
@@ -578,7 +762,7 @@ export function usePersons(
   const hasInvalidEditedPerson = computed(() => {
     if (!isEditing.value) return false;
     for (const [origId, editedPerson] of editedPersons.value.entries()) {
-      const orig = persons.value.find(p => p.id === origId);
+      const orig = personsMap.value.get(origId);
       if (!orig) continue;
       const isDifferent =
         editedPerson.id !== orig.id ||
@@ -589,6 +773,8 @@ export function usePersons(
         editedPerson.birth_place !== orig.birth_place ||
         editedPerson.death_date !== orig.death_date ||
         editedPerson.death_place !== orig.death_place ||
+        (editedPerson.father_id || null) !== (orig.father_id || null) ||
+        (editedPerson.mother_id || null) !== (orig.mother_id || null) ||
         JSON.stringify(editedPerson.gedcom_extra || {}) !== JSON.stringify(orig.gedcom_extra || {});
       if (isDifferent && !isValidGedcomXref(editedPerson.id)) {
         return true;
@@ -669,14 +855,13 @@ export function usePersons(
 
     const effectiveSortKey =
       sortKey.value === 'henry_code' && !activeProbandTab.value ? 'surname' : sortKey.value;
-    filtered.sort((a, b) => {
-      const valA = getPersonAttr(a, effectiveSortKey) ?? '';
-      const valB = getPersonAttr(b, effectiveSortKey) ?? '';
-      if (valA < valB) return sortAsc.value ? -1 : 1;
-      if (valA > valB) return sortAsc.value ? 1 : -1;
+    const mapped = filtered.map((p, idx) => ({ idx, val: getPersonAttr(p, effectiveSortKey) ?? '' }));
+    mapped.sort((a, b) => {
+      if (a.val < b.val) return sortAsc.value ? -1 : 1;
+      if (a.val > b.val) return sortAsc.value ? 1 : -1;
       return 0;
     });
-    return filtered;
+    return mapped.map(item => filtered[item.idx]);
   });
 
   const filteredPersons = computed(() => {
@@ -765,6 +950,7 @@ export function usePersons(
   async function loadDetails(personId: string) {
     try {
       personDetails.value = await invoke<PersonDetails>('get_person_details', { personId });
+      initEditedSpouses(personDetails.value?.spouses);
     } catch (error) {}
   }
 
@@ -803,6 +989,163 @@ export function usePersons(
     }
   }
 
+  function initEditedSpouses(spList?: SpouseInfo[]) {
+    editedSpouses.value.clear();
+    marriageEditError.value = '';
+    const target = spList || personDetails.value?.spouses;
+    if (target) {
+      target.forEach(sp => {
+        editedSpouses.value.set(sp.family_id, {
+          family_id: sp.family_id,
+          marriage_date: sp.marriage_date || '',
+          divorce_date: sp.divorce_date || '',
+          is_divorced: Boolean(sp.is_divorced || sp.divorce_date),
+        });
+      });
+    }
+  }
+
+  function setSpouseAttr(
+    familyId: string,
+    field: 'marriage_date' | 'divorce_date' | 'is_divorced',
+    val: any
+  ) {
+    let item = editedSpouses.value.get(familyId);
+    if (!item) {
+      const orig = personDetails.value?.spouses.find(s => s.family_id === familyId);
+      item = {
+        family_id: familyId,
+        marriage_date: orig?.marriage_date || '',
+        divorce_date: orig?.divorce_date || '',
+        is_divorced: Boolean(orig?.is_divorced || orig?.divorce_date),
+      };
+      editedSpouses.value.set(familyId, item);
+    }
+    if (field === 'marriage_date') {
+      item.marriage_date = String(val ?? '');
+    } else if (field === 'divorce_date') {
+      item.divorce_date = String(val ?? '');
+      if (item.divorce_date.trim()) {
+        item.is_divorced = true;
+      }
+    } else if (field === 'is_divorced') {
+      item.is_divorced = Boolean(val);
+    }
+  }
+
+  async function saveMarriageDetails(familyId: string) {
+    marriageEditError.value = '';
+    const spData = editedSpouses.value.get(familyId);
+    if (!spData) return;
+    try {
+      isLoading.value = true;
+      await invoke('update_family_marriage', {
+        familyId,
+        marriageDate: spData.marriage_date.trim() || null,
+        divorceDate: spData.divorce_date.trim() || null,
+        isDivorced: spData.is_divorced,
+      });
+      statusMessage.value = t('marriage_saved');
+      if (selectedPerson.value) {
+        await loadPersons();
+        await loadDetails(selectedPerson.value.id);
+      }
+    } catch (err: any) {
+      marriageEditError.value = String(err);
+      statusMessage.value = `Fehler: ${err}`;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function linkSpouses(partnerId: string, personId?: string) {
+    const targetId = personId || selectedPerson.value?.id;
+    if (!targetId || !partnerId) return;
+    relationActionError.value = '';
+    try {
+      isLoading.value = true;
+      await invoke('link_spouses', {
+        personId: targetId,
+        partnerId,
+      });
+      statusMessage.value = t('spouses_linked');
+      await loadPersons();
+      if (selectedPerson.value) {
+        await loadDetails(selectedPerson.value.id);
+      }
+    } catch (err: any) {
+      relationActionError.value = String(err);
+      statusMessage.value = `Fehler: ${err}`;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function unlinkFamily(familyId: string, _personId?: string) {
+    if (!familyId) return;
+    relationActionError.value = '';
+    try {
+      isLoading.value = true;
+      await invoke('unlink_family', { familyId });
+      statusMessage.value = t('family_unlinked');
+      await loadPersons();
+      if (selectedPerson.value) {
+        await loadDetails(selectedPerson.value.id);
+      }
+    } catch (err: any) {
+      relationActionError.value = String(err);
+      statusMessage.value = `Fehler: ${err}`;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function addChildLink(childId: string, parentId?: string) {
+    const targetId = parentId || selectedPerson.value?.id;
+    if (!targetId || !childId) return;
+    relationActionError.value = '';
+    try {
+      isLoading.value = true;
+      await invoke('add_child_link', {
+        parentId: targetId,
+        childId,
+      });
+      statusMessage.value = t('child_linked');
+      await loadPersons();
+      if (selectedPerson.value) {
+        await loadDetails(selectedPerson.value.id);
+      }
+    } catch (err: any) {
+      relationActionError.value = String(err);
+      statusMessage.value = `Fehler: ${err}`;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function removeChildLink(childId: string, parentId?: string) {
+    const targetId = parentId || selectedPerson.value?.id;
+    if (!targetId || !childId) return;
+    relationActionError.value = '';
+    try {
+      isLoading.value = true;
+      await invoke('remove_child_link', {
+        parentId: targetId,
+        childId,
+      });
+      statusMessage.value = t('child_unlinked');
+      await loadPersons();
+      if (selectedPerson.value) {
+        await loadDetails(selectedPerson.value.id);
+      }
+    } catch (err: any) {
+      relationActionError.value = String(err);
+      statusMessage.value = `Fehler: ${err}`;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
   function toggleEditMode() {
     if (isEditing.value) {
       saveErrorAlert.value = '';
@@ -810,7 +1153,10 @@ export function usePersons(
     }
     isEditing.value = !isEditing.value;
     parentEditError.value = '';
+    marriageEditError.value = '';
+    relationActionError.value = '';
     saveErrorAlert.value = '';
+    initEditedSpouses();
   }
 
   async function saveChanges() {
@@ -819,7 +1165,7 @@ export function usePersons(
     // 1. Sammle alle geänderten Personen
     const updates: { original_id: string; person: Person }[] = [];
     for (const [origId, editedPerson] of editedPersons.value.entries()) {
-      const origPerson = persons.value.find(p => p.id === origId);
+      const origPerson = personsMap.value.get(origId);
       if (!origPerson) continue;
 
       const isDifferent =
@@ -835,13 +1181,69 @@ export function usePersons(
           JSON.stringify(origPerson.gedcom_extra || {});
 
       if (isDifferent) {
-        updates.push({ original_id: origId, person: clonePerson(editedPerson) });
+        const cloned = clonePerson(editedPerson);
+        const chan = formatCurrentGedcomChan();
+        if (!cloned.gedcom_extra || typeof cloned.gedcom_extra !== 'object') {
+          cloned.gedcom_extra = {};
+        }
+        cloned.gedcom_extra.CHAN = { DATE: chan.DATE, TIME: chan.TIME };
+        updates.push({ original_id: origId, person: cloned });
+      }
+    }
+
+    // 1b. Modifizierte Eheeinträge speichern
+    let marriageUpdated = false;
+    if (personDetails.value && personDetails.value.spouses) {
+      for (const origSp of personDetails.value.spouses) {
+        const curSp = editedSpouses.value.get(origSp.family_id);
+        if (curSp) {
+          const mChanged = (curSp.marriage_date.trim() || null) !== (origSp.marriage_date || null);
+          const dChanged = (curSp.divorce_date.trim() || null) !== (origSp.divorce_date || null);
+          const divChanged = Boolean(curSp.is_divorced) !== Boolean(origSp.is_divorced);
+          if (mChanged || dChanged || divChanged) {
+            await invoke('update_family_marriage', {
+              familyId: origSp.family_id,
+              marriageDate: curSp.marriage_date.trim() || null,
+              divorceDate: curSp.divorce_date.trim() || null,
+              isDivorced: curSp.is_divorced,
+            });
+            marriageUpdated = true;
+          }
+        }
+      }
+    }
+
+    // 1c. Modifizierte Elternzuweisungen speichern
+    let parentsUpdated = false;
+    for (const [origId, editedPerson] of editedPersons.value.entries()) {
+      const origPerson = personsMap.value.get(origId);
+      if (!origPerson) continue;
+      const fChanged = (editedPerson.father_id || null) !== (origPerson.father_id || null);
+      const mChanged = (editedPerson.mother_id || null) !== (origPerson.mother_id || null);
+      if (fChanged || mChanged) {
+        try {
+          await invoke('update_person_parents', {
+            personId: origId,
+            fatherId: editedPerson.father_id || null,
+            motherId: editedPerson.mother_id || null,
+          });
+          parentsUpdated = true;
+        } catch (err: any) {
+          saveErrorAlert.value = `Fehler bei Eltern von ${editedPerson.given_name || origId}: ${err}`;
+          return;
+        }
       }
     }
 
     if (updates.length === 0) {
       isEditing.value = false;
       statusMessage.value = t('changes_saved');
+      if ((marriageUpdated || parentsUpdated) && selectedPerson.value) {
+        await loadPersons();
+        await loadDetails(selectedPerson.value.id);
+      } else if (marriageUpdated || parentsUpdated) {
+        await loadPersons();
+      }
       return;
     }
 
@@ -889,7 +1291,7 @@ export function usePersons(
       const newId = u.person.id;
       if (newId !== u.original_id) {
         if (!batchOrigIds.has(newId)) {
-          const existing = persons.value.find(p => p.id === newId);
+          const existing = personsMap.value.get(newId);
           if (existing) {
             const existingName =
               `${existing.given_name || 'N.N.'} ${existing.surname || ''}`.trim();
@@ -1098,7 +1500,52 @@ export function usePersons(
         await invoke('switch_tree', { treeName: 'stammbaum' });
         await loadTrees();
       }
-      await invoke('add_person', { ...payload });
+      const newPersonId = await invoke<string>('add_person', {
+        targetPersonId: payload.targetPersonId,
+        relationType: payload.relationType,
+        givenName: payload.givenName,
+        surname: payload.surname,
+        sex: payload.sex,
+        birthDate: payload.birthDate,
+        birthPlace: payload.birthPlace,
+        deathDate: payload.deathDate,
+        deathPlace: payload.deathPlace,
+        customId: payload.customId,
+      });
+
+      // Zusätzliche Tabellenfelder (z. B. Religion, Beruf, Wohnort, Taufe, Bestattung, Notiz, Quelle etc.) speichern
+      if (payload.extraAttributes && Object.keys(payload.extraAttributes).length > 0) {
+        const dummyPerson: Person = {
+          id: newPersonId,
+          given_name: payload.givenName || null,
+          surname: payload.surname || null,
+          sex: payload.sex || null,
+          birth_date: payload.birthDate || null,
+          birth_place: payload.birthPlace || null,
+          death_date: payload.deathDate || null,
+          death_place: payload.deathPlace || null,
+          proband_data: {},
+          gedcom_extra: {},
+          spouses: [],
+          parent_ids: [],
+        };
+
+        for (const [key, val] of Object.entries(payload.extraAttributes)) {
+          if (val !== undefined && val !== null && String(val).trim() !== '') {
+            setPersonAttr(dummyPerson, key, String(val).trim());
+          }
+        }
+
+        await invoke('update_persons_batch', {
+          updates: [
+            {
+              original_id: newPersonId,
+              person: dummyPerson,
+            },
+          ],
+        });
+      }
+
       showAddModal.value = false;
       await loadPersons();
       await loadRootAncestors();
@@ -1179,6 +1626,16 @@ export function usePersons(
     toggleEditMode,
     saveChanges,
     savePersonParents,
+    editedSpouses,
+    marriageEditError,
+    relationActionError,
+    initEditedSpouses,
+    setSpouseAttr,
+    saveMarriageDetails,
+    linkSpouses,
+    unlinkFamily,
+    addChildLink,
+    removeChildLink,
     calculateNextIdFromPersons,
     moveColumn,
     handleTreeSwitch,
