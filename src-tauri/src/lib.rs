@@ -2098,7 +2098,7 @@ fn import_gedcom_file(state: State<AppState>, file_path: String) -> Result<usize
             .file_stem()
             .and_then(|s| s.to_str())
             .and_then(|s| validate_tree_name(s).ok())
-            .unwrap_or("stammbaum")
+            .unwrap_or("lineagegraph")
             .to_string();
         let db_path = state.app_dir.join(format!("{}.db", tree_name));
         *conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
@@ -2678,6 +2678,7 @@ pub fn run() {
         })
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_trees,
             switch_tree,

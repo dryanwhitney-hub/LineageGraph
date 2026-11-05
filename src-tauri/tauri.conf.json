@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "stammbaum",
+  "productName": "LineageGraph",
   "version": "0.2.0",
-  "identifier": "com.david-whitney.stammbaum",
+  "identifier": "com.david-whitney.lineagegraph",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,8 @@
   "app": {
     "windows": [
       {
-        "title": "stammbaum",
+        "label": "main",
+        "title": "LineageGraph",
         "width": 1280,
         "height": 800,
         "minWidth": 800,
@@ -25,13 +26,30 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "copyright": "Copyright © 2026 David Whitney",
+    "shortDescription": "LineageGraph - Stammbaum- und Ahnenforschungssoftware",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "languages": ["German", "English"],
+        "displayLanguageSelector": false
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNBNzI2QTY5MUIwNjYyMEQKUldRTllnWWJhV3B5T21iYXVwVys2TDArK09UZHNEcEZwaEhrS2FMZ2Vycy9VSHBqRy9CTStkcFUK",
+      "endpoints": [
+        "https://github.com/david-whitney/LineageGraph/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
