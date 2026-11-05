@@ -954,6 +954,9 @@ export function usePersons(
     } catch (error) {}
   }
 
+  const selectedImportFilePath = ref<string>('');
+  const isImportModalVisible = ref<boolean>(false);
+
   async function handleImport() {
     try {
       const selected = await open({
@@ -961,29 +964,26 @@ export function usePersons(
         filters: [{ name: 'GEDCOM Dateien', extensions: ['ged'] }],
       });
       if (selected && typeof selected === 'string') {
-        isLoading.value = true;
-        statusMessage.value = 'Importiere...';
-        if (!activeTree.value) {
-          const stem =
-            selected
-              .split(/[\\/]/)
-              .pop()
-              ?.replace(/\.ged$/i, '')
-              .trim() || 'stammbaum';
-          activeTree.value = stem;
-          await invoke('switch_tree', { treeName: stem });
-        }
-        const count = await invoke<number>('import_gedcom_file', { filePath: selected });
-        await loadTrees();
-        if (!activeTree.value && trees.value.length > 0) {
-          activeTree.value = trees.value[0];
-        }
-        statusMessage.value = `${count} Personen importiert.`;
-        await loadPersons();
-        await loadRootAncestors();
+        selectedImportFilePath.value = selected;
+        isImportModalVisible.value = true;
       }
     } catch (error) {
       statusMessage.value = `Importfehler: ${error}`;
+    }
+  }
+
+  async function onImportModalCompleted(newActiveTree?: string) {
+    isLoading.value = true;
+    try {
+      await loadTrees();
+      if (newActiveTree) {
+        activeTree.value = newActiveTree;
+      }
+      await loadPersons();
+      await loadRootAncestors();
+      statusMessage.value = 'Import erfolgreich abgeschlossen.';
+    } catch (err) {
+      statusMessage.value = `Fehler beim Aktualisieren: ${err}`;
     } finally {
       isLoading.value = false;
     }
@@ -1623,6 +1623,9 @@ export function usePersons(
     calculateCodes,
     loadDetails,
     handleImport,
+    selectedImportFilePath,
+    isImportModalVisible,
+    onImportModalCompleted,
     toggleEditMode,
     saveChanges,
     savePersonParents,

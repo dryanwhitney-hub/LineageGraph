@@ -153,7 +153,7 @@ function assignNonOverlappingLanes(
   });
 
   // Mindestabstand (in px) zwischen horizontalen Balken auf derselben Lane, um optisches Verschmelzen zu verhindern
-  const LANE_REUSE_SAFETY_GAP = 24;
+  const LANE_REUSE_SAFETY_GAP = 6;
 
   // Überlappungs-Prüfung: Haben zwei Items einen gemeinsamen horizontalen Abschnitt oder unterschreiten sie den Sicherheitsabstand?
   function hasOverlap(i: number, j: number): boolean {
@@ -248,10 +248,19 @@ function assignNonOverlappingLanes(
           if (pc.overlap) cost += 100000;
         } else if (lI < lJ) {
           cost += pc.iBelowJ;
-          if (parsed[i].span > parsed[j].span + 8) cost += 0.5;
+          // Maßgabe: Umso weiter "außen" ein Nachkommenknoten liegt, umso tiefer soll der horizontale Abschnitt liegen.
+          if (direction !== 'down') {
+            if (parsed[i].span > parsed[j].span + 4) cost += 3.0;
+          } else {
+            if (parsed[j].span > parsed[i].span + 4) cost += 3.0;
+          }
         } else {
           cost += pc.jBelowI;
-          if (parsed[j].span > parsed[i].span + 8) cost += 0.5;
+          if (direction !== 'down') {
+            if (parsed[j].span > parsed[i].span + 4) cost += 3.0;
+          } else {
+            if (parsed[i].span > parsed[j].span + 4) cost += 3.0;
+          }
         }
       }
     }
@@ -278,7 +287,7 @@ function assignNonOverlappingLanes(
     return lanes;
   }
 
-  // 1. Kandidat: Verschachtelung (innere umschlossene Spannen zuerst)
+  // 1. Kandidat: Verschachtelung (innere umschlossene Spannen zuerst bei 'up', äußere zuerst bei 'down')
   const order1 = parsed.map((it, idx) => {
     let enclosedByCount = 0;
     for (let other = 0; other < n; other++) {
@@ -287,20 +296,23 @@ function assignNonOverlappingLanes(
         enclosedByCount++;
       }
     }
-    return { idx, score: enclosedByCount * 10000 - it.span };
+    const score = direction !== 'down'
+      ? (enclosedByCount * 10000 - it.span)
+      : (-enclosedByCount * 10000 + it.span);
+    return { idx, score };
   }).sort((a, b) => b.score - a.score).map(o => o.idx);
 
   // 2. Kandidat: Greedy nach Position (von links nach rechts)
   const order2 = parsed.map((it, idx) => ({ idx, minX: it.barMin }))
     .sort((a, b) => a.minX - b.minX).map(o => o.idx);
 
-  // 3. Kandidat: Kürzeste Spannen zuerst (reduziert Durchdringungen und Brückenbildung)
+  // 3. Kandidat: Kürzeste Spannen zuerst (bei 'up') bzw. Längste zuerst (bei 'down')
   const order3 = parsed.map((it, idx) => ({ idx, span: it.span }))
-    .sort((a, b) => a.span - b.span).map(o => o.idx);
+    .sort((a, b) => direction !== 'down' ? (a.span - b.span) : (b.span - a.span)).map(o => o.idx);
 
-  // 4. Kandidat: Längste Spannen zuerst
+  // 4. Kandidat: Längste Spannen zuerst (bei 'up') bzw. Kürzeste zuerst (bei 'down')
   const order4 = parsed.map((it, idx) => ({ idx, span: it.span }))
-    .sort((a, b) => b.span - a.span).map(o => o.idx);
+    .sort((a, b) => direction !== 'down' ? (b.span - a.span) : (a.span - b.span)).map(o => o.idx);
 
   // 5. Kandidat: Rangfolge nach gerichteter Kreuzungspräferenz
   const order5 = parsed.map((_it, i) => {
@@ -329,7 +341,7 @@ function assignNonOverlappingLanes(
     const current = [...bestAssignment];
     let improved = true;
     let iters = 0;
-    while (improved && iters < 12) {
+    while (improved && iters < 14) {
       improved = false;
       iters++;
 
@@ -399,8 +411,6 @@ function assignNonOverlappingLanes(
   usedLanes.forEach((l, idx) => laneMap.set(l, idx));
   const compacted = bestAssignment.map(l => laneMap.get(l) ?? 0);
   const totalLanes = usedLanes.length > 0 ? Math.max(...compacted) + 1 : 0;
-
-  return { lanes: compacted, totalLanes };
 
   return { lanes: compacted, totalLanes };
 }
@@ -567,45 +577,102 @@ export function generateDesignExportSvg(
 
   const gap = Math.max(10, options.horizontalLaneGap || state.horizontalLaneGap || 16);
 
-  const barsByCorridorLevel = new Map<number, { parentId?: string; parentX: number; minChildX: number; maxChildX: number; childrenX?: number[] }[]>();
-  const childGroupsAll = siblingGroups.filter(g => g.parentId);
-  const groupsByParentAndLvl = new Map<string, Map<number, DesignExportSiblingGroup[]>>();
-  childGroupsAll.forEach(cg => {
-    const pId = cg.parentId!;
-    if (!groupsByParentAndLvl.has(pId)) groupsByParentAndLvl.set(pId, new Map());
-    const lvlMap = groupsByParentAndLvl.get(pId)!;
-    if (!lvlMap.has(cg.level)) lvlMap.set(cg.level, []);
-    lvlMap.get(cg.level)!.push(cg);
+  // Alle Querlinien nach physischem Korridor indizieren (up, same und down)
+  // Verwende dieselbe kartenbasierte Eltern-Kind-Zuordnung wie in computeEdgeGeometry,
+  // damit auch gruppierte/verschmolzene Geschwisterreihen mit mehreren biologischen Eltern
+  // exakt dieselben Relationen und Lane-Bedarfe ermitteln.
+  interface HorizCardPos {
+    id: string;
+    groupId: string;
+    level: number;
+    left: number;
+    right: number;
+    centerX: number;
+    person: DesignExportPerson;
+  }
+  const cardPosByPersonId = new Map<string, HorizCardPos>();
+  siblingGroups.forEach(g => {
+    const width = g.memberIds.length * CARD_WIDTH;
+    const left = Math.round(g.x - width / 2);
+    g.memberIds.forEach((pid, idx) => {
+      const p = personById.get(pid);
+      if (!p) return;
+      const cLeft = left + idx * CARD_WIDTH;
+      const cRight = cLeft + CARD_WIDTH;
+      cardPosByPersonId.set(pid, {
+        id: pid,
+        groupId: g.id,
+        level: g.level,
+        left: cLeft,
+        right: cRight,
+        centerX: cLeft + CARD_WIDTH / 2,
+        person: p,
+      });
+    });
   });
 
-  groupsByParentAndLvl.forEach((lvlMap, parentId) => {
-    const pGrp = groupByPersonId.get(parentId);
-    if (!pGrp) return;
-    const pIdx = pGrp.memberIds.indexOf(parentId);
-    const pWidth = pGrp.memberIds.length * CARD_WIDTH;
-    const pLeft = Math.round(pGrp.x - pWidth / 2);
-    const parentX = pLeft + pIdx * CARD_WIDTH + Math.round(CARD_WIDTH / 2);
+  const corridorChildrenByParentAndLevel = new Map<string, Map<number, HorizCardPos[]>>();
+  cardPosByPersonId.forEach(cb => {
+    let pId: string | undefined;
+    if (cb.person.parent_ids && cb.person.parent_ids.length > 0) {
+      pId = cb.person.parent_ids.find(id => cardPosByPersonId.has(id));
+    }
+    if (!pId) return;
+    const pBox = cardPosByPersonId.get(pId);
+    if (!pBox) return;
 
-    lvlMap.forEach((cGroups, childLevel) => {
-      // Jede Geschwistergruppe hat genau einen Ziel-X-Punkt (ihr Zentrum)
-      const targetXs = cGroups.map(cg => Math.round(cg.x));
+    if (!corridorChildrenByParentAndLevel.has(pId)) {
+      corridorChildrenByParentAndLevel.set(pId, new Map());
+    }
+    const lvlMap = corridorChildrenByParentAndLevel.get(pId)!;
+    if (!lvlMap.has(cb.level)) {
+      lvlMap.set(cb.level, []);
+    }
+    lvlMap.get(cb.level)!.push(cb);
+  });
+
+  const barsByCorridorLevel = new Map<number, { parentId?: string; parentX: number; minChildX: number; maxChildX: number; childrenX?: number[]; direction: 'up' | 'same' | 'down' }[]>();
+  corridorChildrenByParentAndLevel.forEach((lvlMap, parentId) => {
+    const pBox = cardPosByPersonId.get(parentId);
+    if (!pBox) return;
+
+    lvlMap.forEach((cBoxes, childLevel) => {
+      const direction: 'up' | 'same' | 'down' =
+        childLevel > pBox.level ? 'up' : (childLevel === pBox.level ? 'same' : 'down');
+      const corridorLevel = direction === 'down' ? pBox.level : childLevel;
+
+      const cBoxesByGroup = new Map<string, HorizCardPos[]>();
+      cBoxes.forEach(cb => {
+        const gId = cb.groupId || cb.id;
+        if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
+        cBoxesByGroup.get(gId)!.push(cb);
+      });
+
+      const targetXs: number[] = [];
+      cBoxesByGroup.forEach(boxes => {
+        const minL = Math.min(...boxes.map(c => c.left));
+        const maxR = Math.max(...boxes.map(c => c.right));
+        targetXs.push(Math.round((minL + maxR) / 2));
+      });
       if (targetXs.length === 0) return;
+
       const minChildX = Math.min(...targetXs);
       const maxChildX = Math.max(...targetXs);
-      const barMinX = Math.min(parentX, minChildX);
-      const barMaxX = Math.max(parentX, maxChildX);
+      const stemX = pBox.centerX;
+      const barMinX = Math.min(stemX, ...targetXs);
+      const barMaxX = Math.max(stemX, ...targetXs);
 
       if (barMaxX - barMinX > 1) {
-        const corridorLvl = childLevel < pGrp.level ? pGrp.level : childLevel;
-        if (!barsByCorridorLevel.has(corridorLvl)) {
-          barsByCorridorLevel.set(corridorLvl, []);
+        if (!barsByCorridorLevel.has(corridorLevel)) {
+          barsByCorridorLevel.set(corridorLevel, []);
         }
-        barsByCorridorLevel.get(corridorLvl)!.push({
+        barsByCorridorLevel.get(corridorLevel)!.push({
           parentId,
-          parentX,
+          parentX: stemX,
           minChildX,
           maxChildX,
           childrenX: targetXs,
+          direction,
         });
       }
     });
@@ -627,7 +694,8 @@ export function generateDesignExportSvg(
     const corridorBars = barsByCorridorLevel.get(lvl) || [];
     let totalLanes = 0;
     if (corridorBars.length > 0) {
-      const { totalLanes: calculatedLanes } = assignNonOverlappingLanes(corridorBars);
+      const corridorDir = (corridorBars[0] as any)?.direction || 'up';
+      const { totalLanes: calculatedLanes } = assignNonOverlappingLanes(corridorBars, corridorDir);
       totalLanes = calculatedLanes;
     }
 
@@ -848,72 +916,22 @@ export function generateDesignExportSvg(
       return aCenter - bCenter;
     });
 
-    const items = relations.map(r => {
-      // Jede Geschwistergruppe hat genau einen Zielpunkt (Zentrum der Gruppe)
-      const cBoxesByGroup = new Map<string, ExportCard[]>();
-      r.cBoxes.forEach(cb => {
-        const gId = cb.groupId || cb.person.id;
-        if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
-        cBoxesByGroup.get(gId)!.push(cb);
-      });
-      const targetXs: number[] = [];
-      cBoxesByGroup.forEach(boxes => {
-        const minL = Math.min(...boxes.map(c => c.left));
-        const maxR = Math.max(...boxes.map(c => c.right));
-        targetXs.push(Math.round((minL + maxR) / 2));
-      });
-      const minChildX = Math.min(...targetXs);
-      const maxChildX = Math.max(...targetXs);
-      return {
-        parentId: r.parentId,
-        parentX: r.pBox.centerX,
-        minChildX,
-        maxChildX,
-        childrenX: targetXs,
-      };
-    });
-
     const corridorDir = relations[0]?.direction || 'up';
-    const { lanes } = assignNonOverlappingLanes(items, corridorDir);
 
-    relations.forEach((rel, idx) => {
-      const { parentId, childLevel, pBox, cBoxes } = rel;
+    // 1. Relationen mit tatsächlichem horizontalen Balken ermitteln
+    interface PreparedRelation {
+      rel: CorridorRelation;
+      groupTargets: { targetX: number; targetY: number; key: string }[];
+      barMinX: number;
+      barMaxX: number;
+      hasBar: boolean;
+      item?: { parentId?: string; parentX: number; minChildX: number; maxChildX: number; childrenX?: number[] };
+    }
+
+    const preparedRelations: PreparedRelation[] = relations.map(rel => {
+      const { parentId, childLevel, pBox, cBoxes, direction } = rel;
       const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
 
-      // Der Start-Anknüpfpunkt und der Stamm beginnen immer exakt mittig oben auf der Kachel der Elterngeneration
-      const stemX = pBox.centerX;
-      const startY = pBox.top;
-
-      const laneOffset = lanes[idx] * gap;
-      const levelMaxCardBottom = getLevelBandTopY(corridorLevel) + LEVEL_CARD_PAD_TOP + getMaxCardHeightForLevel(corridorLevel);
-      // Linien verlassen den Anknüpfpunkt immer nach oben: jogY liegt immer oberhalb von startY
-      const jogY = Math.min(startY - 12, levelMaxCardBottom + CORRIDOR_PAD_TOP + laneOffset);
-
-      // 1. Ausgangs-Anknüpfpunkt (Halbkreisaußen) an der oberen Kante des Elternknotens
-      const anchorRadius = 7;
-      // Halbkreis wölbt sich nach außen (oben) weg von der Kachelkante in den Zwischenraum
-      const anchorD = `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
-
-      const existingAnchor = anchors.find(a => Math.abs(a.x - stemX) < 1 && Math.abs(a.y - startY) < 1);
-      if (!existingAnchor) {
-        anchors.push({
-          x: stemX,
-          y: startY,
-          d: anchorD,
-        });
-      }
-
-      // 2. Stamm vom Elternteil
-      rawSegments.push({
-        id: `${commonEdgeKey}-stem`,
-        edgeKey: commonEdgeKey,
-        x1: stemX,
-        y1: startY,
-        x2: stemX,
-        y2: jogY,
-      });
-
-      // 3. Pro Geschwistergruppe genau EINE eingehende Verbindungslinie ermitteln
       const cBoxesByGroup = new Map<string, ExportCard[]>();
       cBoxes.forEach(cb => {
         const gId = cb.groupId || cb.person.id;
@@ -926,9 +944,10 @@ export function generateDesignExportSvg(
       cBoxesByGroup.forEach((boxes) => {
         const minL = Math.min(...boxes.map(c => c.left));
         const maxR = Math.max(...boxes.map(c => c.right));
-        // Der Ende-Anknüpfpunkt wird mittig an der Unterseite der Kachel bzw. bei Geschwistergruppen mittig an der Unterseite der Kachelgruppe angezeigt
         const targetX = Math.round((minL + maxR) / 2);
-        const targetY = Math.max(...boxes.map(c => c.bottom));
+        const targetY = direction === 'down'
+          ? Math.min(...boxes.map(c => c.top))
+          : Math.max(...boxes.map(c => c.bottom));
 
         groupTargets.push({
           targetX,
@@ -937,24 +956,108 @@ export function generateDesignExportSvg(
         });
       });
 
-      // 4. Horizontale Querlinie zwischen Stamm und Ziel-Geschwistergruppen
       const allTargetXs = groupTargets.map(t => t.targetX);
+      const stemX = pBox.centerX;
       const barMinX = Math.min(stemX, ...allTargetXs);
       const barMaxX = Math.max(stemX, ...allTargetXs);
+      const hasBar = barMaxX - barMinX > 1;
 
-      if (barMaxX - barMinX > 1) {
-        rawSegments.push({
-          id: `${commonEdgeKey}-bar`,
-          edgeKey: commonEdgeKey,
-          x1: barMinX,
-          y1: jogY,
-          x2: barMaxX,
-          y2: jogY,
+      const item = hasBar
+        ? {
+            parentId: rel.parentId,
+            parentX: stemX,
+            minChildX: Math.min(...allTargetXs),
+            maxChildX: Math.max(...allTargetXs),
+            childrenX: allTargetXs,
+          }
+        : undefined;
+
+      return {
+        rel,
+        groupTargets,
+        barMinX,
+        barMaxX,
+        hasBar,
+        item,
+      };
+    });
+
+    // 2. Nur Relationen mit horizontalem Balken erhalten eine Höhenstufe (Lane)
+    const barRelations = preparedRelations.filter(p => p.hasBar);
+    const barItems = barRelations.map(p => p.item!);
+    const { lanes: barLanes } = assignNonOverlappingLanes(barItems, corridorDir);
+
+    let barRelIdx = 0;
+    preparedRelations.forEach(prep => {
+      const { rel, groupTargets, barMinX, barMaxX, hasBar } = prep;
+      const { parentId, childLevel, pBox, direction } = rel;
+      const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
+
+      const stemX = pBox.centerX;
+      const startY = direction === 'down' ? pBox.bottom : pBox.top;
+
+      // Ausgangs-Anknüpfpunkt (Halbkreis) an der oberen/unteren Kante der Elternkachel
+      const anchorRadius = 7;
+      const anchorD = direction === 'down'
+        ? `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 0 ${stemX + anchorRadius} ${startY} Z`
+        : `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
+
+      const existingAnchor = anchors.find(a => Math.abs(a.x - stemX) < 1 && Math.abs(a.y - startY) < 1);
+      if (!existingAnchor) {
+        anchors.push({
+          x: stemX,
+          y: startY,
+          d: anchorD,
         });
       }
 
-      // 5. Einzelne eingehende Verbindungslinie und Pfeil pro Geschwistergruppe
-      // Der Ende-Anknüpfpunkt wird mit einem eingehenden Pfeil an der Unterseite dargestellt (Pfeilspitze zeigt nach oben)
+      if (!hasBar) {
+        // Gerade Verbindung (kein horizontaler Abschnitt nötig)
+        const targetY = groupTargets[0]?.targetY ?? startY;
+        rawSegments.push({
+          id: `${commonEdgeKey}-straight`,
+          edgeKey: commonEdgeKey,
+          x1: stemX,
+          y1: startY,
+          x2: stemX,
+          y2: targetY,
+        });
+
+        arrows.push({
+          x: stemX,
+          y: targetY,
+          direction: direction === 'down' ? 'down' : 'up',
+        });
+        return;
+      }
+
+      // Horizontale Linienführung auf der optimalen Lane
+      const assignedLane = barLanes[barRelIdx++];
+      const laneOffset = assignedLane * gap;
+      const levelMaxBottom = getLevelBandTopY(corridorLevel) + LEVEL_CARD_PAD_TOP + getMaxCardHeightForLevel(corridorLevel);
+      const jogY = levelMaxBottom + CORRIDOR_PAD_TOP + laneOffset;
+
+      // Stammsegment vom Eltern-Anknüpfpunkt zur Querlinie
+      rawSegments.push({
+        id: `${commonEdgeKey}-stem`,
+        edgeKey: commonEdgeKey,
+        x1: stemX,
+        y1: startY,
+        x2: stemX,
+        y2: jogY,
+      });
+
+      // Horizontaler Verbindungsbalken
+      rawSegments.push({
+        id: `${commonEdgeKey}-bar`,
+        edgeKey: commonEdgeKey,
+        x1: barMinX,
+        y1: jogY,
+        x2: barMaxX,
+        y2: jogY,
+      });
+
+      // Abgänge zu den Zielkacheln / -gruppen mit eingehenden Pfeilen
       groupTargets.forEach(tgt => {
         rawSegments.push({
           id: tgt.key,
@@ -964,7 +1067,11 @@ export function generateDesignExportSvg(
           x2: tgt.targetX,
           y2: tgt.targetY,
         });
-        arrows.push({ x: tgt.targetX, y: tgt.targetY, direction: 'up' });
+        arrows.push({
+          x: tgt.targetX,
+          y: tgt.targetY,
+          direction: direction === 'down' ? 'down' : 'up',
+        });
       });
     });
   });
@@ -1218,6 +1325,23 @@ export function generateDesignExportSvg(
     svgParts.push(`  </g>`);
   }
 
+  // Connecting Lines Layer (cards are on the topmost layer when lines cross an entire level)
+  svgParts.push(`  <!-- Connecting Lines -->`);
+  svgParts.push(`  <g id="edges">`);
+  edgePaths.forEach(p => {
+    svgParts.push(`    <path d="${p}" class="edge-line" />`);
+  });
+  anchors.forEach(anc => {
+    svgParts.push(`    <path d="${anc.d}" class="edge-anchor" />`);
+  });
+  arrows.forEach(arr => {
+    const pts = arr.direction === 'up'
+      ? `${arr.x},${arr.y} ${arr.x - 5},${arr.y + 9} ${arr.x + 5},${arr.y + 9}`
+      : `${arr.x},${arr.y} ${arr.x - 5},${arr.y - 9} ${arr.x + 5},${arr.y - 9}`;
+    svgParts.push(`    <polygon points="${pts}" class="edge-arrow" />`);
+  });
+  svgParts.push(`  </g>`);
+
   // Sibling Groups & Cards Layer
   svgParts.push(`  <!-- Sibling Groups & Cards -->`);
   svgParts.push(`  <g id="nodes" class="tree-font">`);
@@ -1390,23 +1514,6 @@ export function generateDesignExportSvg(
     });
   });
 
-  svgParts.push(`  </g>`);
-
-  // Connecting Lines Layer (rendered on top so cards never obscure lines)
-  svgParts.push(`  <!-- Connecting Lines -->`);
-  svgParts.push(`  <g id="edges">`);
-  edgePaths.forEach(p => {
-    svgParts.push(`    <path d="${p}" class="edge-line" />`);
-  });
-  anchors.forEach(anc => {
-    svgParts.push(`    <path d="${anc.d}" class="edge-anchor" />`);
-  });
-  arrows.forEach(arr => {
-    const pts = arr.direction === 'up'
-      ? `${arr.x},${arr.y} ${arr.x - 5},${arr.y + 9} ${arr.x + 5},${arr.y + 9}`
-      : `${arr.x},${arr.y} ${arr.x - 5},${arr.y - 9} ${arr.x + 5},${arr.y - 9}`;
-    svgParts.push(`    <polygon points="${pts}" class="edge-arrow" />`);
-  });
   svgParts.push(`  </g>`);
   svgParts.push(`</svg>`);
 

@@ -49,6 +49,7 @@ export interface SiblingBarItem {
   childrenX?: number[];
   pBox?: { centerX: number; level?: number };
   cBoxes?: { centerX: number }[];
+  direction?: 'up' | 'same' | 'down';
 }
 
 export interface LevelMetrics {
@@ -492,8 +493,10 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
   // Berechnet optimale Höhenstufen (Lanes) für Querlinien:
   // - Linien ohne gemeinsamen horizontalen Abschnitt dürfen Linienhöhen wiederverwenden,
   //   sofern sie einen horizontalen Sicherheitsabstand einhalten (keine Berührung an Endpunkten).
-  // - Linien mit gemeinsamem horizontalem Abschnitt erhalten zwingend unterschiedliche Linienhöhen (keine Überdeckung).
-  // - Vertikale Linien dürfen Querlinien kreuzen.
+  // - Linien mit gemeinsamem horizontalem Abschnitt erhalten zwingend unterschiedliche Linienhöhen (keine Überdeckung über Strecken).
+  // - Vertikale Linien dürfen Querlinien kreuzen (erhalten bei Kreuzung Linienbrücken).
+  // - Maßgabe: Umso weiter "außen" ein Nachkommenknoten liegt, umso tiefer soll der horizontale Abschnitt
+  //   der Linienführung liegen (minimiert Linienbrücken und Schnittpunkte systematisch).
   function assignNonOverlappingLanes(
     items: SiblingBarItem[],
     direction: 'up' | 'same' | 'down' = 'up'
@@ -517,7 +520,7 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     });
 
     // Mindestabstand (in px) zwischen horizontalen Balken auf derselben Lane, um optisches Verschmelzen zu verhindern
-    const LANE_REUSE_SAFETY_GAP = 24;
+    const LANE_REUSE_SAFETY_GAP = 6;
 
     // Überlappungs-Prüfung: Haben zwei Items einen gemeinsamen horizontalen Abschnitt oder unterschreiten sie den Sicherheitsabstand?
     function hasOverlap(i: number, j: number): boolean {
@@ -546,39 +549,53 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
         const sameParent = Math.abs(parsed[i].parentX - parsed[j].parentX) < 2;
 
         if (direction !== 'down') {
+          // Standard (up): Lane 0 liegt näher an Kindern (oben), höhere Lanes liegen tiefer (näher am Elternteil)
+          // 1. Wenn lI < lJ:
+          //    - Item i's Elternstamm steigt von unten nach Lane lI auf und kreuzt Lane lJ, falls parentX_i in j's Balken liegt.
           if (!sameParent && parsed[i].parentX > parsed[j].barMin + 2 && parsed[i].parentX < parsed[j].barMax - 2) {
             iBelowJ += 500;
           }
+          //    - Item j's Kinder-Abgangslinien steigen von Lane lJ nach oben zu den Kindern auf und kreuzen Lane lI, falls cx in i's Balken liegt.
           for (const cx of parsed[j].childrenX) {
             if (cx > parsed[i].barMin + 2 && cx < parsed[i].barMax - 2) {
               iBelowJ += 500;
             }
           }
 
+          // 2. Wenn lJ < lI:
+          //    - Item j's Elternstamm kreuzt Lane lI, falls parentX_j in i's Balken liegt.
           if (!sameParent && parsed[j].parentX > parsed[i].barMin + 2 && parsed[j].parentX < parsed[i].barMax - 2) {
             jBelowI += 500;
           }
+          //    - Item i's Kinder-Abgangslinien kreuzen Lane lJ, falls cx in j's Balken liegt.
           for (const cx of parsed[i].childrenX) {
             if (cx > parsed[j].barMin + 2 && cx < parsed[j].barMax - 2) {
               jBelowI += 500;
             }
           }
         } else {
-          if (!sameParent && parsed[i].parentX > parsed[j].barMin + 2 && parsed[i].parentX < parsed[j].barMax - 2) {
-            jBelowI += 500;
-          }
-          for (const cx of parsed[j].childrenX) {
-            if (cx > parsed[i].barMin + 2 && cx < parsed[i].barMax - 2) {
-              jBelowI += 500;
-            }
-          }
-
+          // Invertiert (down): Lane 0 liegt näher am Elternteil (oben), höhere Lanes liegen tiefer (näher an den Kindern unten)
+          // 1. Wenn lI < lJ:
+          //    - Item j's Elternstamm sinkt von oben nach Lane lJ und kreuzt Lane lI, falls parentX_j in i's Balken liegt.
           if (!sameParent && parsed[j].parentX > parsed[i].barMin + 2 && parsed[j].parentX < parsed[i].barMax - 2) {
             iBelowJ += 500;
           }
+          //    - Item i's Kinder-Abgänge sinken von Lane lI nach unten und kreuzen Lane lJ, falls cx in j's Balken liegt.
           for (const cx of parsed[i].childrenX) {
             if (cx > parsed[j].barMin + 2 && cx < parsed[j].barMax - 2) {
               iBelowJ += 500;
+            }
+          }
+
+          // 2. Wenn lJ < lI:
+          //    - Item i's Elternstamm sinkt nach Lane lI und kreuzt Lane lJ, falls parentX_i in j's Balken liegt.
+          if (!sameParent && parsed[i].parentX > parsed[j].barMin + 2 && parsed[i].parentX < parsed[j].barMax - 2) {
+            jBelowI += 500;
+          }
+          //    - Item j's Kinder-Abgänge sinken nach unten und kreuzen Lane lI, falls cx in i's Balken liegt.
+          for (const cx of parsed[j].childrenX) {
+            if (cx > parsed[i].barMin + 2 && cx < parsed[i].barMax - 2) {
+              jBelowI += 500;
             }
           }
         }
@@ -599,10 +616,23 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
             if (pc.overlap) cost += 100000;
           } else if (lI < lJ) {
             cost += pc.iBelowJ;
-            if (parsed[i].span > parsed[j].span + 8) cost += 0.5;
+            // Maßgabe: Umso weiter "außen" ein Nachkommenknoten liegt, umso tiefer soll der horizontale Abschnitt liegen.
+            if (direction !== 'down') {
+              // Bei direction 'up' bedeutet tiefer = größerer Lane-Index.
+              // Wenn i weiter außen liegt als j (größere Spanne), sollte i einen größeren Index haben (lJ < lI).
+              // Da hier lI < lJ ist, wird eine Fehlanordnung pönalisiert.
+              if (parsed[i].span > parsed[j].span + 4) cost += 3.0;
+            } else {
+              // Bei direction 'down' bedeutet weiter außen relativ zum Ziel = kleinerer Lane-Index (näher am Ursprung).
+              if (parsed[j].span > parsed[i].span + 4) cost += 3.0;
+            }
           } else {
             cost += pc.jBelowI;
-            if (parsed[j].span > parsed[i].span + 8) cost += 0.5;
+            if (direction !== 'down') {
+              if (parsed[j].span > parsed[i].span + 4) cost += 3.0;
+            } else {
+              if (parsed[i].span > parsed[j].span + 4) cost += 3.0;
+            }
           }
         }
       }
@@ -629,7 +659,7 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
       return lanes;
     }
 
-    // 1. Kandidat: Verschachtelung (innere umschlossene Spannen zuerst)
+    // 1. Kandidat: Verschachtelung (innere umschlossene Spannen zuerst bei 'up', äußere zuerst bei 'down')
     const order1 = parsed.map((it, idx) => {
       let enclosedByCount = 0;
       for (let other = 0; other < n; other++) {
@@ -638,20 +668,23 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
           enclosedByCount++;
         }
       }
-      return { idx, score: enclosedByCount * 10000 - it.span };
+      const score = direction !== 'down'
+        ? (enclosedByCount * 10000 - it.span)
+        : (-enclosedByCount * 10000 + it.span);
+      return { idx, score };
     }).sort((a, b) => b.score - a.score).map(o => o.idx);
 
-    // 2. Kandidat: Greedy nach Position (von links nach rechts)
+    // 2. Kandidat: Greedy nach horizontaler Position (von links nach rechts)
     const order2 = parsed.map((it, idx) => ({ idx, minX: it.barMin }))
       .sort((a, b) => a.minX - b.minX).map(o => o.idx);
 
-    // 3. Kandidat: Kürzeste Spannen zuerst (reduziert Durchdringungen und Brückenbildung)
+    // 3. Kandidat: Kürzeste Spannen zuerst (bei 'up') bzw. Längste zuerst (bei 'down')
     const order3 = parsed.map((it, idx) => ({ idx, span: it.span }))
-      .sort((a, b) => a.span - b.span).map(o => o.idx);
+      .sort((a, b) => direction !== 'down' ? (a.span - b.span) : (b.span - a.span)).map(o => o.idx);
 
-    // 4. Kandidat: Längste Spannen zuerst
+    // 4. Kandidat: Gegenrichtung (Längste Spannen zuerst bei 'up')
     const order4 = parsed.map((it, idx) => ({ idx, span: it.span }))
-      .sort((a, b) => b.span - a.span).map(o => o.idx);
+      .sort((a, b) => direction !== 'down' ? (b.span - a.span) : (a.span - b.span)).map(o => o.idx);
 
     // 5. Kandidat: Rangfolge nach gerichteter Kreuzungspräferenz
     const order5 = parsed.map((_it, i) => {
@@ -680,7 +713,7 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
       const current = [...bestAssignment];
       let improved = true;
       let iters = 0;
-      while (improved && iters < 12) {
+      while (improved && iters < 14) {
         improved = false;
         iters++;
 
@@ -784,44 +817,108 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     });
 
     // 2b. Alle Querlinien nach physischem Korridor indizieren (up, same und down)
-    const barsByCorridorLevel = new Map<number, SiblingBarItem[]>();
-    const childGroupsAll = visibleSiblingGroups.value.filter(g => g.parentId);
-    const groupsByParentAndLvl = new Map<string, Map<number, DesignSiblingGroup[]>>();
-    childGroupsAll.forEach(cg => {
-      const pId = cg.parentId!;
-      if (!groupsByParentAndLvl.has(pId)) groupsByParentAndLvl.set(pId, new Map());
-      const lvlMap = groupsByParentAndLvl.get(pId)!;
-      if (!lvlMap.has(cg.level)) lvlMap.set(cg.level, []);
-      lvlMap.get(cg.level)!.push(cg);
+    // Verwende dieselbe kartenbasierte Eltern-Kind-Zuordnung wie in edgeGeometry,
+    // damit auch gruppierte/verschmolzene Geschwisterreihen mit mehreren biologischen Eltern
+    // exakt dieselben Relationen und Lane-Bedarfe ermitteln.
+    const parentIdByChildId = new Map<string, string>();
+    childrenMapByParentId.value.forEach((kids, pId) => {
+      kids.forEach(kId => {
+        parentIdByChildId.set(kId, pId);
+      });
     });
 
-    groupsByParentAndLvl.forEach((lvlMap, parentId) => {
-      const pGrp = groupByPersonId.get(parentId);
-      if (!pGrp) return;
-      const pIdx = pGrp.memberIds.indexOf(parentId);
-      const pWidth = pGrp.memberIds.length * CARD_WIDTH;
-      const pLeft = Math.round(pGrp.x - pWidth / 2);
-      const parentX = pLeft + pIdx * CARD_WIDTH + Math.round(CARD_WIDTH / 2);
+    interface HorizCardPos {
+      id: string;
+      groupId: string;
+      level: number;
+      left: number;
+      right: number;
+      centerX: number;
+    }
+    const cardPosByPersonId = new Map<string, HorizCardPos>();
+    visibleSiblingGroups.value.forEach(g => {
+      const visibleMemberIds = visibleGroupAndMemberMap.value.visibleMembersByGroupId.get(g.id) || g.memberIds;
+      const width = getGroupWidth(visibleMemberIds.length);
+      const left = Math.round(g.x - width / 2);
+      visibleMemberIds.forEach((pid, idx) => {
+        const cLeft = left + idx * CARD_WIDTH;
+        const cRight = cLeft + CARD_WIDTH;
+        cardPosByPersonId.set(pid, {
+          id: pid,
+          groupId: g.id,
+          level: g.level,
+          left: cLeft,
+          right: cRight,
+          centerX: cLeft + CARD_WIDTH / 2,
+        });
+      });
+    });
 
-      lvlMap.forEach((cGroups, childLevel) => {
-        const targetXs = cGroups.map(cg => Math.round(cg.x));
+    const childrenByParentAndLevel = new Map<string, Map<number, HorizCardPos[]>>();
+    cardPosByPersonId.forEach(cb => {
+      let pId = parentIdByChildId.get(cb.id);
+      if (!pId) {
+        const person = personById.value.get(cb.id);
+        if (person?.parent_ids) {
+          pId = person.parent_ids.find(id => cardPosByPersonId.has(id));
+        }
+      }
+      if (!pId) return;
+      const pBox = cardPosByPersonId.get(pId);
+      if (!pBox) return;
+
+      if (!childrenByParentAndLevel.has(pId)) {
+        childrenByParentAndLevel.set(pId, new Map());
+      }
+      const lvlMap = childrenByParentAndLevel.get(pId)!;
+      if (!lvlMap.has(cb.level)) {
+        lvlMap.set(cb.level, []);
+      }
+      lvlMap.get(cb.level)!.push(cb);
+    });
+
+    const barsByCorridorLevel = new Map<number, SiblingBarItem[]>();
+    childrenByParentAndLevel.forEach((lvlMap, parentId) => {
+      const pBox = cardPosByPersonId.get(parentId);
+      if (!pBox) return;
+
+      lvlMap.forEach((cBoxes, childLevel) => {
+        const direction: 'up' | 'same' | 'down' =
+          childLevel > pBox.level ? 'up' : (childLevel === pBox.level ? 'same' : 'down');
+        const corridorLevel = direction === 'down' ? pBox.level : childLevel;
+
+        const cBoxesByGroup = new Map<string, HorizCardPos[]>();
+        cBoxes.forEach(cb => {
+          const gId = cb.groupId || cb.id;
+          if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
+          cBoxesByGroup.get(gId)!.push(cb);
+        });
+
+        const targetXs: number[] = [];
+        cBoxesByGroup.forEach(boxes => {
+          const minL = Math.min(...boxes.map(c => c.left));
+          const maxR = Math.max(...boxes.map(c => c.right));
+          targetXs.push(Math.round((minL + maxR) / 2));
+        });
         if (targetXs.length === 0) return;
+
         const minChildX = Math.min(...targetXs);
         const maxChildX = Math.max(...targetXs);
-        const barMinX = Math.min(parentX, minChildX);
-        const barMaxX = Math.max(parentX, maxChildX);
+        const stemX = pBox.centerX;
+        const barMinX = Math.min(stemX, ...targetXs);
+        const barMaxX = Math.max(stemX, ...targetXs);
 
         if (barMaxX - barMinX > 1) {
-          const corridorLvl = childLevel < pGrp.level ? pGrp.level : childLevel;
-          if (!barsByCorridorLevel.has(corridorLvl)) {
-            barsByCorridorLevel.set(corridorLvl, []);
+          if (!barsByCorridorLevel.has(corridorLevel)) {
+            barsByCorridorLevel.set(corridorLevel, []);
           }
-          barsByCorridorLevel.get(corridorLvl)!.push({
+          barsByCorridorLevel.get(corridorLevel)!.push({
             parentId,
-            parentX,
+            parentX: stemX,
             minChildX,
             maxChildX,
             childrenX: targetXs,
+            direction,
           });
         }
       });
@@ -844,7 +941,8 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
       const corridorBars = barsByCorridorLevel.get(lvl) || [];
       let totalLanes = 0;
       if (corridorBars.length > 0) {
-        const { totalLanes: calculatedLanes } = assignNonOverlappingLanes(corridorBars);
+        const corridorDir = (corridorBars[0] as any)?.direction || 'up';
+        const { totalLanes: calculatedLanes } = assignNonOverlappingLanes(corridorBars, corridorDir);
         totalLanes = calculatedLanes;
       }
 
@@ -2934,78 +3032,23 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
         return aCenter - bCenter;
       });
 
-      const items: SiblingBarItem[] = relations.map(r => {
-        const cBoxesByGroup = new Map<string, CardBox[]>();
-        r.cBoxes.forEach(cb => {
-          const gId = cb.groupId || cb.person.id;
-          if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
-          cBoxesByGroup.get(gId)!.push(cb);
-        });
-        const targetXs: number[] = [];
-        cBoxesByGroup.forEach(boxes => {
-          const minL = Math.min(...boxes.map(c => c.left));
-          const maxR = Math.max(...boxes.map(c => c.right));
-          targetXs.push(Math.round((minL + maxR) / 2));
-        });
-        const minChildX = Math.min(...targetXs);
-        const maxChildX = Math.max(...targetXs);
-        return {
-          parentId: r.parentId,
-          parentX: r.pBox.centerX,
-          minChildX,
-          maxChildX,
-          childrenX: targetXs,
-        };
-      });
-
       const corridorDir = relations[0]?.direction || 'up';
-      const { lanes } = assignNonOverlappingLanes(items, corridorDir);
 
-      relations.forEach((rel, idx) => {
-        const { parentId, childLevel, pBox, cBoxes } = rel;
+      // 1. Relationen mit tatsächlichem horizontalen Balken ermitteln
+      interface PreparedRelation {
+        rel: CorridorRelation;
+        groupTargets: { targetX: number; targetY: number; isHighlighted: boolean; key: string }[];
+        barMinX: number;
+        barMaxX: number;
+        hasBar: boolean;
+        item?: SiblingBarItem;
+      }
+
+      const preparedRelations: PreparedRelation[] = relations.map(rel => {
+        const { parentId, childLevel, pBox, cBoxes, direction } = rel;
         const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
         const activeSel = activeDesignPersonId.value || propsSnap.selectedId;
         const highlightedPathIds = propsSnap.highlightedPathIds;
-        const isCommonHighlighted =
-          Boolean(activeSel && (activeSel === parentId || cBoxes.some(c => c.person.id === activeSel))) ||
-          Boolean(
-            highlightedPathIds && highlightedPathIds.size > 0 &&
-            highlightedPathIds.has(parentId) &&
-            cBoxes.some(c => highlightedPathIds.has(c.person.id))
-          );
-
-        const stemX = pBox.centerX;
-        const startY = pBox.top;
-
-        const laneOffset = lanes[idx] * gap;
-        const levelMaxBottom = levelLayoutMetrics.value.levelMaxCardBottom[corridorLevel]
-          || (getLevelBandTopY(corridorLevel) + LEVEL_CARD_PAD_TOP + getMaxCardHeightForLevel(corridorLevel));
-        const jogY = Math.min(startY - 12, levelMaxBottom + CORRIDOR_PAD_TOP + laneOffset);
-
-        const anchorRadius = 7;
-        const anchorD = `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
-
-        const existingAnchor = anchors.find(a => Math.abs(a.x - stemX) < 1 && Math.abs(a.y - startY) < 1);
-        if (existingAnchor) {
-          if (isCommonHighlighted) existingAnchor.isHighlighted = true;
-        } else {
-          anchors.push({
-            x: stemX,
-            y: startY,
-            d: anchorD,
-            isHighlighted: isCommonHighlighted,
-          });
-        }
-
-        rawSegments.push({
-          id: `${commonEdgeKey}-stem`,
-          edgeKey: commonEdgeKey,
-          x1: stemX,
-          y1: startY,
-          x2: stemX,
-          y2: jogY,
-          isHighlighted: isCommonHighlighted,
-        });
 
         const cBoxesByGroup = new Map<string, CardBox[]>();
         cBoxes.forEach(cb => {
@@ -3020,7 +3063,9 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
           const minL = Math.min(...boxes.map(c => c.left));
           const maxR = Math.max(...boxes.map(c => c.right));
           const targetX = Math.round((minL + maxR) / 2);
-          const targetY = Math.max(...boxes.map(c => c.bottom));
+          const targetY = direction === 'down'
+            ? Math.min(...boxes.map(c => c.top))
+            : Math.max(...boxes.map(c => c.bottom));
 
           const isTargetHighlighted =
             Boolean(activeSel && (activeSel === parentId || boxes.some(c => c.person.id === activeSel))) ||
@@ -3039,21 +3084,124 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
         });
 
         const allTargetXs = groupTargets.map(t => t.targetX);
+        const stemX = pBox.centerX;
         const barMinX = Math.min(stemX, ...allTargetXs);
         const barMaxX = Math.max(stemX, ...allTargetXs);
+        const hasBar = barMaxX - barMinX > 1;
 
-        if (barMaxX - barMinX > 1) {
-          rawSegments.push({
-            id: `${commonEdgeKey}-bar`,
-            edgeKey: commonEdgeKey,
-            x1: barMinX,
-            y1: jogY,
-            x2: barMaxX,
-            y2: jogY,
+        const item: SiblingBarItem | undefined = hasBar
+          ? {
+              parentId: rel.parentId,
+              parentX: stemX,
+              minChildX: Math.min(...allTargetXs),
+              maxChildX: Math.max(...allTargetXs),
+              childrenX: allTargetXs,
+            }
+          : undefined;
+
+        return {
+          rel,
+          groupTargets,
+          barMinX,
+          barMaxX,
+          hasBar,
+          item,
+        };
+      });
+
+      // 2. Nur Relationen mit horizontalem Balken erhalten eine Höhenstufe (Lane)
+      const barRelations = preparedRelations.filter(p => p.hasBar);
+      const barItems = barRelations.map(p => p.item!);
+      const { lanes: barLanes } = assignNonOverlappingLanes(barItems, corridorDir);
+
+      let barRelIdx = 0;
+      preparedRelations.forEach(prep => {
+        const { rel, groupTargets, barMinX, barMaxX, hasBar } = prep;
+        const { parentId, childLevel, pBox, cBoxes, direction } = rel;
+        const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
+        const activeSel = activeDesignPersonId.value || propsSnap.selectedId;
+        const highlightedPathIds = propsSnap.highlightedPathIds;
+        const isCommonHighlighted =
+          Boolean(activeSel && (activeSel === parentId || cBoxes.some(c => c.person.id === activeSel))) ||
+          Boolean(
+            highlightedPathIds && highlightedPathIds.size > 0 &&
+            highlightedPathIds.has(parentId) &&
+            cBoxes.some(c => highlightedPathIds.has(c.person.id))
+          );
+
+        const stemX = pBox.centerX;
+        const startY = direction === 'down' ? pBox.bottom : pBox.top;
+
+        // Ausgangs-Anknüpfpunkt (Halbkreis) an der oberen/unteren Kante der Elternkachel
+        const anchorRadius = 7;
+        const anchorD = direction === 'down'
+          ? `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 0 ${stemX + anchorRadius} ${startY} Z`
+          : `M ${stemX - anchorRadius} ${startY} A ${anchorRadius} ${anchorRadius} 0 0 1 ${stemX + anchorRadius} ${startY} Z`;
+
+        const existingAnchor = anchors.find(a => Math.abs(a.x - stemX) < 1 && Math.abs(a.y - startY) < 1);
+        if (existingAnchor) {
+          if (isCommonHighlighted) existingAnchor.isHighlighted = true;
+        } else {
+          anchors.push({
+            x: stemX,
+            y: startY,
+            d: anchorD,
             isHighlighted: isCommonHighlighted,
           });
         }
 
+        if (!hasBar) {
+          // Gerade Verbindung (kein horizontaler Abschnitt nötig)
+          const targetY = groupTargets[0]?.targetY ?? startY;
+          rawSegments.push({
+            id: `${commonEdgeKey}-straight`,
+            edgeKey: commonEdgeKey,
+            x1: stemX,
+            y1: startY,
+            x2: stemX,
+            y2: targetY,
+            isHighlighted: isCommonHighlighted,
+          });
+
+          arrows.push({
+            x: stemX,
+            y: targetY,
+            direction: direction === 'down' ? 'down' : 'up',
+            isHighlighted: isCommonHighlighted,
+          });
+          return;
+        }
+
+        // Horizontale Linienführung auf der optimalen Lane
+        const assignedLane = barLanes[barRelIdx++];
+        const laneOffset = assignedLane * gap;
+        const levelMaxBottom = levelLayoutMetrics.value.levelMaxCardBottom[corridorLevel]
+          || (getLevelBandTopY(corridorLevel) + LEVEL_CARD_PAD_TOP + getMaxCardHeightForLevel(corridorLevel));
+        const jogY = levelMaxBottom + CORRIDOR_PAD_TOP + laneOffset;
+
+        // Stammsegment vom Eltern-Anknüpfpunkt zur Querlinie
+        rawSegments.push({
+          id: `${commonEdgeKey}-stem`,
+          edgeKey: commonEdgeKey,
+          x1: stemX,
+          y1: startY,
+          x2: stemX,
+          y2: jogY,
+          isHighlighted: isCommonHighlighted,
+        });
+
+        // Horizontaler Verbindungsbalken
+        rawSegments.push({
+          id: `${commonEdgeKey}-bar`,
+          edgeKey: commonEdgeKey,
+          x1: barMinX,
+          y1: jogY,
+          x2: barMaxX,
+          y2: jogY,
+          isHighlighted: isCommonHighlighted,
+        });
+
+        // Abgänge zu den Zielkacheln / -gruppen mit eingehenden Pfeilen
         groupTargets.forEach(tgt => {
           rawSegments.push({
             id: tgt.key,
@@ -3068,7 +3216,7 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
           arrows.push({
             x: tgt.targetX,
             y: tgt.targetY,
-            direction: 'up',
+            direction: direction === 'down' ? 'down' : 'up',
             isHighlighted: tgt.isHighlighted,
           });
         });

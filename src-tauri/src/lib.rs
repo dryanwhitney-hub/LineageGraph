@@ -1,5 +1,8 @@
 pub mod db;
 pub mod parser;
+pub mod gedcom_export;
+pub mod gedcom_import_merge;
+pub mod csv_export;
 
 use petgraph::algo::astar;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -2496,6 +2499,153 @@ async fn save_binary_file(file_path: String, data: Vec<u8>) -> Result<(), String
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+fn create_tree_and_import(
+    state: State<AppState>,
+    file_path: String,
+    tree_name: String,
+) -> Result<usize, String> {
+    let path = validate_user_file_path(&file_path, &["ged", "gedcom"])?;
+    let valid_name = validate_tree_name(&tree_name)?;
+    let db_path = state.app_dir.join(format!("{}.db", valid_name));
+    let new_conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
+
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    *conn = new_conn;
+    let mut active = state.active_tree.lock().map_err(|e| e.to_string())?;
+    *active = valid_name.to_string();
+
+    let count = parser::import_gedcom(&mut conn, path)?;
+    calculate_henry_codes_internal(&mut conn)?;
+    Ok(count)
+}
+
+#[tauri::command]
+fn stage_gedcom_for_merge(
+    state: State<AppState>,
+    file_path: String,
+) -> Result<gedcom_import_merge::GedcomMergePlan, String> {
+    let path = validate_user_file_path(&file_path, &["ged", "gedcom"])?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let staged = gedcom_import_merge::parse_gedcom_in_memory(path)?;
+    gedcom_import_merge::analyze_gedcom_merge(&conn, &file_path, &staged)
+}
+
+#[tauri::command]
+fn apply_gedcom_merge(
+    state: State<AppState>,
+    resolution: gedcom_import_merge::GedcomMergeResolution,
+) -> Result<gedcom_import_merge::MergeResultStats, String> {
+    let path = validate_user_file_path(&resolution.file_path, &["ged", "gedcom"])?;
+    let staged = gedcom_import_merge::parse_gedcom_in_memory(path)?;
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    gedcom_import_merge::execute_gedcom_merge(&mut conn, &staged, &resolution)
+}
+
+#[tauri::command]
+fn preview_gedcom_export(
+    state: State<AppState>,
+    scope: gedcom_export::GedcomExportScope,
+) -> Result<gedcom_export::GedcomExportPreview, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (content, total_persons, total_families) = gedcom_export::generate_gedcom(&conn, &scope)?;
+
+    let preview_lines: Vec<&str> = content.lines().take(60).collect();
+    let preview_text = preview_lines.join("\n");
+
+    Ok(gedcom_export::GedcomExportPreview {
+        total_persons,
+        total_families,
+        preview_text,
+        full_content: Some(content),
+    })
+}
+
+#[tauri::command]
+async fn export_gedcom_to_file(
+    state: State<'_, AppState>,
+    file_path: String,
+    scope: gedcom_export::GedcomExportScope,
+) -> Result<gedcom_export::GedcomExportResult, String> {
+    validate_user_file_path(&file_path, &["ged"])?;
+
+    let (content, total_persons, total_families) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        gedcom_export::generate_gedcom(&conn, &scope)?
+    };
+
+    let target_path = PathBuf::from(file_path.trim());
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::write(&target_path, content.as_bytes())
+            .map_err(|e| format!("Fehler beim Schreiben der Datei: {}", e))?;
+        Ok(gedcom_export::GedcomExportResult {
+            total_persons,
+            total_families,
+            file_path: target_path.to_string_lossy().to_string(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn preview_csv_export(
+    state: State<AppState>,
+    scope: gedcom_export::GedcomExportScope,
+    delimiter: Option<String>,
+    include_bom: Option<bool>,
+) -> Result<csv_export::CsvExportPreview, String> {
+    let delim_char = delimiter
+        .and_then(|s| s.chars().next())
+        .unwrap_or(';');
+    let with_bom = include_bom.unwrap_or(true);
+
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let (content, total_persons) = csv_export::generate_csv(&conn, &scope, delim_char, with_bom)?;
+
+    let preview_lines: Vec<&str> = content.lines().take(60).collect();
+    let preview_text = preview_lines.join("\n");
+
+    Ok(csv_export::CsvExportPreview {
+        total_persons,
+        preview_text,
+        full_content: Some(content),
+    })
+}
+
+#[tauri::command]
+async fn export_csv_to_file(
+    state: State<'_, AppState>,
+    file_path: String,
+    scope: gedcom_export::GedcomExportScope,
+    delimiter: Option<String>,
+    include_bom: Option<bool>,
+) -> Result<csv_export::CsvExportResult, String> {
+    validate_user_file_path(&file_path, &["csv"])?;
+
+    let delim_char = delimiter
+        .and_then(|s| s.chars().next())
+        .unwrap_or(';');
+    let with_bom = include_bom.unwrap_or(true);
+
+    let (content, total_persons) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        csv_export::generate_csv(&conn, &scope, delim_char, with_bom)?
+    };
+
+    let target_path = PathBuf::from(file_path.trim());
+    tauri::async_runtime::spawn_blocking(move || {
+        fs::write(&target_path, content.as_bytes())
+            .map_err(|e| format!("Fehler beim Schreiben der CSV-Datei: {}", e))?;
+        Ok(csv_export::CsvExportResult {
+            total_persons,
+            file_path: target_path.to_string_lossy().to_string(),
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2560,7 +2710,14 @@ pub fn run() {
             save_design_file,
             save_latex_export_bundle,
             read_design_file,
-            save_binary_file
+            save_binary_file,
+            preview_gedcom_export,
+            export_gedcom_to_file,
+            create_tree_and_import,
+            stage_gedcom_for_merge,
+            apply_gedcom_merge,
+            preview_csv_export,
+            export_csv_to_file
         ])
         .run(tauri::generate_context!())
         .expect("Tauri Error");
@@ -3207,5 +3364,305 @@ mod tests {
         assert_eq!(m1.children_ids.len(), 2);
         assert_eq!(m1.spouses[0].id, "V1");
         assert_eq!(m1.spouses[0].family_id.as_deref(), Some("FAM1"));
+    }
+
+    #[test]
+    fn test_gedcom_export_scopes() {
+        let conn = db::init_in_memory_database().unwrap();
+        // GP1 + GP2 -> P1
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('GP1', 'GP1', 'Großvater', 'Ahne', 'M', '1900', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('GP2', 'GP2', 'Großmutter', 'Ahne', 'F', '1905', '{}')", []).unwrap();
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, marriage_date, is_divorced, json_data) VALUES ('F1', 'F1', 'GP1', 'GP2', '1925', 0, '{}')", []).unwrap();
+        
+        // P1
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('P1', 'P1', 'Vater', 'Ahne', 'M', '1930', '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'P1')", []).unwrap();
+
+        // P1 + SP1 -> C1, C2
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('SP1', 'SP1', 'Mutter', 'Ahne', 'F', '1935', '{}')", []).unwrap();
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, wife_id, marriage_date, is_divorced, json_data) VALUES ('F2', 'F2', 'P1', 'SP1', '1955', 0, '{}')", []).unwrap();
+        
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('C1', 'C1', 'Kind1', 'Ahne', 'M', '1960', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('C2', 'C2', 'Kind2', 'Ahne', 'F', '1962', '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F2', 'C1')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F2', 'C2')", []).unwrap();
+
+        // Unrelated
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('U1', 'U1', 'Fremder', 'Gast', 'M', '{}')", []).unwrap();
+
+        // 1. Scope All
+        let (ged_all, n_p_all, n_f_all) = gedcom_export::generate_gedcom(&conn, &gedcom_export::GedcomExportScope::All).unwrap();
+        assert_eq!(n_p_all, 7);
+        assert_eq!(n_f_all, 2);
+        assert!(ged_all.contains("0 HEAD"));
+        assert!(ged_all.contains("0 @GP1@ INDI"));
+        assert!(ged_all.contains("0 @U1@ INDI"));
+        assert!(ged_all.contains("0 @F1@ FAM"));
+        assert!(ged_all.contains("0 @F2@ FAM"));
+        assert!(ged_all.contains("0 TRLR"));
+
+        // 2. Scope Descendants of GP1 (with spouses)
+        let (ged_desc, n_p_desc, n_f_desc) = gedcom_export::generate_gedcom(
+            &conn,
+            &gedcom_export::GedcomExportScope::Descendants {
+                person_id: "GP1".to_string(),
+                include_spouses: true,
+            },
+        ).unwrap();
+        assert_eq!(n_p_desc, 6); // GP1, GP2, P1, SP1, C1, C2
+        assert_eq!(n_f_desc, 2);
+        assert!(!ged_desc.contains("@U1@"));
+        assert!(ged_desc.contains("@C1@"));
+        assert!(ged_desc.contains("@C2@"));
+
+        // Scope Descendants without spouses
+        let (_, n_p_desc_no_sp, _) = gedcom_export::generate_gedcom(
+            &conn,
+            &gedcom_export::GedcomExportScope::Descendants {
+                person_id: "GP1".to_string(),
+                include_spouses: false,
+            },
+        ).unwrap();
+        assert_eq!(n_p_desc_no_sp, 4); // GP1, P1, C1, C2
+
+        // 3. Scope Ancestors of C1
+        let (ged_anc, n_p_anc, n_f_anc) = gedcom_export::generate_gedcom(
+            &conn,
+            &gedcom_export::GedcomExportScope::Ancestors {
+                person_id: "C1".to_string(),
+            },
+        ).unwrap();
+        assert_eq!(n_p_anc, 5); // C1, P1, SP1, GP1, GP2
+        assert_eq!(n_f_anc, 2);
+        assert!(!ged_anc.contains("@C2@"));
+        assert!(!ged_anc.contains("@U1@"));
+        assert!(ged_anc.contains("@GP1@"));
+
+        // 4. Scope SpecificList
+        let (ged_spec, n_p_spec, n_f_spec) = gedcom_export::generate_gedcom(
+            &conn,
+            &gedcom_export::GedcomExportScope::SpecificList {
+                person_ids: vec!["P1".to_string(), "C1".to_string()],
+            },
+        ).unwrap();
+        assert_eq!(n_p_spec, 2);
+        assert_eq!(n_f_spec, 2); // F1 (P1 als Kind) und F2 (P1 als Vater mit C1 als Kind)
+        assert!(ged_spec.contains("@P1@"));
+        assert!(ged_spec.contains("@C1@"));
+        assert!(!ged_spec.contains("@C2@"));
+        assert!(!ged_spec.contains("@GP1@"));
+    }
+
+    #[test]
+    fn test_gedcom_merge_matching_diff_and_execution() {
+        let mut conn = db::init_in_memory_database().unwrap();
+        // 1. Vorhandene Person in DB: I10 mit Johann Heinrich Froning, geboren 1850 in Münster
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, birth_place, json_data) 
+             VALUES ('I10', 'I10', 'Johann Heinrich', 'Froning', 'M', '1850', 'Münster', '{\"_UID\":{\"_val\":\"UID12345\"},\"NOTE\":{\"_val\":\"Alte Notiz\"}}')",
+            [],
+        ).unwrap();
+
+        // Kind C1 von I10 in DB
+        conn.execute(
+            "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) 
+             VALUES ('C1', 'C1', 'Kind', 'Froning', 'M', '{}')",
+            [],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO families (id, xref_id, husband_id, wife_id, is_divorced, json_data) 
+             VALUES ('FAM_DB', 'FAM_DB', 'I10', NULL, 0, '{}')",
+            [],
+        ).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('FAM_DB', 'C1')", []).unwrap();
+
+        // 2. GEDCOM zum Importieren erzeugen:
+        // - @IMP1@: UID12345 (Match mit I10), Name "Johann Froning" (Teilvorname!), Geburtsdatum "15 MAI 1850", Sterbedatum "1920" (Neu)
+        // - @IMP2@: Neue Person "Maria Meier"
+        // - Familie @F_IMP@ mit IMP1 + IMP2, Kind @C1@ (hat schon Eltern) und Kind @NEW_C@
+        let gedcom_content = "0 HEAD\n\
+1 SOUR TEST\n\
+0 @IMP1@ INDI\n\
+1 NAME Johann /Froning/\n\
+1 SEX M\n\
+1 BIRT\n\
+2 DATE 15 MAI 1850\n\
+1 DEAT\n\
+2 DATE 1920\n\
+1 _UID UID12345\n\
+1 NOTE Neue Notiz aus Import\n\
+1 FAMS @F_IMP@\n\
+0 @IMP2@ INDI\n\
+1 NAME Maria /Meier/\n\
+1 SEX F\n\
+1 FAMS @F_IMP@\n\
+0 @NEW_C@ INDI\n\
+1 NAME Anna /Froning/\n\
+1 SEX F\n\
+1 FAMC @F_IMP@\n\
+0 @C1@ INDI\n\
+1 NAME Kind /Froning/\n\
+1 SEX M\n\
+1 FAMC @F_IMP@\n\
+0 @F_IMP@ FAM\n\
+1 HUSB @IMP1@\n\
+1 WIFE @IMP2@\n\
+1 MARR\n\
+2 DATE 1875\n\
+1 CHIL @C1@\n\
+1 CHIL @NEW_C@\n\
+0 TRLR\n";
+
+        let temp_dir = std::env::temp_dir();
+        let test_file = temp_dir.join("test_merge.ged");
+        fs::write(&test_file, gedcom_content).unwrap();
+
+        let staged = gedcom_import_merge::parse_gedcom_in_memory(&test_file).unwrap();
+        assert_eq!(staged.individuals.len(), 4);
+        assert_eq!(staged.families.len(), 1);
+
+        // Analyze Merge
+        let plan = gedcom_import_merge::analyze_gedcom_merge(&conn, test_file.to_str().unwrap(), &staged).unwrap();
+        
+        // IMP1 matched I10 über UID (Confidence 100)
+        let imp1_diff = plan.mapped_persons.iter().find(|p| p.staged_xref == "IMP1").unwrap();
+        assert_eq!(imp1_diff.db_person_id, "I10");
+        assert_eq!(imp1_diff.match_confidence, 100);
+
+        // C1 matched C1 über XREF (Confidence 90)
+        let c1_diff = plan.mapped_persons.iter().find(|p| p.staged_xref == "C1").unwrap();
+        assert_eq!(c1_diff.db_person_id, "C1");
+        assert_eq!(c1_diff.match_confidence, 90);
+
+        // IMP2 und NEW_C sind neue Personen
+        assert!(plan.new_persons.iter().any(|p| p.staged_xref == "IMP2"));
+        assert!(plan.new_persons.iter().any(|p| p.staged_xref == "NEW_C"));
+
+        // Diffs für IMP1 prüfen:
+        // - birth_date: DB="1850", Import="15 MAI 1850" -> conflict, default "db"
+        assert_eq!(imp1_diff.fields.get("birth_date").unwrap().diff_type, "conflict");
+        assert_eq!(imp1_diff.fields.get("birth_date").unwrap().chosen_source, "db");
+        // - death_date: DB=None, Import="1920" -> addition, default "import"
+        assert_eq!(imp1_diff.fields.get("death_date").unwrap().diff_type, "addition");
+        assert_eq!(imp1_diff.fields.get("death_date").unwrap().chosen_source, "import");
+
+        // Resolution bauen:
+        // Für IMP1 übernehmen wir das neue Geburtsdatum ("import") und Append für Notizen
+        let mut field_choices = HashMap::new();
+        field_choices.insert("birth_date".to_string(), "import".to_string());
+        field_choices.insert("death_date".to_string(), "import".to_string());
+
+        let res = gedcom_import_merge::GedcomMergeResolution {
+            file_path: test_file.to_str().unwrap().to_string(),
+            mappings: vec![
+                gedcom_import_merge::PersonResolution {
+                    staged_xref: "IMP1".to_string(),
+                    target_db_id: "I10".to_string(),
+                    field_choices,
+                    extra_action: "append".to_string(),
+                },
+                gedcom_import_merge::PersonResolution {
+                    staged_xref: "C1".to_string(),
+                    target_db_id: "C1".to_string(),
+                    field_choices: HashMap::new(),
+                    extra_action: "db".to_string(),
+                },
+            ],
+            new_person_xrefs: vec!["IMP2".to_string(), "NEW_C".to_string()],
+            ignored_xrefs: vec![],
+        };
+
+        let stats = gedcom_import_merge::execute_gedcom_merge(&mut conn, &staged, &res).unwrap();
+        assert_eq!(stats.updated_persons_count, 2);
+        assert_eq!(stats.new_persons_count, 2);
+        assert_eq!(stats.new_families_count, 1);
+        assert_eq!(stats.new_parent_child_count, 1); // NEW_C bekommt Eltern
+        assert_eq!(stats.preserved_parents_count, 1); // C1 behält bestehende Eltern (Option A)!
+
+        // Prüfen in DB:
+        let (b_date, d_date, json_str): (Option<String>, Option<String>, String) = conn.query_row(
+            "SELECT birth_date, death_date, json_data FROM individuals WHERE id = 'I10'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ).unwrap();
+
+        assert_eq!(b_date.as_deref(), Some("15 MAI 1850"));
+        assert_eq!(d_date.as_deref(), Some("1920"));
+        assert!(json_str.contains("Alte Notiz"));
+        assert!(json_str.contains("Neue Notiz aus Import"));
+        assert!(json_str.contains("CHAN")); // CHAN gesetzt!
+    }
+
+    #[test]
+    fn test_csv_export_scopes_and_formatting() {
+        let conn = db::init_in_memory_database().unwrap();
+        // GP1 (Großvater)
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('GP1', 'GP1', 'Karl', 'Müller', 'M', '1900', '{}')", []).unwrap();
+        // P1 (Sohn von GP1)
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('P1', 'P1', 'Hans', 'Müller', 'M', '1925', '{}')", []).unwrap();
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, is_divorced, json_data) VALUES ('F1', 'F1', 'GP1', 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F1', 'P1')", []).unwrap();
+
+        // C1 (Kind von P1)
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, json_data) VALUES ('C1', 'C1', 'Anna; Klara', 'Müller', 'F', '1950', '{}')", []).unwrap();
+        conn.execute("INSERT INTO families (id, xref_id, husband_id, is_divorced, json_data) VALUES ('F2', 'F2', 'P1', 0, '{}')", []).unwrap();
+        conn.execute("INSERT INTO parent_child (family_id, child_id) VALUES ('F2', 'C1')", []).unwrap();
+
+        // U1 (Unrelated)
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('U1', 'U1', 'Gast', 'Fremd', 'M', '{}')", []).unwrap();
+
+        // 1. Scope All
+        let (csv_all, count_all) = csv_export::generate_csv(
+            &conn,
+            &gedcom_export::GedcomExportScope::All,
+            ';',
+            true,
+        ).unwrap();
+        assert_eq!(count_all, 4);
+        assert!(csv_all.starts_with('\u{FEFF}'));
+        assert!(csv_all.contains("ID;Nachname;Vorname"));
+        assert!(csv_all.contains("GP1;Müller;Karl"));
+        assert!(csv_all.contains("\"Anna; Klara\"")); // Semikolon im Namen wird sauber escaped!
+
+        // 2. Scope Descendants of GP1
+        let (csv_desc, count_desc) = csv_export::generate_csv(
+            &conn,
+            &gedcom_export::GedcomExportScope::Descendants {
+                person_id: "GP1".to_string(),
+                include_spouses: false,
+            },
+            ';',
+            false,
+        ).unwrap();
+        assert_eq!(count_desc, 3); // GP1, P1, C1
+        assert!(!csv_desc.contains("U1"));
+        assert!(csv_desc.contains("GP1"));
+        assert!(csv_desc.contains("C1"));
+
+        // 3. Scope Ancestors of C1
+        let (csv_anc, count_anc) = csv_export::generate_csv(
+            &conn,
+            &gedcom_export::GedcomExportScope::Ancestors {
+                person_id: "C1".to_string(),
+            },
+            ',',
+            false,
+        ).unwrap();
+        assert_eq!(count_anc, 3); // C1, P1, GP1
+        assert!(csv_anc.contains("ID,Nachname,Vorname")); // Komma-Delimiter!
+        assert!(!csv_anc.contains("U1"));
+
+        // 4. Scope SpecificList
+        let (csv_spec, count_spec) = csv_export::generate_csv(
+            &conn,
+            &gedcom_export::GedcomExportScope::SpecificList {
+                person_ids: vec!["C1".to_string()],
+            },
+            ';',
+            false,
+        ).unwrap();
+        assert_eq!(count_spec, 1);
+        assert!(csv_spec.contains("C1"));
+        assert!(csv_spec.contains("P1")); // P1 als Vater_ID in der Zeile von C1!
     }
 }

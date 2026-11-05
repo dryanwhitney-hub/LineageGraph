@@ -9,6 +9,7 @@ import PersonDetailsDrawer from './components/details/PersonDetailsDrawer.vue';
 import DeleteTreeModal from './components/modals/DeleteTreeModal.vue';
 import AddPersonModal from './components/modals/AddPersonModal.vue';
 import SettingsModal, { type SettingsTab } from './components/modals/SettingsModal.vue';
+import GedcomImportModal from './components/modals/GedcomImportModal.vue';
 import { usePersons } from './composables/usePersons';
 import { useShortestPath } from './composables/useShortestPath';
 
@@ -79,6 +80,9 @@ const {
   calculateCodes,
   loadDetails,
   handleImport,
+  selectedImportFilePath,
+  isImportModalVisible,
+  onImportModalCompleted,
   toggleEditMode,
   saveChanges,
   savePersonParents,
@@ -306,6 +310,16 @@ onMounted(initTrees);
       :tree-name="treeToDelete"
       @cancel="cancelDeleteTree"
       @confirm="confirmDeleteTree"
+    />
+
+    <!-- Modal: GEDCOM-Import-Assistent (Neu, Ersetzen, Update/Merge) -->
+    <GedcomImportModal
+      :visible="isImportModalVisible"
+      :file-path="selectedImportFilePath"
+      :active-tree="activeTree"
+      :persons="persons"
+      @close="isImportModalVisible = false"
+      @imported="onImportModalCompleted"
     />
 
     <div class="workspace" :class="{ 'tree-mode': currentView === 'tree' || currentView === 'design' || currentView === 'export' }">

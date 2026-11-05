@@ -5,6 +5,8 @@ import type { ExportPersonInput } from '../utils/htmlExport';
 import HtmlExportPane from './export/HtmlExportPane.vue';
 import DesignImageExportPane from './export/DesignImageExportPane.vue';
 import LatexExportPane from './export/LatexExportPane.vue';
+import GedcomExportPane from './export/GedcomExportPane.vue';
+import CsvExportPane from './export/CsvExportPane.vue';
 
 interface RootAncestorConfig {
   person_id: string;
@@ -163,16 +165,19 @@ watch(
       @select-proband="id => emit('select-proband', id)"
     />
 
-    <!-- Platzhalter für zukünftige Ansichten im Export-Modul (CSV, GEDCOM) -->
-    <div v-else class="export-module-placeholder">
-      <div class="placeholder-card">
-        <h3>{{ activeExportModuleTab === 'csv' ? '📊 ' + t('export_tab_csv') : '🧬 ' + t('export_tab_gedcom') }}</h3>
-        <p>{{ t('export_module_tab_hint') }}</p>
-        <button class="btn-back-to-html" @click="activeExportModuleTab = 'html'">
-          ← {{ t('export_back_to_html') }}
-        </button>
-      </div>
-    </div>
+    <!-- Modul-Ansicht 4: Standardkonformer GEDCOM 5.5.1 Export -->
+    <GedcomExportPane
+      v-else-if="activeExportModuleTab === 'gedcom'"
+      :persons="persons"
+      :active-proband-id="activeProbandId"
+    />
+
+    <!-- Modul-Ansicht 5: Tabellen-Export (CSV) -->
+    <CsvExportPane
+      v-else-if="activeExportModuleTab === 'csv'"
+      :persons="persons"
+      :active-proband-id="activeProbandId"
+    />
   </div>
 </template>
 
