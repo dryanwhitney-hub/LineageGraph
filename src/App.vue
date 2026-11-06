@@ -10,10 +10,27 @@ import DeleteTreeModal from './components/modals/DeleteTreeModal.vue';
 import AddPersonModal from './components/modals/AddPersonModal.vue';
 import SettingsModal, { type SettingsTab } from './components/modals/SettingsModal.vue';
 import GedcomImportModal from './components/modals/GedcomImportModal.vue';
+import UpdateConfirmModal from './components/modals/UpdateConfirmModal.vue';
 import { usePersons } from './composables/usePersons';
 import { useShortestPath } from './composables/useShortestPath';
+import { useAppUpdater } from './composables/useAppUpdater';
 
 const { t, locale } = useI18n();
+
+const {
+  currentVersion,
+  newVersion,
+  releaseNotes,
+  releaseDate,
+  isDownloading,
+  downloadProgress,
+  statusMessage: updaterStatusMessage,
+  statusType: updaterStatusType,
+  showConfirmModal,
+  checkForUpdates,
+  confirmInstall,
+  dismissConfirmModal,
+} = useAppUpdater();
 
 const currentView = ref<'table' | 'tree' | 'design' | 'export'>('table');
 const currentTreeRootId = ref<string | null>(null);
@@ -209,7 +226,10 @@ watch(selectedPerson, newVal => {
   }
 });
 
-onMounted(initTrees);
+onMounted(() => {
+  initTrees();
+  checkForUpdates(false);
+});
 </script>
 
 <template>
@@ -320,6 +340,20 @@ onMounted(initTrees);
       :persons="persons"
       @close="isImportModalVisible = false"
       @imported="onImportModalCompleted"
+    />
+
+    <!-- Modal: App-Aktualisierung Bestätigungsdialog -->
+    <UpdateConfirmModal
+      :visible="showConfirmModal"
+      :current-version="currentVersion"
+      :new-version="newVersion"
+      :release-notes="releaseNotes"
+      :release-date="releaseDate"
+      :is-downloading="isDownloading"
+      :download-progress="downloadProgress"
+      :error-message="updaterStatusType === 'error' ? updaterStatusMessage : null"
+      @confirm="confirmInstall"
+      @cancel="dismissConfirmModal"
     />
 
     <div class="workspace" :class="{ 'tree-mode': currentView === 'tree' || currentView === 'design' || currentView === 'export' }">

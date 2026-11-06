@@ -30,6 +30,7 @@ graph TD
     CAT_TRM --> REQ_TRM_001["REQ-TRM-001: Multi-Stammbaum-Verwaltung"]:::req
     CAT_TRM --> REQ_TRM_002["REQ-TRM-002: 2-Stufen-Sicherheitslöschung"]:::req
     CAT_TRM --> REQ_TRM_003["REQ-TRM-003: Leerzustand & Fallback"]:::req
+    CAT_TRM --> REQ_TRM_004["REQ-TRM-004: App-Aktualisierung & Versionsprüfung"]:::req
 
     CAT_DAT --> REQ_DAT_001["REQ-DAT-001: Personen-Erfassung & XREF-Gen"]:::req
     CAT_DAT --> REQ_DAT_002["REQ-DAT-002: Batch-Editierung & Validierung"]:::req
@@ -99,6 +100,17 @@ graph TD
   2. War der gelöschte Stammbaum der letzte, wechselt die Anwendung in einen konsistenten Leerzustand: `activeTree = ''`, Deaktivierung des Lösch-Buttons, Anzeige von Hinweisen.
   3. Erfolgt ein GEDCOM-Import im Leerzustand, muss automatisch ein neuer Stammbaum basierend auf dem Dateinamen erzeugt werden.
 - **Technische Spezifikation:** Siehe [SPEC-TRM-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-003---req-trm-003)
+
+#### REQ-TRM-004: App-Aktualisierung & Versionsprüfung
+- **Titel & Kurzbeschreibung:** Integrierte Prüfung auf neue Softwareversionen beim Anwendungsstart sowie manuelle Aktualisierungsabfrage in den Programmeinstellungen mit Bestätigungsdialog.
+- **Fachlicher Zweck / Business Value:** Stellt sicher, dass Endanwender stets über Verbesserungen, Fehlerkorrekturen und neue genealogische Werkzeuge informiert werden und Updates transparent per Ein-Klick-Bestätigung installieren können.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Beim Start der Desktop-Applikation muss im Hintergrund über einen Low-Level-TCP-Ping geprüft werden, ob eine Internetverbindung aufgebaut werden kann.
+  2. Nur bei aktiver Internetverbindung wird die Update-Schnittstelle (GitHub Releases / Tauri Updater) abgefragt. Ist keine Verbindung vorhanden, bleibt die App geräuschlos im regulären Betrieb, ohne blockierende Fehlermeldungen anzuzeigen.
+  3. Im Einstellungsfenster (`⚙️ Einstellungen` -> dedizierter Bereich `ℹ️ Über LineageGraph`) muss der Anwender jederzeit manuell nach neuen Versionen suchen sowie App-Metadaten (Logo, Entwickler, Version, Technologie, Lizenz) einsehen können (`🔍 Auf Updates prüfen`).
+  4. Liegt eine neuere Version vor (sowohl beim Start als auch bei manueller Suche), muss ein Bestätigungsdialog eingeblendet werden, der Versionsnummer, optionale Release Notes und Optionen zum sofortigen Installieren (`✨ Jetzt aktualisieren`) oder Verschieben (`Später erinnern`) anbietet.
+  5. Erst nach expliziter Bestätigung durch den Anwender wird das Installationspaket heruntergeladen und die Installation eingeleitet.
+- **Technische Spezifikation:** Siehe [SPEC-TRM-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-004---req-trm-004)
 
 ---
 

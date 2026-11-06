@@ -27,6 +27,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "copyright": "Copyright © 2026 David Whitney",
     "shortDescription": "LineageGraph - Stammbaum- und Ahnenforschungssoftware",
     "icon": [

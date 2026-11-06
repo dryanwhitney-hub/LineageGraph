@@ -47,6 +47,7 @@ Die folgende Matrix bildet die lückenlose Verbindung zwischen den fachlichen An
 | **[REQ-TRM-001](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-001-multi-stammbaum-verwaltung--umschaltung)** | Multi-Stammbaum-Verwaltung & Umschaltung | [SPEC-TRM-001](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-001---req-trm-001) | Backend / Composable / UI | [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/composables/usePersons.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/usePersons.ts), [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue) |
 | **[REQ-TRM-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-002-zweistufige-sicherheitsl%C3%B6schung-mit-prozess-schutz)** | 2-Stufen-Sicherheitslöschung mit Prozess-Schutz | [SPEC-TRM-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-002---req-trm-002) | Backend / UI-Modal / State | [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/components/modals/DeleteTreeModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/DeleteTreeModal.vue) |
 | **[REQ-TRM-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-003-automatischer-fallback--leerzustands-behandlung)** | Leerzustands-Handling & Fallback | [SPEC-TRM-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-003---req-trm-003) | Backend / App-Orchestrierung | [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/App.vue`](file:///c:/dev/Froning/app/LineageGraph/src/App.vue), [`src/components/modals/GedcomImportModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/GedcomImportModal.vue) |
+| **[REQ-TRM-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-004-app-aktualisierung--versionspr%C3%BCfung)** | App-Aktualisierung & Versionsprüfung | [SPEC-TRM-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-004---req-trm-004) | Backend / IPC / Composable / Modal | [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/composables/useAppUpdater.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useAppUpdater.ts), [`src/components/modals/UpdateConfirmModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/UpdateConfirmModal.vue), [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue) |
 | **[REQ-DAT-001](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dat-001-personen-erfassung--inkrementelle-xref-generierung)** | Personen-Erfassung & Inkrementelle XREF-Gen | [SPEC-DAT-001](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-001---req-dat-001) | Backend DB / UI-Modal / Composable | [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/components/modals/AddPersonModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/AddPersonModal.vue) |
 | **[REQ-DAT-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dat-002-tabellarische-batch-editierung--validierungs-engine)** | Tabellarische Batch-Editierung & Validierung | [SPEC-DAT-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-002---req-dat-002) | Backend / TableView / Composable | [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/components/table/PersonTableView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/table/PersonTableView.vue), [`src/composables/usePersons.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/usePersons.ts) |
 | **[REQ-DAT-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dat-003-eltern-kind-verkn%C3%BCpfung-mit-zyklus---rekursionserkennung)** | Eltern-Kind mit Rekursionserkennung | [SPEC-DAT-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-003---req-dat-003) | Backend / Detail-Drawer / Composable | [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/components/details/PersonDetailsDrawer.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/details/PersonDetailsDrawer.vue), [`src/composables/usePersons.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/usePersons.ts) |
@@ -87,6 +88,7 @@ flowchart TB
             AppVue["App.vue (Globaler UI-State, Modalauswahl, View-Routing)"]
             usePersonsComp["usePersons.ts (Zentraler Entity-Store & Mutations)"]
             useShortestPathComp["useShortestPath.ts (Client-Graphsuche & Highlighting)"]
+            useAppUpdaterComp["useAppUpdater.ts (Online-Status & Update-Lifecycle)"]
             I18nSystem["i18n.ts (DE / EN Lokalisierung)"]
         end
 
@@ -110,7 +112,8 @@ flowchart TB
             DetailsDrawerComp["PersonDetailsDrawer.vue (Eltern-, Ehe-, Kinder-Editor, Notizen)"]
             GedcomImportModalComp["GedcomImportModal.vue (Diff- & Merge-Assistent)"]
             DeleteTreeModalComp["DeleteTreeModal.vue (2-Stufen-Dialog mit Autofokus)"]
-            SettingsModalComp["SettingsModal.vue (Spalten, Probanden, Trees)"]
+            SettingsModalComp["SettingsModal.vue (Spalten, Probanden, Trees, Updates)"]
+            UpdateConfirmModalComp["UpdateConfirmModal.vue (Bestätigung & Download-Fortschritt)"]
             FreeQueryModalComp["FreeQueryModal.vue (Schnellsuche)"]
             ShortestPathModalComp["ShortestPathModal.vue (Verwandtschaftssuche)"]
         end
@@ -126,6 +129,7 @@ flowchart TB
         TauriInvoke["@tauri-apps/api/core::invoke() (JSON-RPC IPC-Tunnel)"]
         TauriDialogPlugin["@tauri-apps/plugin-dialog (Native OS Dateiauswahldialoge)"]
         TauriOpenerPlugin["@tauri-apps/plugin-opener (System-Dateiverknüpfungen)"]
+        TauriUpdaterPlugin["@tauri-apps/plugin-updater (Signierte Release-Prüfung & Installation)"]
     end
 
     subgraph BACKEND ["Applikationsschicht (Rust 2024 / src-tauri)"]
@@ -133,7 +137,7 @@ flowchart TB
         
         subgraph TauriRuntime ["Tauri Command Dispatcher & State"]
             LibMain["lib.rs (AppState Mutex: DB-Connection, Active Tree, AppData Dir)"]
-            CommandHandler["39 registrierte Tauri Command Handler"]
+            CommandHandler["40 registrierte Tauri Command Handler"]
         end
 
         subgraph DomainServices ["Domänen-Services & Berechnungs-Engines"]

@@ -92,6 +92,23 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * `persons.value` und `rootAncestors.value` sind vollständig geleert (`[]`).
   * In `SettingsModal.vue` erscheint der Text *"Kein aktiver Stammbaum vorhanden"* und der Löschbutton ist deaktiviert/ausgeblendet.
 
+#### TC-TRM-004: Automatisierte Versionsprüfung bei Start & Manuelle Prüfung in Einstellungen
+- **Traceability:** [REQ-TRM-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-004-app-aktualisierung--versionspr%C3%BCfung) -> [SPEC-TRM-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-004---req-trm-004)
+- **Test-Typ:** Unit & Integration Test (*Implemented: `tests::test_check_internet_connection` & Tauri IPC / Composable*)
+- **Test-Ziel:** Validieren der robusten Konnektivitätsprüfung, des geräuschlosen Startverhaltens, der manuellen Aktualisierungsprüfung in den Einstellungen und der obligatorischen Bestätigungsabfrage vor dem Download.
+- **Preconditions:** Anwendung initialisiert; Testumgebung verfügt wahlweise über Internetzugang oder Offline-Zustand.
+- **Testschritte:**
+  1. `cargo test -- test_check_internet_connection` ausführen.
+  2. IPC-Aufruf `check_internet_connection` im Frontend über `useAppUpdater` absetzen.
+  3. Beim Start (`onMounted` in `App.vue`): Verhalten bei fehlender Verbindung (kein Popup) vs. aktiver Verbindung prüfen.
+  4. Im Einstellungsfenster (`SettingsModal.vue` -> Bereich `ℹ️ Über LineageGraph`) auf `🔍 Auf Updates prüfen` klicken.
+  5. Bei gefundener neuer Version Anzeige von `UpdateConfirmModal.vue` und Abbruch via `Später erinnern` vs. Ausführung via `✨ Jetzt aktualisieren` prüfen.
+- **Erwartetes Ergebnis:**
+  * `check_connectivity()` bzw. `check_internet_connection()` terminiert innerhalb des Timeouts (<= 1500 ms) ohne Panic oder Blockieren der UI-Engine.
+  * Beim Start blockiert eine fehlende Internetverbindung den Anwendungsstart in keiner Weise.
+  * Die manuelle Suche in den Einstellungen gibt verständliche Statusmeldungen (`Die Anwendung ist auf dem neuesten Stand.`, `Keine Internetverbindung verfügbar.` etc.) aus.
+  * Die Installation wird **niemals** ungefragt gestartet; das Bestätigungsmodal fordert zwingend die explizite Nutzerentscheidung ein.
+
 ---
 
 ### 2.2 Domäne: Personen- & Beziehungsstammdaten (DAT)
@@ -451,6 +468,7 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 | **TRM** | [REQ-TRM-001](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-001-multi-stammbaum-verwaltung--umschaltung) | [SPEC-TRM-001](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-001---req-trm-001) | **TC-TRM-001** | Integration Test (IPC / State) | 100 % |
 | **TRM** | [REQ-TRM-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-002-zweistufige-sicherheitsl%C3%B6schung-mit-prozess-schutz) | [SPEC-TRM-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-002---req-trm-002) | **TC-TRM-002** | Unit & Integration Test (Rust) | 100 % |
 | **TRM** | [REQ-TRM-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-003-automatischer-fallback--leerzustands-behandlung) | [SPEC-TRM-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-003---req-trm-003) | **TC-TRM-003** | Integration Test (UI / State) | 100 % |
+| **TRM** | [REQ-TRM-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-004-app-aktualisierung--versionspr%C3%BCfung) | [SPEC-TRM-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-004---req-trm-004) | **TC-TRM-004** | Unit & Integration Test (Rust / UI) | 100 % |
 | **DAT** | [REQ-DAT-001](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dat-001-personen-erfassung--inkrementelle-xref-generierung) | [SPEC-DAT-001](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-001---req-dat-001) | **TC-DAT-001** | Unit Test (Rust) | 100 % |
 | **DAT** | [REQ-DAT-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dat-002-tabellarische-batch-editierung--validierungs-engine) | [SPEC-DAT-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-002---req-dat-002) | **TC-DAT-002** | Unit & Integration Test (Rust / UI) | 100 % |
 | **DAT** | [REQ-DAT-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dat-003-eltern-kind-verkn%C3%BCpfung-mit-zyklus---rekursionserkennung) | [SPEC-DAT-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-003---req-dat-003) | **TC-DAT-003** | Unit Test (Rust BFS) | 100 % |

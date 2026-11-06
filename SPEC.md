@@ -45,6 +45,16 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
 - **Technische Umsetzung:**
   `delete_tree` gibt die Liste der verbliebenen Stammbäume zurück. Ist die Liste leer, setzt das Frontend `activeTree = ''`, leert alle reaktiven Referenzen (`persons.value = []`, `rootAncestors.value = []`, `selectedPerson.value = null`) und blendet in den Einstellungen den Löschbutton aus. Bei Aufruf von `create_tree_and_import` validiert das Backend den neuen Wunschnamen, initialisiert die entsprechende `.db`-Datei und stößt den Import an.
 
+#### SPEC-TRM-004 -> REQ-TRM-004
+- **Fachliche Anforderung:** App-Aktualisierung & Versionsprüfung ([REQ-TRM-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-004-app-aktualisierung--versionspr%C3%BCfung))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs#L2645-L2675) (`check_internet_connection`, `check_connectivity`)
+  - Tauri Plugin & Capabilities: [`src-tauri/tauri.conf.json`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/tauri.conf.json), [`src-tauri/capabilities/default.json`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/capabilities/default.json) (`updater:default`, `@tauri-apps/plugin-updater`)
+  - Frontend Composable: [`src/composables/useAppUpdater.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useAppUpdater.ts)
+  - UI-Komponenten: [`src/components/modals/UpdateConfirmModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/UpdateConfirmModal.vue), [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue), [`src/App.vue`](file:///c:/dev/Froning/app/LineageGraph/src/App.vue)
+- **Technische Umsetzung:**
+  `check_connectivity` führt über `std::net::TcpStream::connect_timeout` (1500 ms) nicht-blockierende TCP-Pings gegen robuste DNS/HTTPS-Endpunkte (`1.1.1.1:53`, `8.8.8.8:53`, `github.com:443`) durch (gekapselt in `tauri::async_runtime::spawn_blocking`). Das Frontend fragt `check_internet_connection` über die Tauri-IPC-Bridge ab. Bei vorhandenem Internet ruft `useAppUpdater.checkForUpdates` die Funktion `check()` von `@tauri-apps/plugin-updater` auf, welche die Update-Metadaten (`latest.json` auf GitHub Releases) abgleicht. Beim Start (`onMounted` in `App.vue`) erfolgt die Prüfung geräuschlos im Hintergrund; in `SettingsModal.vue` kann sie im dedizierten Bereich „ℹ️ Über LineageGraph“ manuell mit direktem Feedback ausgelöst werden. Steht ein Update bereit, poppt `UpdateConfirmModal.vue` auf, das Versionsnummer, Release-Datum und Changelog anzeigt. Erst bei Klick auf „Jetzt aktualisieren“ lädt `downloadAndInstall` das Paket mit prozentualer Fortschrittsanzeige herunter und stößt den Windows NSIS-Installer an.
+
 ---
 
 ### 2.2 Domäne: Personen- & Beziehungsstammdaten (DAT)

@@ -1429,7 +1429,6 @@ export function usePersons(
         options?.onSetProbandTab?.(null);
         options?.onEnsureTableView?.();
       }
-      statusMessage.value = `Stammbaum geladen.`;
     } catch (error) {
       statusMessage.value = `Fehler beim Wechseln: ${error}`;
     }

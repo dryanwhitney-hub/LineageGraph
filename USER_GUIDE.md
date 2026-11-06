@@ -68,7 +68,7 @@ Nach dem Start von LineageGraph öffnet sich das Hauptfenster. Die Benutzeroberf
      * 🎨 **Design Mode:** Visuelles Design-Studio zur Gestaltung druckreifer Stammbäume.
      * 📦 **Export:** Zentraler Hub zur Generierung von Büchern, Webseiten, Bildern und Tabellen.
    * **Probanden-Tabs:** Schnellauswahl der definierten Stammahnen zur sofortigen Neuberechnung und Anzeige der Henry-Nummerierung.
-   * **Aktionsschaltflächen:** Schneller Zugriff auf *„+ Person anlegen“*, *„GEDCOM importieren“* und die *„⚙️ Konfiguration“*.
+   * **Aktionsschaltflächen:** Schneller Zugriff auf *„+ Person anlegen“*, *„GEDCOM importieren“* und die *„⚙️ Einstellungen“*.
 
 2. **Der zentrale Arbeitsbereich:**
    * Zeigt je nach gewähltem Modus die Tabelle, den interaktiven Canvas-Baum, das Design Studio oder das Export-Center.
@@ -84,7 +84,7 @@ Nach dem Start von LineageGraph öffnet sich das Hauptfenster. Die Benutzeroberf
 Sie können beliebig viele voneinander unabhängige Stammbäume (z. B. für verschiedene Familienzweige oder getrennte Forschungsprojekte) auf Ihrem Computer verwalten. Jeder Stammbaum wird isoliert gespeichert, sodass Sie ohne Vermischungsgefahr zwischen verschiedenen Beständen hin- und herwechseln können.
 
 ### Wie bediene ich sie?
-1. Klicken Sie in der Kopfzeile rechts auf das Zahnrad-Symbol **„⚙️ Konfiguration“**.
+1. Klicken Sie in der Kopfzeile rechts auf das Zahnrad-Symbol **„⚙️ Einstellungen“**.
 2. Wählen Sie den Reiter **„Allgemein“** und blicken Sie auf den Bereich **„Stammbaum-Verwaltung“**.
 3. **Stammbaum wechseln:** Klicken Sie im Dropdown-Menü *„Aktiver Stammbaum“* auf den gewünschten Namen. Die Anwendung lädt die Daten sofort ohne Programmneustart.
 4. **Neuen Stammbaum erstellen:**
@@ -103,7 +103,7 @@ Das Hauptfenster aktualisiert sich sofort. Alle Tabellen, Diagramme und Detailan
 Entfernt einen nicht mehr benötigten Stammbaum restlos von Ihrer Festplatte. Um versehentliche Löschungen zuverlässig auszuschließen, ist der Vorgang durch eine strenge Sicherheitsprüfung geschützt.
 
 ### Wie bediene ich sie?
-1. Öffnen Sie die **„⚙️ Konfiguration“** und wählen Sie im Bereich *„Stammbaum-Verwaltung“* den zu löschenden Stammbaum aus.
+1. Öffnen Sie die **„⚙️ Einstellungen“** und wählen Sie im Bereich *„Stammbaum-Verwaltung“* den zu löschenden Stammbaum aus.
 2. Klicken Sie auf die rote Schaltfläche **„Stammbaum entfernen“**.
 3. **Sicherheitsstufe 1:** Es öffnet sich ein hervorgehobenes Dialogfenster mit der Frage:  
    *„Soll der ausgewählte Stammbaum «Name» entfernt werden?“*  
@@ -130,6 +130,31 @@ Haben Sie alle Stammbäume gelöscht oder starten die Anwendung zum ersten Mal, 
 
 ### Was ist das Ergebnis?
 Sie erhalten ein sauberes, frisches Projekt ohne alte Restdaten.
+
+---
+
+## 1.5 App-Aktualisierung & Versionsprüfung
+
+### Was macht die Funktion?
+Hält LineageGraph stets auf dem neuesten Stand. Bei jedem Start prüft die Anwendung automatisch, ob eine Internetverbindung besteht und ob eine neuere Version verfügbar ist. Zusätzlich können Sie in den Einstellungen jederzeit manuell nach Updates suchen. Aktualisierungen werden niemals ungefragt installiert – Sie behalten jederzeit die volle Kontrolle.
+
+### Wie bediene ich sie?
+1. **Automatischer Check beim App-Start:**
+   * Beim Start prüft die App im Hintergrund, ob das Internet erreichbar ist.
+   * Ist keine Verbindung vorhanden, arbeitet die App ganz normal und ungestört weiter (keine störenden Fehlermeldungen).
+   * Ist das Internet erreichbar und liegt eine neue Version vor, erscheint automatisch das Bestätigungsfenster **„Neue Version verfügbar“**.
+2. **Manuelle Prüfung in den Einstellungen:**
+   * Klicken Sie in der Kopfzeile auf **„⚙️ Einstellungen“**.
+   * Ganz unten in der linken Navigationsleiste finden Sie den eigenen Bereich **„ℹ️ Über LineageGraph“**.
+   * Dort werden Ihnen das offizielle App-Logo, der Entwickler (David Whitney), die Technologien, die Lizenz sowie Ihre installierte Versionsnummer (z. B. `v0.2.1`) übersichtlich präsentiert.
+   * Klicken Sie auf die Schaltfläche **„🔍 Auf Updates prüfen“**.
+3. **Bestätigungsdialog:**
+   * Wenn eine Aktualisierung verfügbar ist, zeigt Ihnen der Dialog die neue Versionsnummer und die Versionshinweise (Changelog) an.
+   * Klicken Sie auf **„Später erinnern“**, wenn Sie die Aktualisierung verschieben möchten.
+   * Klicken Sie auf **„Jetzt aktualisieren“**, um den Download und die Installation zu starten.
+
+### Was ist das Ergebnis?
+Nach Bestätigung lädt LineageGraph das Update mit Fortschrittsbalken herunter. Der Windows-Installer übernimmt die Aktualisierung und startet die Anwendung anschließend auf Wunsch mit der neuen Version neu. Ihre Stammbäume und Einstellungen bleiben dabei vollständig erhalten.
 
 ---
 
@@ -250,7 +275,7 @@ In der Tabelle und im Detail-Panel sehen Sie in der Spalte *„Letzte Änderung�
 In großen Familienbüchern gibt es oft mehrere Stammväter oder -mütter. Sie können beliebig viele Personen als sogenannte **Stammahnen** (Probanden) definieren und ihnen ein individuelles Startkürzel geben (z. B. `1`, `2`, `A` oder `Linie-Nord`).
 
 #### Wie bediene ich sie?
-1. Öffnen Sie die **„⚙️ Konfiguration“** und wechseln Sie in den Reiter **„Stammbaum Ansicht“** bzw. **„Stammahne konfigurieren“**.
+1. Öffnen Sie die **„⚙️ Einstellungen“** und wechseln Sie in den Reiter **„Stammbaum Ansicht“** bzw. **„Stammahne konfigurieren“**.
 2. Wählen Sie unter *„Stammahne auswählen“* die gewünschte Person aus.
 3. Geben Sie im Feld *„Start-Code“* das gewünschte Kürzel ein (z. B. `1`).
 4. Klicken Sie auf **„Festlegen & Berechnen“**.
@@ -308,7 +333,7 @@ Bietet eine tabellarische Gesamtsicht aller Personen mit Sofortsuche, Mehrfachfi
 #### Wie bediene ich sie?
 1. **Suchen & Filtern:** Unter jedem Spaltenkopf befindet sich ein Filterfeld. Tippen Sie z. B. bei Nachname `"Schulte"` und bei Geburtsdatum `"18"` ein, um alle Schultes aus dem 19. Jahrhundert zu sehen.
 2. **Sortieren:** Klicken Sie auf einen Spaltenkopf, um die Liste aufsteigend oder absteigend zu sortieren.
-3. **Spalten anpassen:** Klicken Sie in der **„⚙️ Konfiguration“** auf den Reiter **„Tabellarische Ansicht“**. Hier können Sie per Mausklick festlegen, welche Spalten (z. B. Beruf, Religion, Taufdaten) ein- oder ausgeblendet werden sollen.
+3. **Spalten anpassen:** Klicken Sie in der **„⚙️ Einstellungen“** auf den Reiter **„Tabellarische Ansicht“**. Hier können Sie per Mausklick festlegen, welche Spalten (z. B. Beruf, Religion, Taufdaten) ein- oder ausgeblendet werden sollen.
 
 #### Was ist das Ergebnis?
 Die Tabelle reagiert verzögerungsfrei auf Ihre Eingaben und filtert selbst Bestände mit zehntausenden Personen flüssig.
@@ -369,7 +394,7 @@ Das Suchfenster schließt sich und der Stammbaum öffnet sich exakt an der Posit
 Schaltet die gesamte Programmoberfläche inklusive aller Fachbegriffe, Tooltips und Meldungen zwischen Deutsch und Englisch um.
 
 #### Wie bediene ich sie?
-1. Öffnen Sie die **„⚙️ Konfiguration“** (Reiter *„Allgemein“*).
+1. Öffnen Sie die **„⚙️ Einstellungen“** (Reiter *„Allgemein“*).
 2. Wählen Sie unter *„Sprache / Language“* entweder **Deutsch** oder **English**.
 
 #### Was ist das Ergebnis?

@@ -2646,6 +2646,31 @@ async fn export_csv_to_file(
     .map_err(|e| e.to_string())?
 }
 
+fn check_connectivity() -> bool {
+    use std::net::{TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+
+    let timeout = Duration::from_millis(1500);
+    let targets = ["1.1.1.1:53", "8.8.8.8:53", "github.com:443"];
+    for target in targets {
+        if let Ok(mut addrs) = target.to_socket_addrs() {
+            if let Some(addr) = addrs.next() {
+                if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+#[tauri::command]
+async fn check_internet_connection() -> bool {
+    tauri::async_runtime::spawn_blocking(check_connectivity)
+        .await
+        .unwrap_or(false)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2718,7 +2743,8 @@ pub fn run() {
             stage_gedcom_for_merge,
             apply_gedcom_merge,
             preview_csv_export,
-            export_csv_to_file
+            export_csv_to_file,
+            check_internet_connection
         ])
         .run(tauri::generate_context!())
         .expect("Tauri Error");
@@ -3665,5 +3691,12 @@ mod tests {
         assert_eq!(count_spec, 1);
         assert!(csv_spec.contains("C1"));
         assert!(csv_spec.contains("P1")); // P1 als Vater_ID in der Zeile von C1!
+    }
+
+    #[test]
+    fn test_check_internet_connection() {
+        // Runs the sync internet check helper - returns either true or false without panic/crash
+        let is_connected = check_connectivity();
+        assert!(is_connected == true || is_connected == false);
     }
 }

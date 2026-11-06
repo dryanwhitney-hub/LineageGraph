@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { ref } from 'vue';
+import { ref, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { computeCardHeight, formatLocalizedDate, type DesignCardConfig } from '../../types/design';
+import { useAppUpdater } from '../../composables/useAppUpdater';
 import type {
   Person,
   ColumnConfig,
   RootAncestorConfig,
 } from '../../composables/usePersons';
 
-export type SettingsTab = 'general' | 'table_view' | 'tree_view' | 'design_mode';
+export type SettingsTab = 'general' | 'table_view' | 'tree_view' | 'design_mode' | 'about';
 
 export interface DesignConfigState {
   horizontalLaneGap: number;
@@ -54,6 +55,21 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n();
 
+const {
+  currentVersion,
+  isChecking,
+  isDownloading,
+  newVersion,
+  statusMessage,
+  statusType,
+  checkForUpdates,
+  loadCurrentVersion,
+} = useAppUpdater();
+
+onMounted(() => {
+  loadCurrentVersion();
+});
+
 const showColDropdown = ref<boolean>(false);
 const showDetailAttrDropdown = ref<boolean>(false);
 const isCardConfigExpanded = ref<boolean>(true);
@@ -97,6 +113,13 @@ function onTreeSelectChange(event: Event) {
             @click="emit('update:activeTab', 'design_mode')"
           >
             📐 {{ t('settings_tab_design') || 'Stammbaum Design Mode' }}
+          </button>
+          <button
+            class="settings-nav-item settings-nav-item-bottom"
+            :class="{ active: activeTab === 'about' }"
+            @click="emit('update:activeTab', 'about')"
+          >
+            ℹ️ {{ t('settings_tab_about') || 'Über LineageGraph' }}
           </button>
         </div>
 
@@ -934,6 +957,67 @@ function onTreeSelectChange(event: Event) {
               </div>
             </div>
           </div>
+
+          <!-- 4. Über LineageGraph & App-Aktualisierung -->
+          <div v-if="activeTab === 'about'" class="settings-tab-pane about-tab-pane">
+            <div class="about-container">
+              <div class="about-hero">
+                <img src="/icon_dark.png" alt="LineageGraph Logo" class="about-logo" />
+                <div class="about-hero-info">
+                  <h3 class="about-app-title">LineageGraph</h3>
+                  <p class="about-app-subtitle">{{ t('about_app_subtitle') }}</p>
+                  <span class="about-version-badge">v{{ currentVersion || '0.2.1' }}</span>
+                </div>
+              </div>
+
+              <div class="about-info-grid">
+                <div class="about-info-card">
+                  <span class="about-info-label">{{ t('about_developer') }}</span>
+                  <span class="about-info-value font-bold">{{ t('about_developer_name') }}</span>
+                </div>
+                <div class="about-info-card">
+                  <span class="about-info-label">{{ t('about_technology') }}</span>
+                  <span class="about-info-value">{{ t('about_tech_stack') }}</span>
+                </div>
+                <div class="about-info-card">
+                  <span class="about-info-label">{{ t('about_license') }}</span>
+                  <span class="about-info-value">{{ t('about_license_name') }}</span>
+                </div>
+              </div>
+
+              <div class="about-update-card">
+                <div class="about-update-header">
+                  <div class="about-update-text">
+                    <h4>🔄 {{ t('about_updates_title') }}</h4>
+                    <p class="about-update-hint">
+                      {{ t('updater_current_version') }}: <strong>v{{ currentVersion || '0.2.1' }}</strong>
+                    </p>
+                  </div>
+                  <button
+                    class="btn-updater-check"
+                    :disabled="isChecking || isDownloading"
+                    @click="checkForUpdates(true)"
+                  >
+                    <span v-if="isChecking">⏳ {{ t('updater_checking') }}</span>
+                    <span v-else>🔍 {{ t('updater_check_btn') }}</span>
+                  </button>
+                </div>
+
+                <div v-if="statusType === 'up-to-date'" class="updater-feedback success">
+                  ✅ {{ t('updater_up_to_date') }}
+                </div>
+                <div v-else-if="statusType === 'offline'" class="updater-feedback warning">
+                  ⚠️ {{ t('updater_offline') }}
+                </div>
+                <div v-else-if="statusType === 'update-available'" class="updater-feedback info">
+                  🚀 {{ t('updater_modal_desc', { version: newVersion }) }}
+                </div>
+                <div v-else-if="statusType === 'error'" class="updater-feedback error">
+                  ❌ {{ t('updater_error', { error: statusMessage }) }}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1493,6 +1577,196 @@ button:disabled {
 .expandable-body {
   padding: 16px;
   background: #ffffff;
+}
+
+/* App Updater in Settings */
+.settings-nav-item-bottom {
+  margin-top: auto !important;
+  border-top: 1px solid #cbd5e1 !important;
+  padding-top: 12px !important;
+}
+
+/* About / Über LineageGraph Tab */
+.about-tab-pane {
+  display: flex;
+  flex-direction: column;
+}
+.about-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  max-width: 600px;
+  margin: 0 auto;
+  width: 100%;
+  padding: 10px 0;
+}
+.about-hero {
+  display: flex;
+  align-items: center;
+  gap: 1.5rem;
+  background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+.about-logo {
+  width: 80px;
+  height: 80px;
+  border-radius: 16px;
+  object-fit: contain;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  background: #ffffff;
+  padding: 4px;
+}
+.about-hero-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.about-app-title {
+  margin: 0;
+  font-size: 1.5rem;
+  color: #1e293b;
+  font-weight: 700;
+}
+.about-app-subtitle {
+  margin: 0;
+  font-size: 0.95rem;
+  color: #64748b;
+}
+.about-version-badge {
+  display: inline-block;
+  align-self: flex-start;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 4px;
+}
+.about-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 1rem;
+}
+.about-info-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.about-info-label {
+  font-size: 0.75rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 600;
+}
+.about-info-value {
+  font-size: 0.95rem;
+  color: #1e293b;
+}
+.font-bold {
+  font-weight: 600;
+}
+.about-update-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1.25rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
+}
+.about-update-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+.about-update-text h4 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #1e293b;
+}
+.about-update-hint {
+  margin: 0.25rem 0 0 0;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+.updater-control-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: #f8fafc;
+  padding: 0.75rem 1rem;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+.updater-version-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  color: #334155;
+}
+.version-tag {
+  background: #e2e8f0;
+  color: #1e293b;
+  font-family: monospace;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.85rem;
+}
+.btn-updater-check {
+  padding: 0.45rem 1rem;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn-updater-check:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+.btn-updater-check:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.updater-feedback {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.8rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+.updater-feedback.success {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+.updater-feedback.warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+.updater-feedback.info {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
+}
+.updater-feedback.error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
 }
 </style>
 
