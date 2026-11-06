@@ -3,8 +3,14 @@ import {
   computePersonCardNeededHeight,
   formatLocalizedDate,
   type DesignCardConfig,
+  type SubLayoutReference,
+  type SubtreeBackground,
 } from '../types/design';
-import type { DesignSiblingGroup, BranchWidthConstraint } from './useDesignHistory';
+import type {
+  DesignSiblingGroup,
+  BranchWidthConstraint,
+  DesignPersistedState,
+} from './useDesignHistory';
 
 export interface ProbandData {
   henry_code: string;
@@ -84,6 +90,12 @@ export interface CardBox {
   height: number;
   centerX: number;
   centerY: number;
+  isReadOnly?: boolean;
+  subtreeAnchorId?: string;
+  subtreeLayoutName?: string;
+  isSubtreeAnchor?: boolean;
+  linkedSubLayoutName?: string;
+  linkedSubLayoutId?: string;
 }
 
 export interface SiblingSubGroup {
@@ -108,6 +120,10 @@ export interface GroupLayoutInfo {
   siblingSubGroups: SiblingSubGroup[];
   canRegroup: boolean;
   isDocked: boolean;
+  isReadOnly?: boolean;
+  subtreeAnchorId?: string;
+  subtreeLayoutName?: string;
+  subtreeLayoutId?: string;
 }
 
 export interface SpouseDateItem {
@@ -217,6 +233,8 @@ export interface UseDesignLayoutOptions {
   zoom: Ref<number>;
   activeCardConfig: ComputedRef<DesignCardConfig>;
   personById: ComputedRef<Map<string, DesignPerson>>;
+  subLayoutReferences?: Ref<Record<string, SubLayoutReference>>;
+  subLayoutCache?: Ref<Map<string, DesignPersistedState>>;
   getProps: () => {
     persons: DesignPerson[];
     rootAncestors: RootAncestorConfig[];
@@ -441,37 +459,61 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
 
   // Sichtbare Gruppen & sichtbare Personen unter Berücksichtigung von:
   // 1. Expand/Collapse-Status (Stammahn bleibt immer aktiv)
+  // 2. Isolierung der Stammeinträge (Zweiganker) aus Geschwistergruppen
+  // 3. Dynamisches Einbetten der verknüpften Zweige mit Verdrängung links/rechts nach außen
   const visibleGroupAndMemberMap = computed<{
     groups: DesignSiblingGroup[];
     visibleMembersByGroupId: Map<string, string[]>;
   }>(() => {
     const visiblePersons = new Set<string>();
-    const resultGroups: DesignSiblingGroup[] = [];
+    const initialResultGroups: DesignSiblingGroup[] = [];
     const membersMap = new Map<string, string[]>();
+
+    const subRefs = options.subLayoutReferences?.value || {};
+    const subCache = options.subLayoutCache?.value || new Map();
+
+    // Ermittle alle Personen, die von einem verknüpften Subtree verwaltet werden (außer dem Anker selbst)
+    const subtreeManagedMemberIds = new Set<string>();
+    for (const [anchorId, sRef] of Object.entries(subRefs)) {
+      const subState = subCache.get(sRef.layoutId);
+      if (subState && subState.siblingGroups) {
+        subState.siblingGroups.forEach((sg: DesignSiblingGroup) => {
+          sg.memberIds.forEach((mId: string) => {
+            if (mId !== anchorId) {
+              subtreeManagedMemberIds.add(mId);
+            }
+          });
+        });
+      }
+    }
 
     // 1. Ursprung (parentId === null) ist immer aktiv
     siblingGroups.value.forEach(g => {
       if (g.parentId === null) {
-        resultGroups.push(g);
+        initialResultGroups.push(g);
         membersMap.set(g.id, [...g.memberIds]);
         g.memberIds.forEach(id => visiblePersons.add(id));
       }
     });
 
     let added = true;
-    const includedGroupIds = new Set<string>(resultGroups.map(g => g.id));
+    const includedGroupIds = new Set<string>(initialResultGroups.map(g => g.id));
 
     while (added) {
       added = false;
       for (const g of siblingGroups.value) {
         if (includedGroupIds.has(g.id)) continue;
+        // Gruppen, deren Mitglieder vollständig über ein verknüpftes Zweig-Design abgebildet werden, im Master überspringen
+        if (g.memberIds.length > 0 && g.memberIds.every(id => subtreeManagedMemberIds.has(id))) {
+          continue;
+        }
         if (
           g.parentId &&
           visiblePersons.has(g.parentId) &&
           expandedParentIds.value.has(g.parentId)
         ) {
           includedGroupIds.add(g.id);
-          resultGroups.push(g);
+          initialResultGroups.push(g);
           membersMap.set(g.id, [...g.memberIds]);
           g.memberIds.forEach(id => visiblePersons.add(id));
           added = true;
@@ -479,8 +521,233 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
       }
     }
 
+    // 2. Isoliere alle Stammeinträge, zu denen ein Zweig definiert ist, aus ihren Geschwistergruppen heraus
+    const masterGroups: DesignSiblingGroup[] = [];
+    for (const g of initialResultGroups) {
+      const containedAnchors = g.memberIds.filter(id => subRefs[id]);
+      if (containedAnchors.length === 0 || g.memberIds.length <= 1) {
+        masterGroups.push({ ...g, memberIds: [...g.memberIds] });
+      } else {
+        // Gruppe enthält mindestens einen Zweig-Anker und weitere Geschwister -> Aufteilen!
+        const members = [...g.memberIds];
+        const origTotalW = getGroupWidth(members.length);
+        const origLeft = Math.round(g.x - origTotalW / 2);
+        const GAP = 28;
+
+        let curLeft = origLeft;
+        let currentNonAnchorChunk: string[] = [];
+
+        const flushNonAnchorChunk = () => {
+          if (currentNonAnchorChunk.length === 0) return;
+          const chunkW = getGroupWidth(currentNonAnchorChunk.length);
+          const chunkX = Math.round(curLeft + chunkW / 2);
+          const chunkId = `sg-split-${g.id}-${currentNonAnchorChunk[0]}`;
+          masterGroups.push({
+            id: chunkId,
+            parentId: g.parentId,
+            generation: g.generation,
+            level: g.level,
+            x: chunkX,
+            memberIds: [...currentNonAnchorChunk],
+            isUngrouped: currentNonAnchorChunk.length === 1,
+          });
+          membersMap.set(chunkId, [...currentNonAnchorChunk]);
+          curLeft += chunkW + GAP;
+          currentNonAnchorChunk = [];
+        };
+
+        for (let i = 0; i < members.length; i++) {
+          const mId = members[i];
+          if (subRefs[mId]) {
+            flushNonAnchorChunk();
+            const anchorW = CARD_WIDTH;
+            const anchorX = Math.round(curLeft + anchorW / 2);
+            const anchorGroupId = `sg-anchor-${mId}`;
+            masterGroups.push({
+              id: anchorGroupId,
+              parentId: g.parentId,
+              generation: g.generation,
+              level: g.level,
+              x: anchorX,
+              memberIds: [mId],
+              isUngrouped: true,
+            });
+            membersMap.set(anchorGroupId, [mId]);
+            curLeft += anchorW + GAP;
+          } else {
+            currentNonAnchorChunk.push(mId);
+          }
+        }
+        flushNonAnchorChunk();
+        membersMap.delete(g.id);
+      }
+    }
+
+    // 3. Dynamisches Einbetten der Gruppen aus verknüpften Zweigen & Auswärtsschub links/rechts
+    const embeddedGroupsAll: DesignSiblingGroup[] = [];
+
+    for (const [anchorId, sRef] of Object.entries(subRefs)) {
+      if (!visiblePersons.has(anchorId) || !expandedParentIds.value.has(anchorId)) {
+        continue;
+      }
+      const subState = subCache.get(sRef.layoutId);
+      if (!subState || !subState.siblingGroups || subState.siblingGroups.length === 0) {
+        continue;
+      }
+
+      // Anker-Gruppe in masterGroups finden
+      const anchorGroup = masterGroups.find(g => g.memberIds.includes(anchorId));
+      if (!anchorGroup) continue;
+
+      // Wurzelgruppe im Zweig-Design ermitteln (Level 1 oder parentId === null)
+      const subRootGroup = subState.siblingGroups.find((g: DesignSiblingGroup) => g.level === 1 || g.parentId === null);
+      const subRootX = subRootGroup ? subRootGroup.x : 720;
+      const subRootLevel = subRootGroup ? subRootGroup.level : 1;
+
+      // X-Zentrum der Anker-Person
+      const anchorCardCenterX = anchorGroup.x;
+      const deltaX = anchorCardCenterX - subRootX;
+      const levelOffset = anchorGroup.level - subRootLevel;
+
+      const currentSubtreeGroups: DesignSiblingGroup[] = [];
+      subState.siblingGroups.forEach((sg: DesignSiblingGroup) => {
+        // Wurzelgruppe überspringen, wenn sie ausschließlich den Anker enthält (wurde bereits im Master gerendert)
+        if ((sg.level === subRootLevel || sg.parentId === null) && sg.memberIds.includes(anchorId)) {
+          return;
+        }
+
+        const mappedLevel = sg.level + levelOffset;
+        const mappedX = Math.round(sg.x + deltaX);
+        const embeddedGroupId = `subtree-${sRef.layoutId}-${sg.id}`;
+
+        const embeddedGroup: DesignSiblingGroup = {
+          ...sg,
+          id: embeddedGroupId,
+          level: mappedLevel,
+          x: mappedX,
+          isReadOnly: true,
+          subtreeAnchorId: anchorId,
+          subtreeLayoutName: sRef.layoutName,
+          subtreeLayoutId: sRef.layoutId,
+        };
+
+        currentSubtreeGroups.push(embeddedGroup);
+        membersMap.set(embeddedGroupId, [...sg.memberIds]);
+        sg.memberIds.forEach((id: string) => visiblePersons.add(id));
+      });
+
+      if (currentSubtreeGroups.length === 0) {
+        continue;
+      }
+
+      // 4. Korridor-Berechnung & Verschiebung der links und rechts liegenden Einträge nach außen
+      const GAP = 28;
+      const subBoundsByLevel = new Map<number, { minLeft: number; maxRight: number }>();
+      let overallSubMinLeft = Infinity;
+      let overallSubMaxRight = -Infinity;
+
+      currentSubtreeGroups.forEach(eg => {
+        const w = getGroupWidth(eg.memberIds.length);
+        const l = eg.x - w / 2;
+        const r = eg.x + w / 2;
+        if (l < overallSubMinLeft) overallSubMinLeft = l;
+        if (r > overallSubMaxRight) overallSubMaxRight = r;
+
+        const cur = subBoundsByLevel.get(eg.level);
+        if (!cur) {
+          subBoundsByLevel.set(eg.level, { minLeft: l, maxRight: r });
+        } else {
+          if (l < cur.minLeft) cur.minLeft = l;
+          if (r > cur.maxRight) cur.maxRight = r;
+        }
+      });
+
+      // Anker-Ebene berücksichtigen
+      const anchorCardHalfW = CARD_WIDTH / 2;
+      const anchorCorridorLeft = Math.min(anchorCardCenterX - anchorCardHalfW, overallSubMinLeft);
+      const anchorCorridorRight = Math.max(anchorCardCenterX + anchorCardHalfW, overallSubMaxRight);
+      subBoundsByLevel.set(anchorGroup.level, { minLeft: anchorCorridorLeft, maxRight: anchorCorridorRight });
+
+      const minLvl = Math.min(anchorGroup.level, ...Array.from(subBoundsByLevel.keys()));
+      const maxLvl = Math.max(anchorGroup.level, ...Array.from(subBoundsByLevel.keys()));
+
+      let requiredShiftLeft = 0;
+      let requiredShiftRight = 0;
+
+      for (let lvl = minLvl; lvl <= maxLvl; lvl++) {
+        const bounds = subBoundsByLevel.get(lvl) || { minLeft: overallSubMinLeft, maxRight: overallSubMaxRight };
+        const targetLeftLimit = bounds.minLeft - GAP;
+        const targetRightLimit = bounds.maxRight + GAP;
+
+        const groupsOnLvl = masterGroups.filter(g => g.level === lvl && g.id !== anchorGroup.id);
+        for (const g of groupsOnLvl) {
+          const w = getGroupWidth(g.memberIds.length);
+          const gLeft = g.x - w / 2;
+          const gRight = g.x + w / 2;
+
+          if (g.x <= anchorCardCenterX) {
+            if (gRight > targetLeftLimit) {
+              const overlap = gRight - targetLeftLimit;
+              if (overlap > requiredShiftLeft) {
+                requiredShiftLeft = overlap;
+              }
+            }
+          } else {
+            if (gLeft < targetRightLimit) {
+              const overlap = targetRightLimit - gLeft;
+              if (overlap > requiredShiftRight) {
+                requiredShiftRight = overlap;
+              }
+            }
+          }
+        }
+      }
+
+      // Verschiebe alle links liegenden Master-Gruppen auf allen betroffenen Ebenen ab dem Anker nach links
+      if (requiredShiftLeft > 0) {
+        for (const g of masterGroups) {
+          if (g.id !== anchorGroup.id && g.x <= anchorCardCenterX && g.level >= minLvl) {
+            g.x = Math.round(g.x - requiredShiftLeft);
+          }
+        }
+      }
+
+      // Verschiebe alle rechts liegenden Master-Gruppen auf allen betroffenen Ebenen ab dem Anker nach rechts
+      if (requiredShiftRight > 0) {
+        for (const g of masterGroups) {
+          if (g.id !== anchorGroup.id && g.x > anchorCardCenterX && g.level >= minLvl) {
+            g.x = Math.round(g.x + requiredShiftRight);
+          }
+        }
+      }
+
+      embeddedGroupsAll.push(...currentSubtreeGroups);
+    }
+
+    // 5. Mindestabstand zur linken Seitenleiste für alle Gruppen sicherstellen
+    const minAllowedLeft = LEVEL_SIDEBAR_W + 16;
+    let minCanvasX = Infinity;
+    masterGroups.forEach(g => {
+      const l = g.x - getGroupWidth(g.memberIds.length) / 2;
+      if (l < minCanvasX) minCanvasX = l;
+    });
+    embeddedGroupsAll.forEach(eg => {
+      const l = eg.x - getGroupWidth(eg.memberIds.length) / 2;
+      if (l < minCanvasX) minCanvasX = l;
+    });
+
+    if (minCanvasX < minAllowedLeft) {
+      const globalShiftRight = Math.round(minAllowedLeft - minCanvasX);
+      masterGroups.forEach(g => {
+        g.x += globalShiftRight;
+      });
+      embeddedGroupsAll.forEach(eg => {
+        eg.x += globalShiftRight;
+      });
+    }
+
     return {
-      groups: resultGroups,
+      groups: [...masterGroups, ...embeddedGroupsAll],
       visibleMembersByGroupId: membersMap,
     };
   });
@@ -802,7 +1069,8 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     const requiredLanes: Record<number, number> = {};
 
     const gap = Math.max(10, getProps().horizontalLaneGap || 16);
-    const totalLvls = totalLevels.value;
+    const maxSubtreeLvl = visibleSiblingGroups.value.reduce((max, g) => Math.max(max, g.level), totalLevels.value);
+    const totalLvls = Math.max(totalLevels.value, maxSubtreeLvl);
 
     // 1. O(1) Index für Elterngruppen-Suche
     const groupByPersonId = new Map<string, DesignSiblingGroup>();
@@ -1081,12 +1349,12 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     });
   }
 
-  // Initialisiert den Stammbaum mit dem ausgewählten Stammahnen als Ursprung (Ebene 1 unten -> nach oben)
-  function buildInitialDesignLayout() {
+  // Initialisiert den Stammbaum mit dem ausgewählten Stammahnen (oder Ankerperson eines Zweigs) als Ursprung (Ebene 1 unten -> nach oben)
+  function buildInitialDesignLayout(overrideRootId?: string) {
     if (siblingGroups.value.length > 0) {
       pushHistoryState();
     }
-    const pid = getProps().activeProbandId;
+    const pid = overrideRootId || getProps().activeProbandId;
     branchWidths.value = new Map();
 
     if (!pid) {
@@ -1211,6 +1479,7 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     }
     levelHeights.value = heightsObj;
     siblingGroups.value = groups;
+    ensureAllSubtreeAnchorsIsolated();
 
     nextTick(() => {
       centerOnOrigin();
@@ -1319,8 +1588,10 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
 
   const levelsTopToBottom = computed<LevelBandInfo[]>(() => {
     const list: LevelBandInfo[] = [];
+    const maxSubtreeLvl = visibleSiblingGroups.value.reduce((max, g) => Math.max(max, g.level), totalLevels.value);
+    const totalLvls = Math.max(totalLevels.value, maxSubtreeLvl);
 
-    for (let lvl = totalLevels.value; lvl >= 1; lvl--) {
+    for (let lvl = totalLvls; lvl >= 1; lvl--) {
       const groupsInLevel = visibleSiblingGroups.value.filter(g => g.level === lvl);
       const gens = Array.from(new Set(groupsInLevel.map(g => g.generation))).sort((a, b) => a - b);
       list.push({
@@ -1508,12 +1779,14 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
         : 50;
 
       const cards: CardBox[] = [];
+      const subRefs = options.subLayoutReferences?.value || {};
       visibleMemberIds.forEach((pid, idx) => {
         const p = personById.value.get(pid);
         if (!p) return;
         const cLeft = left + idx * CARD_WIDTH;
         const cRight = cLeft + CARD_WIDTH;
         const cardH = groupCardHeight;
+        const linkedRef = subRefs[pid];
         cards.push({
           person: p,
           groupId: group.id,
@@ -1526,6 +1799,12 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
           height: cardH,
           centerX: cLeft + CARD_WIDTH / 2,
           centerY: top + cardH / 2,
+          isReadOnly: Boolean(group.isReadOnly),
+          subtreeAnchorId: group.subtreeAnchorId,
+          subtreeLayoutName: group.subtreeLayoutName,
+          isSubtreeAnchor: Boolean(linkedRef),
+          linkedSubLayoutName: linkedRef?.layoutName,
+          linkedSubLayoutId: linkedRef?.layoutId,
         });
       });
 
@@ -1578,8 +1857,12 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
         parentPerson: group.parentId ? (personById.value.get(group.parentId) || null) : null,
         cards,
         siblingSubGroups,
-        canRegroup,
+        canRegroup: group.isReadOnly ? false : canRegroup,
         isDocked,
+        isReadOnly: Boolean(group.isReadOnly),
+        subtreeAnchorId: group.subtreeAnchorId,
+        subtreeLayoutName: group.subtreeLayoutName,
+        subtreeLayoutId: group.subtreeLayoutId,
       };
     });
   });
@@ -3379,7 +3662,7 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
   let dragBranchFixedDx: number | null = null;
 
   function startGroupDrag(e: MouseEvent, group: DesignSiblingGroup) {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || group.isReadOnly) return;
     e.stopPropagation();
     beginDragSnapshot();
     draggingGroupId.value = group.id;
@@ -4000,6 +4283,87 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     expandAndResolveLevelOverlaps(origGroupLevel, new Set([groupForPerson.id]));
   }
 
+  // Isoliert eine Stammperson (Zweiganker) aus ihrer Geschwistergruppe heraus, falls sie mit anderen Geschwistern zusammenliegt
+  function isolateAnchorInSiblingGroups(anchorPersonId: string): boolean {
+    const grpIdx = siblingGroups.value.findIndex(g => g.memberIds.includes(anchorPersonId));
+    if (grpIdx < 0) return false;
+    const group = siblingGroups.value[grpIdx];
+    if (group.memberIds.length <= 1) return false;
+
+    pushHistoryState();
+
+    const members = [...group.memberIds];
+    const idx = members.indexOf(anchorPersonId);
+    if (idx < 0) return false;
+
+    const leftMembers = members.slice(0, idx);
+    const rightMembers = members.slice(idx + 1);
+
+    const origTotalW = getGroupWidth(members.length);
+    const origLeft = Math.round(group.x - origTotalW / 2);
+    const GAP = 28;
+
+    const anchorCenterX = Math.round(origLeft + idx * CARD_WIDTH + CARD_WIDTH / 2);
+
+    const newGroups: DesignSiblingGroup[] = [];
+
+    if (leftMembers.length > 0) {
+      const leftW = getGroupWidth(leftMembers.length);
+      const leftCenterX = Math.round(anchorCenterX - CARD_WIDTH / 2 - GAP - leftW / 2);
+      newGroups.push({
+        id: `sg-split-${anchorPersonId}-L-${Date.now()}`,
+        parentId: group.parentId,
+        generation: group.generation,
+        level: group.level,
+        x: leftCenterX,
+        memberIds: leftMembers,
+        isUngrouped: leftMembers.length === 1,
+      });
+    }
+
+    const anchorGroup: DesignSiblingGroup = {
+      id: `sg-anchor-${anchorPersonId}`,
+      parentId: group.parentId,
+      generation: group.generation,
+      level: group.level,
+      x: anchorCenterX,
+      memberIds: [anchorPersonId],
+      isUngrouped: true,
+    };
+    newGroups.push(anchorGroup);
+
+    if (rightMembers.length > 0) {
+      const rightW = getGroupWidth(rightMembers.length);
+      const rightCenterX = Math.round(anchorCenterX + CARD_WIDTH / 2 + GAP + rightW / 2);
+      newGroups.push({
+        id: `sg-split-${anchorPersonId}-R-${Date.now()}`,
+        parentId: group.parentId,
+        generation: group.generation,
+        level: group.level,
+        x: rightCenterX,
+        memberIds: rightMembers,
+        isUngrouped: rightMembers.length === 1,
+      });
+    }
+
+    const next = [...siblingGroups.value];
+    next.splice(grpIdx, 1, ...newGroups);
+    siblingGroups.value = next;
+    expandAndResolveLevelOverlaps(group.level, new Set([anchorGroup.id]));
+    return true;
+  }
+
+  function ensureAllSubtreeAnchorsIsolated(): boolean {
+    const subRefs = options.subLayoutReferences?.value || {};
+    let changed = false;
+    for (const anchorId of Object.keys(subRefs)) {
+      if (isolateAnchorInSiblingGroups(anchorId)) {
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
   const canDetachSelectedPerson = computed(() => {
     const p = selectedDesignPerson.value;
     if (!p) return false;
@@ -4255,6 +4619,39 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     levelHeights.value = nextHeights;
   }
 
+  const subtreeBackgrounds = computed<SubtreeBackground[]>(() => {
+    const backgrounds: SubtreeBackground[] = [];
+    const subRefs = options.subLayoutReferences?.value || {};
+    const subCache = options.subLayoutCache?.value || new Map();
+
+    for (const [anchorId, sRef] of Object.entries(subRefs)) {
+      const subState = subCache.get(sRef.layoutId);
+      if (!subState || !subState.backgroundImageData || !subState.backgroundConfig?.visible) {
+        continue;
+      }
+      const anchorCard = cardBoxByPersonId.value.get(anchorId);
+      if (!anchorCard) continue;
+
+      const subRootGroup = subState.siblingGroups.find((g: DesignSiblingGroup) => g.level === 1 || g.parentId === null);
+      const subRootX = subRootGroup ? subRootGroup.x : 720;
+
+      const bgCfg = subState.backgroundConfig;
+      const finalX = anchorCard.centerX + (bgCfg.x - subRootX);
+      const finalY = anchorCard.centerY + bgCfg.y;
+
+      backgrounds.push({
+        anchorPersonId: anchorId,
+        layoutId: sRef.layoutId,
+        layoutName: sRef.layoutName,
+        imageData: subState.backgroundImageData,
+        config: bgCfg,
+        originX: Math.round(finalX),
+        originY: Math.round(finalY),
+      });
+    }
+    return backgrounds;
+  });
+
   function cleanupLayoutListeners() {
     window.removeEventListener('mousemove', onWindowBranchWidthDragMove);
     window.removeEventListener('mouseup', onWindowBranchWidthDragEnd);
@@ -4299,6 +4696,9 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     // Edge Geometry & SVG Paths
     edgeGeometry,
 
+    // Hierarchische Subtree-Hintergründe
+    subtreeBackgrounds,
+
     // Tree & Descendant Helpers
     childrenMapByParentId,
     hasDescendants,
@@ -4334,6 +4734,8 @@ export function useDesignLayout(options: UseDesignLayoutOptions) {
     moveSinglePersonLevel,
     insertEmptyLevelAbove,
     removeEmptyLevel,
+    isolateAnchorInSiblingGroups,
+    ensureAllSubtreeAnchorsIsolated,
     cleanupLayoutListeners,
   };
 }

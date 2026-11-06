@@ -87,7 +87,9 @@ fn setup_schema(conn: Connection) -> Result<Connection> {
             proband_id TEXT NOT NULL,
             name TEXT NOT NULL,
             created_at TEXT NOT NULL,
-            layout_data TEXT NOT NULL
+            layout_data TEXT NOT NULL,
+            layout_type TEXT DEFAULT 'master',
+            anchor_person_id TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_design_layouts_proband ON design_layouts(proband_id);
 
@@ -135,6 +137,19 @@ fn setup_schema(conn: Connection) -> Result<Connection> {
     // NEU: Migration für das Scheidungs-Flag
     if !fam_columns.contains(&"is_divorced".to_string()) {
         conn.execute("ALTER TABLE families ADD COLUMN is_divorced BOOLEAN DEFAULT 0", [])?;
+    }
+
+    // Migration für design_layouts (layout_type, anchor_person_id)
+    let dsg_columns: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(design_layouts)")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+        rows.filter_map(Result::ok).collect()
+    };
+    if !dsg_columns.contains(&"layout_type".to_string()) {
+        conn.execute("ALTER TABLE design_layouts ADD COLUMN layout_type TEXT DEFAULT 'master'", [])?;
+    }
+    if !dsg_columns.contains(&"anchor_person_id".to_string()) {
+        conn.execute("ALTER TABLE design_layouts ADD COLUMN anchor_person_id TEXT", [])?;
     }
 
     Ok(conn)

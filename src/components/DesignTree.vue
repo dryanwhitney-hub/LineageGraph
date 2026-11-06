@@ -154,6 +154,23 @@ const {
   showNewDesignModal,
   newDesignProbandId,
   newDesignFileName,
+  newDesignLayoutType,
+  newDesignAnchorPersonId,
+  currentLayoutType,
+  currentLayoutName,
+  currentAnchorPersonId,
+  subLayoutReferences,
+  subLayoutCache,
+  showLinkSubtreeModal,
+  targetLinkAnchorPersonId,
+  availableSubtreeLayouts,
+  isLoadingSubtreeLayouts,
+  openLinkSubtreeModal,
+  closeLinkSubtreeModal,
+  linkSubtreeToAnchor,
+  unlinkSubtreeFromAnchor,
+  switchToSubtreeDesign,
+  returnToMasterDesign,
   hasUnsavedChanges,
   openNewDesignModal,
   closeNewDesignModal,
@@ -186,13 +203,14 @@ const {
     bridgeRadius: props.bridgeRadius,
     minimizeBridges: props.minimizeBridges,
   }),
-  onBuildInitialDesignLayout: () => buildInitialDesignLayout(),
+  onBuildInitialDesignLayout: (overrideRootId?: string) => buildInitialDesignLayout(overrideRootId),
   onCenterOnOrigin: () => centerOnOrigin(),
   onSelectProband: probandId => emit('select-proband', probandId),
   onUpdateCardConfig: cfg => emit('update-card-config', cfg),
   onUpdateDesignConfig: cfg => emit('update-design-config', cfg),
   saveProbandBg: (probandId, dataUrl, config) => saveProbandBg(probandId, dataUrl, config),
   deleteProbandBg: probandId => deleteProbandBg(probandId),
+  onIsolateSubtreeAnchor: anchorId => isolateAnchorInSiblingGroups(anchorId),
 });
 
 const {
@@ -210,6 +228,7 @@ const {
   groupLayouts,
   renderedBranchWidths,
   edgeGeometry,
+  subtreeBackgrounds,
   hasDescendants,
   isParentExpanded,
   toggleDescendants,
@@ -239,6 +258,7 @@ const {
   moveSinglePersonLevel,
   insertEmptyLevelAbove,
   removeEmptyLevel,
+  isolateAnchorInSiblingGroups,
   cleanupLayoutListeners,
 } = useDesignLayout({
   t,
@@ -252,6 +272,8 @@ const {
   zoom,
   activeCardConfig,
   personById,
+  subLayoutReferences,
+  subLayoutCache,
   getProps: () => ({
     persons: props.persons,
     rootAncestors: props.rootAncestors,
@@ -269,6 +291,34 @@ const {
   commitDragSnapshot,
   centerOnOrigin,
   onSelectPerson: person => emit('select', person),
+});
+
+const allPersonsList = computed(() => {
+  return props.persons.map(p => ({
+    id: p.id,
+    name: `${p.given_name || 'N.N.'} ${p.surname || ''}`.trim(),
+  })).sort((a, b) => a.name.localeCompare(b.name));
+});
+
+const isCurrentPersonSubtreeLinked = computed(() => {
+  if (!selectedDesignPerson.value) return false;
+  return Boolean(subLayoutReferences.value[selectedDesignPerson.value.id]);
+});
+
+const linkedSubtreeLayoutName = computed(() => {
+  if (!selectedDesignPerson.value) return '';
+  return subLayoutReferences.value[selectedDesignPerson.value.id]?.layoutName || '';
+});
+
+const linkedSubtreeLayoutId = computed(() => {
+  if (!selectedDesignPerson.value) return '';
+  return subLayoutReferences.value[selectedDesignPerson.value.id]?.layoutId || '';
+});
+
+const targetLinkAnchorPersonName = computed(() => {
+  if (!targetLinkAnchorPersonId.value) return '';
+  const p = personById.value.get(targetLinkAnchorPersonId.value);
+  return p ? `${p.given_name || 'N.N.'} ${p.surname || ''}`.trim() : targetLinkAnchorPersonId.value;
 });
 
 let hasInitialized = false;
@@ -408,6 +458,20 @@ function handleDropBgFile(file: File) {
       :show-new-design-modal="showNewDesignModal"
       :new-design-proband-id="newDesignProbandId"
       :new-design-file-name="newDesignFileName"
+      :new-design-layout-type="newDesignLayoutType"
+      :new-design-anchor-person-id="newDesignAnchorPersonId"
+      :all-persons-list="allPersonsList"
+      :current-layout-type="currentLayoutType"
+      :current-layout-name="currentLayoutName"
+      :current-anchor-person-id="currentAnchorPersonId"
+      :show-link-subtree-modal="showLinkSubtreeModal"
+      :available-subtree-layouts="availableSubtreeLayouts"
+      :is-loading-subtree-layouts="isLoadingSubtreeLayouts"
+      :target-link-anchor-person-id="targetLinkAnchorPersonId"
+      :target-link-anchor-person-name="targetLinkAnchorPersonName"
+      :is-current-person-subtree-linked="isCurrentPersonSubtreeLinked"
+      :linked-subtree-layout-name="linkedSubtreeLayoutName"
+      :linked-subtree-layout-id="linkedSubtreeLayoutId"
       :has-unsaved-changes="hasUnsavedChanges"
       @select-proband="id => emit('select-proband', id)"
       @open-settings="emit('open-settings')"
@@ -415,6 +479,15 @@ function handleDropBgFile(file: File) {
       @expand-all="expandAllDescendants"
       @collapse-all="collapseAllToOrigin"
       @reset-layout="buildInitialDesignLayout"
+      @return-to-master="returnToMasterDesign"
+      @open-link-subtree-modal="id => openLinkSubtreeModal(id)"
+      @close-link-subtree-modal="closeLinkSubtreeModal"
+      @link-subtree="(anchorId, entry) => linkSubtreeToAnchor(anchorId, entry)"
+      @unlink-subtree="anchorId => unlinkSubtreeFromAnchor(anchorId)"
+      @open-subtree="layoutId => switchToSubtreeDesign(layoutId)"
+      @create-subtree-for-person="anchorId => { closeLinkSubtreeModal(); openNewDesignModal(anchorId, 'subtree'); }"
+      @update:new-design-layout-type="val => { newDesignLayoutType = val }"
+      @update:new-design-anchor-person-id="val => { newDesignAnchorPersonId = val }"
       @close-new-design-modal="closeNewDesignModal"
       @update:new-design-proband-id="id => onNewDesignProbandChange(id)"
       @update:new-design-file-name="name => { newDesignFileName = name }"
@@ -453,6 +526,9 @@ function handleDropBgFile(file: File) {
       :group-layouts="groupLayouts"
       :rendered-branch-widths="renderedBranchWidths"
       :edge-geometry="edgeGeometry"
+      :subtree-backgrounds="subtreeBackgrounds"
+      :current-layout-type="currentLayoutType"
+      :current-layout-name="currentLayoutName"
       :card-data-by-person-id="cardDataByPersonId"
       :active-card-config="activeCardConfig"
       :active-design-person-id="activeDesignPersonId"
@@ -508,6 +584,7 @@ function handleDropBgFile(file: File) {
       @create-new-design="openNewDesignModal"
       @open-load-modal="openLoadModal"
       @open-save-modal="openSaveModal"
+      @open-subtree="layoutId => switchToSubtreeDesign(layoutId)"
     />
   </div>
 </template>

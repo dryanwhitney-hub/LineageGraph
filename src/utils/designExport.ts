@@ -7,6 +7,8 @@
 import {
   type DesignCardConfig,
   type DesignBackgroundConfig,
+  type DesignLayoutType,
+  type SubLayoutReference,
   DEFAULT_CARD_CONFIG,
   computePersonCardNeededHeight,
   formatLocalizedDate,
@@ -42,6 +44,9 @@ export interface DesignPersistedState {
   probandName?: string;
   name: string;
   savedAt: string;
+  layoutType?: DesignLayoutType;
+  anchorPersonId?: string | null;
+  subLayoutReferences?: Record<string, SubLayoutReference>;
   totalLevels: number;
   levelHeights: Record<number, number>;
   siblingGroups: DesignExportSiblingGroup[];

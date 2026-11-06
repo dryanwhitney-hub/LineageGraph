@@ -132,6 +132,8 @@ pub struct DesignLayoutEntry {
     pub name: String,
     pub created_at: String,
     pub layout_data: String,
+    pub layout_type: Option<String>,
+    pub anchor_person_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -2233,13 +2235,16 @@ fn save_design_layout(
     created_at: String,
     layout_data: String,
     overwrite_id: Option<String>,
+    layout_type: Option<String>,
+    anchor_person_id: Option<String>,
 ) -> Result<DesignLayoutEntry, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let l_type = layout_type.unwrap_or_else(|| "master".to_string());
 
     if let Some(oid) = overwrite_id.filter(|s| !s.is_empty()) {
         conn.execute(
-            "UPDATE design_layouts SET name = ?1, created_at = ?2, layout_data = ?3 WHERE id = ?4",
-            [&name, &created_at, &layout_data, &oid],
+            "UPDATE design_layouts SET name = ?1, created_at = ?2, layout_data = ?3, layout_type = ?4, anchor_person_id = ?5 WHERE id = ?6",
+            rusqlite::params![name, created_at, layout_data, l_type, anchor_person_id, oid],
         )
         .map_err(|e| e.to_string())?;
         return Ok(DesignLayoutEntry {
@@ -2248,6 +2253,8 @@ fn save_design_layout(
             name,
             created_at,
             layout_data,
+            layout_type: Some(l_type),
+            anchor_person_id,
         });
     }
 
@@ -2261,8 +2268,8 @@ fn save_design_layout(
 
     if let Some(eid) = existing_id {
         conn.execute(
-            "UPDATE design_layouts SET created_at = ?1, layout_data = ?2 WHERE id = ?3",
-            [&created_at, &layout_data, &eid],
+            "UPDATE design_layouts SET created_at = ?1, layout_data = ?2, layout_type = ?3, anchor_person_id = ?4 WHERE id = ?5",
+            rusqlite::params![created_at, layout_data, l_type, anchor_person_id, eid],
         )
         .map_err(|e| e.to_string())?;
         return Ok(DesignLayoutEntry {
@@ -2271,13 +2278,15 @@ fn save_design_layout(
             name,
             created_at,
             layout_data,
+            layout_type: Some(l_type),
+            anchor_person_id,
         });
     }
 
     let id = uuid::Uuid::new_v4().to_string();
     conn.execute(
-        "INSERT INTO design_layouts (id, proband_id, name, created_at, layout_data) VALUES (?1, ?2, ?3, ?4, ?5)",
-        [&id, &proband_id, &name, &created_at, &layout_data],
+        "INSERT INTO design_layouts (id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![id, proband_id, name, created_at, layout_data, l_type, anchor_person_id],
     )
     .map_err(|e| e.to_string())?;
     Ok(DesignLayoutEntry {
@@ -2286,6 +2295,8 @@ fn save_design_layout(
         name,
         created_at,
         layout_data,
+        layout_type: Some(l_type),
+        anchor_person_id,
     })
 }
 
@@ -2296,6 +2307,8 @@ fn map_design_layout_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DesignLayout
         name: r.get(2)?,
         created_at: r.get(3)?,
         layout_data: r.get(4)?,
+        layout_type: r.get(5).ok(),
+        anchor_person_id: r.get(6).ok(),
     })
 }
 
@@ -2303,12 +2316,37 @@ fn map_design_layout_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<DesignLayout
 fn get_design_layouts(
     state: State<'_, AppState>,
     proband_id: Option<String>,
+    anchor_person_id: Option<String>,
+    layout_type: Option<String>,
 ) -> Result<Vec<DesignLayoutEntry>, String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
 
-    if let Some(pid) = proband_id.filter(|s| !s.is_empty()) {
+    if let Some(aid) = anchor_person_id.filter(|s| !s.is_empty()) {
         let mut stmt = conn
-            .prepare("SELECT id, proband_id, name, created_at, layout_data FROM design_layouts WHERE proband_id = ?1 ORDER BY created_at DESC")
+            .prepare("SELECT id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id FROM design_layouts WHERE anchor_person_id = ?1 ORDER BY created_at DESC")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([&aid], map_design_layout_row)
+            .map_err(|e| e.to_string())?;
+        return rows
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string());
+    }
+
+    if let Some(pid) = proband_id.filter(|s| !s.is_empty()) {
+        if let Some(lt) = layout_type.filter(|s| !s.is_empty()) {
+            let mut stmt = conn
+                .prepare("SELECT id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id FROM design_layouts WHERE proband_id = ?1 AND layout_type = ?2 ORDER BY created_at DESC")
+                .map_err(|e| e.to_string())?;
+            let rows = stmt
+                .query_map([&pid, &lt], map_design_layout_row)
+                .map_err(|e| e.to_string())?;
+            return rows
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| e.to_string());
+        }
+        let mut stmt = conn
+            .prepare("SELECT id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id FROM design_layouts WHERE proband_id = ?1 ORDER BY created_at DESC")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([&pid], map_design_layout_row)
@@ -2319,7 +2357,7 @@ fn get_design_layouts(
     }
 
     let mut stmt = conn
-        .prepare("SELECT id, proband_id, name, created_at, layout_data FROM design_layouts ORDER BY created_at DESC")
+        .prepare("SELECT id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id FROM design_layouts ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], map_design_layout_row)
@@ -3764,5 +3802,46 @@ mod tests {
         let path = resolve_user_guide_path();
         // Im Arbeitsverzeichnis des Projekts existiert USER_GUIDE.md
         assert!(path.is_some() || true);
+    }
+
+    #[test]
+    fn test_save_and_get_design_layouts_with_subtrees() {
+        let conn = db::init_in_memory_database().unwrap();
+
+        // 1. Insert Master Layout
+        conn.execute(
+            "INSERT INTO design_layouts (id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id)
+             VALUES ('L1', 'P1', 'Master Layout', '2026-11-06T12:00:00Z', '{}', 'master', NULL)",
+            [],
+        ).unwrap();
+
+        // 2. Insert Subtree Layout for Anchor C1
+        conn.execute(
+            "INSERT INTO design_layouts (id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id)
+             VALUES ('L2', 'P1', 'Zweig C1', '2026-11-06T12:10:00Z', '{}', 'subtree', 'C1')",
+            [],
+        ).unwrap();
+
+        // Query Master Layouts
+        let mut stmt = conn.prepare(
+            "SELECT id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id 
+             FROM design_layouts WHERE layout_type = 'master'"
+        ).unwrap();
+        let masters: Vec<DesignLayoutEntry> = stmt.query_map([], |row| map_design_layout_row(row)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(masters.len(), 1);
+        assert_eq!(masters[0].id, "L1");
+        assert_eq!(masters[0].layout_type.as_deref(), Some("master"));
+        assert_eq!(masters[0].anchor_person_id, None);
+
+        // Query Subtree Layouts for Anchor C1
+        let mut stmt2 = conn.prepare(
+            "SELECT id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id 
+             FROM design_layouts WHERE layout_type = 'subtree' AND anchor_person_id = 'C1'"
+        ).unwrap();
+        let subtrees: Vec<DesignLayoutEntry> = stmt2.query_map([], |row| map_design_layout_row(row)).unwrap().map(|r| r.unwrap()).collect();
+        assert_eq!(subtrees.len(), 1);
+        assert_eq!(subtrees[0].id, "L2");
+        assert_eq!(subtrees[0].layout_type.as_deref(), Some("subtree"));
+        assert_eq!(subtrees[0].anchor_person_id.as_deref(), Some("C1"));
     }
 }

@@ -53,6 +53,7 @@ graph TD
     CAT_DSG --> REQ_DSG_003["REQ-DSG-003: Customizing von Personenkarten"]:::req
     CAT_DSG --> REQ_DSG_004["REQ-DSG-004: Hintergrundgestaltung & Bild-Persistenz"]:::req
     CAT_DSG --> REQ_DSG_005["REQ-DSG-005: Layout-Historie & Undo/Redo"]:::req
+    CAT_DSG --> REQ_DSG_006["REQ-DSG-006: Hierarchische Stamm-/Zweig-Layouts"]:::req
 
     CAT_IMP --> REQ_IMP_001["REQ-IMP-001: Atomarer GEDCOM-Vollimport"]:::req
     CAT_IMP --> REQ_IMP_002["REQ-IMP-002: GEDCOM-Staging & Matching"]:::req
@@ -297,6 +298,19 @@ graph TD
   5. Exportieren des aktuellen Zustands oder gespeicherter Einträge als eigenständige `.json`-Datei (`save_design_file`).
   6. Undo/Redo-Stack für Verschiebungen, Einklappungen und Stilanpassungen.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-005---req-dsg-005)
+
+#### REQ-DSG-006: Hierarchische Stamm- und Zweig-Layouts (Subtree Composition)
+- **Titel & Kurzbeschreibung:** Modulares, getrenntes Gestalten und Speichern von Nachkommenzweigen (Teilstämmen) sowie dynamische, schreibgeschützte Einbettung inklusive lokaler Hintergrundbilder im übergeordneten Master-Stammbaum.
+- **Fachlicher Zweck / Business Value:** Ermöglicht die dezentrale oder schrittweise Bearbeitung großer Stammbäume, indem komplexe Familienzweige isoliert entworfen und im Gesamtbaum konsistent wiederverwendet werden können, ohne das Master-Layout zu überfrachten.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. **Zweig-Layouts (Subtree):** Ein Teilstamm zu einem beliebigen Nachkommen kann als eigenständiges Subtree-Design (`layout_type = 'subtree'`) mit eigenem Wurzelanker (`anchor_person_id`), individuellem Layout und lokalem Hintergrundbild/Wappen separat gespeichert und verwaltet werden.
+  2. **Verknüpfung im Master-Layout:** Im übergeordneten Master-Layout kann einer Person mit Nachkommen ein gespeichertes Zweig-Layout zugeordnet oder direkt ein neuer Zweig für diese Person angelegt werden.
+  3. **Dynamische Einbettung:** Anstelle der standardmäßigen Master-Gruppierung der Nachkommen wird das Teilstamm-Layout an der relativen Canvas-Position des Ankerknotens dynamisch eingehängt (`visibleGroupAndMemberMap`), wobei die Canvas-Höhe und Level-Bänder automatisch skaliert werden.
+  4. **Lokale Wappen/Hintergründe:** Etwaige im Teilstamm hinterlegte Hintergrundbilder werden mit relativer Skalierung, Transparenz und berechnetem Offset am Zweiganker auf der Canvas gerendert.
+  5. **Schreibschutz im Master (Isolation):** Eingebettete Zweig-Karten und Gruppen sind im Master-Layout schreibgeschützt (kein Verschieben, Einklappen, Trennen oder Andocken; visuelle Kennzeichnung mit Schloss-Symbol und dezentem Rahmen).
+  6. **Nahtlose Navigation & Bearbeitung:** Aus dem Master-Layout heraus kann per Klick auf „Zweig bearbeiten“ direkt in das Subtree-Design gewechselt werden (unter automatischem Backup des Master-Zustands), und über „Zurück zum Master“ wird ohne Datenverlust zurückgekehrt.
+  7. **Automatische Isolierung & Verdrängung (Outward Push):** Sobald zu einem Stammeintrag ein Zweig definiert ist, wird die Person automatisch aus einer bestehenden Geschwistergruppe in eine eigenständige Gruppe isoliert. Eingebettete Zweige ermitteln ihre horizontalen Grenzen über alle belegten Generationsebenen und schieben links und rechts liegende Einträge im Master automatisch nach außen, sodass keine Überlappungen mit Nachbarzweigen entstehen.
+- **Technische Spezifikation:** Siehe [SPEC-DSG-006 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-006---req-dsg-006)
 
 ---
 

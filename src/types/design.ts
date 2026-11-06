@@ -51,6 +51,35 @@ export interface DesignBackgroundConfig {
   fileName?: string;
 }
 
+export type DesignLayoutType = 'master' | 'subtree';
+
+export interface SubLayoutReference {
+  layoutId: string;
+  layoutName: string;
+  anchorPersonId: string;
+  inheritCardConfig?: boolean;
+}
+
+export interface SubtreeBoundingBox {
+  anchorPersonId: string;
+  layoutId: string;
+  layoutName: string;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}
+
+export interface SubtreeBackground {
+  anchorPersonId: string;
+  layoutId: string;
+  layoutName: string;
+  imageData: string;
+  config: DesignBackgroundConfig;
+  originX: number;
+  originY: number;
+}
+
 export const DEFAULT_BACKGROUND_CONFIG: DesignBackgroundConfig = {
   visible: true,
   scale: 100,

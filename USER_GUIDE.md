@@ -32,10 +32,11 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
     - [2.3.5 Sprache umschalten (Deutsch / Englisch)](#235-sprache-umschalten-deutsch--englisch)
   - [2.4 Stammbaum Design Studio](#24-stammbaum-design-studio)
     - [2.4.1 Der Design-Modus & das hierarchische Schaubild](#241-der-design-modus--das-hierarchische-schaubild)
-    - [2.4.2 Geschwistergruppen, Ebenen und Leitungsbrücken](#242-geschwistergruppen-ebenen-und-leitungsbrücken)
+    - [2.4.2 Geschwistergruppen, Track-Routing und Leitungsbrücken](#242-geschwistergruppen-track-routing-und-leitungsbrücken)
     - [2.4.3 Individuelle Kachel- und Zeilengestaltung](#243-individuelle-kachel--und-zeilengestaltung)
     - [2.4.4 Hintergrundbilder & Familienwappen einbinden](#244-hintergrundbilder--familienwappen-einbinden)
-    - [2.4.5 Design-Zustände speichern, laden und teilen](#245-design-zustände-speichern-laden-und-teilen)
+    - [2.4.5 Design-Zustände anlegen, öffnen, speichern und teilen](#245-design-zustände-anlegen-öffnen-speichern-und-teilen)
+    - [2.4.6 Hierarchische Stamm- und Zweig-Layouts (Zweig-Designs)](#246-hierarchische-stamm--und-zweig-layouts-zweig-designs)
   - [2.5 GEDCOM-Import & 3-Wege-Datenabgleich](#25-gedcom-import--3-wege-datenabgleich)
     - [2.5.1 GEDCOM-Dateien importieren: Neues Projekt vs. Ersetzen](#251-gedcom-dateien-importieren-neues-projekt-vs-ersetzen)
     - [2.5.2 Der intelligente Abgleich-Assistent (Staging & Erkennung)](#252-der-intelligente-abgleich-assistent-staging--erkennung)
@@ -483,6 +484,37 @@ Sie können neue Design-Entwürfe für jeden beliebigen Stammahnen anlegen, best
 
 #### Was ist das Ergebnis?
 Ihre manuelle Layoutarbeit ist flexibel organisiert, Sie können jeden Stammahn unabhängig gestalten, sind vor versehentlichem Überschreiben geschützt und können Entwürfe jederzeit austauschen oder archivieren.
+
+---
+
+### 2.4.6 Hierarchische Stamm- und Zweig-Layouts (Zweig-Designs)
+
+#### Was macht die Funktion?
+Ermöglicht das modulare, getrennte Gestalten und Speichern von Nachkommenzweigen (Teilstämmen) eines Stammbaums. Der Zweig zu einem beliebigen Nachkommen kann unabhängig als eigenes Zweig-Design entworfen werden – inklusive eigenem Kartenlayout, individuellen Abständen und lokalem Wappen- oder Hintergrundbild. Im übergeordneten Master-Stammbaum kann dieser Zweig anschließend für den betreffenden Eintrag ausgewählt und dynamisch geladen werden.
+
+Dabei sorgt das System für eine vollautomatische, kollisionsfreie Einbettung:
+* **Automatische Isolierung des Stammeintrags:** Der Eintrag, zu dem ein Zweig definiert ist, wird automatisch aus einer gemeinsamen Geschwistergruppe herausgelöst und als eigenständige Gruppe platziert.
+* **Verdrängung nach außen (Outward Push):** Das System ermittelt die Gesamtbreite des verknüpften Zweiges über alle Generationsebenen. Links und rechts benachbarte Einträge und Familienzweige im Master werden automatisch nach außen geschoben, sodass keinerlei Überlappungen mit Nachbarzweigen entstehen und die relative Ausrichtung der Nachbarfamilien erhalten bleibt.
+* **Schreibschutz:** Der eingebettete Zweig ist im Master-Layout schreibgeschützt, um versehentliche Verschiebungen zu verhindern.
+
+#### Wie bediene ich sie?
+1. **Zweig verknüpfen:**
+   - Wählen Sie im Master-Layout eine Person aus, die eigene Nachkommen besitzt.
+   - In der linken Werkzeugleiste erscheint im Bereich *„🌿 Hierarchische Zweige“* die Schaltfläche **„🌿 Zweig verknüpfen...“**.
+   - Im Dialogfenster können Sie entweder ein bereits für diese Person gestaltetes Zweig-Layout auswählen oder direkt über *„🌱 Neuen Zweig für diese Person erstellen“* einen neuen Entwurf anlegen.
+   - Nach der Auswahl wird der Zweig sofort dynamisch geladen und an die Person angehängt.
+2. **Neues Zweig-Design direkt anlegen:**
+   - Alternativ klicken Sie unten rechts auf das runde Kreissymbol **📄** (*„Neues Design“*).
+   - Wählen Sie im Dialog die Option **„Zweig-Design (Teilstamm)“** und bestimmen Sie die gewünschte Ausgangsperson (den Zweig-Anker).
+3. **Zweig bearbeiten & zurückkehren:**
+   - Möchten Sie einen verknüpften Zweig modifizieren, klicken Sie in der Werkzeugleiste oder direkt an der gesperrten Gruppe auf **„🌱 Zweig bearbeiten“**.
+   - Die Ansicht wechselt isoliert in das Design des Teilstamms. Eine grüne Infoleiste am oberen Rand erinnert Sie daran, dass Sie sich im Zweig-Modus befinden.
+   - Über die Schaltfläche **„⬅️ Zurück zum Master-Stammbaum“** kehren Sie jederzeit zurück – Ihr Master-Layout aktualisiert den Zweig automatisch.
+4. **Verknüpfung lösen:**
+   - Klicken Sie bei der Anker-Person auf **„🔓 Verknüpfung lösen“**. Die Nachkommen werden wieder im standardmäßigen Master-Layout dargestellt.
+
+#### Was ist das Ergebnis?
+Komplexe und weit verzweigte Stammbäume lassen sich übersichtlich in handhabbare Teilstämme zerlegen und unabhängig pflegen. Im Master-Stammbaum ist der Zweig optisch durch ein Zweig-Symbol (**🌿**) an der Personenkarte, ein Vorhängeschloss (**🔒**) an den Gruppen und eine dezente grüne Umrandung gekennzeichnet. Lokale Hintergrundbilder und Wappen des Teilstamms werden maßstabsgetreu und harmonisch an der Position des Zweigs eingeblendet.
 
 ---
 

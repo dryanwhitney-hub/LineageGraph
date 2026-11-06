@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { DesignBackgroundConfig } from '../../types/design';
+import type { DesignBackgroundConfig, DesignLayoutType } from '../../types/design';
 import type { DesignLayoutEntry } from '../../composables/useDesignHistory';
 import {
   LEVEL_SIDEBAR_W,
@@ -50,6 +50,21 @@ const props = defineProps<{
   savedLayoutsList: DesignLayoutEntry[];
   formatDateStr: (iso: string) => string;
   setDesignFileInputRef: (el: HTMLInputElement | null) => void;
+  // Subtree Layout Props
+  currentLayoutType?: DesignLayoutType;
+  currentLayoutName?: string;
+  currentAnchorPersonId?: string | null;
+  showLinkSubtreeModal?: boolean;
+  availableSubtreeLayouts?: DesignLayoutEntry[];
+  isLoadingSubtreeLayouts?: boolean;
+  targetLinkAnchorPersonId?: string;
+  targetLinkAnchorPersonName?: string;
+  newDesignLayoutType?: DesignLayoutType;
+  newDesignAnchorPersonId?: string;
+  allPersonsList?: { id: string; name: string }[];
+  isCurrentPersonSubtreeLinked?: boolean;
+  linkedSubtreeLayoutName?: string;
+  linkedSubtreeLayoutId?: string;
   // New Design Modal props
   showNewDesignModal?: boolean;
   newDesignProbandId?: string;
@@ -64,6 +79,15 @@ const emit = defineEmits<{
   (e: 'expand-all'): void;
   (e: 'collapse-all'): void;
   (e: 'reset-layout'): void;
+  (e: 'return-to-master'): void;
+  (e: 'open-link-subtree-modal', personId: string): void;
+  (e: 'close-link-subtree-modal'): void;
+  (e: 'link-subtree', anchorPersonId: string, entry: DesignLayoutEntry): void;
+  (e: 'unlink-subtree', anchorPersonId: string): void;
+  (e: 'open-subtree', layoutId: string): void;
+  (e: 'create-subtree-for-person', personId: string): void;
+  (e: 'update:newDesignLayoutType', type: DesignLayoutType): void;
+  (e: 'update:newDesignAnchorPersonId', id: string): void;
   (e: 'close-new-design-modal'): void;
   (e: 'update:newDesignProbandId', id: string): void;
   (e: 'update:newDesignFileName', name: string): void;
@@ -251,6 +275,15 @@ defineExpose({
 
     <div class="design-toolbar" @mousedown.stop>
       <div class="design-toolbar-left">
+        <!-- Subtree-Modus Banner mit Rückkehr-Button -->
+        <div v-if="currentLayoutType === 'subtree'" class="subtree-banner-badge">
+          <span class="badge-icon">🌿</span>
+          <span class="badge-title">{{ t('design_subtree_mode_title') }}: <strong>{{ currentLayoutName }}</strong></span>
+          <button class="btn-design-tool btn-return-master" @click="emit('return-to-master')">
+            ⬅️ {{ t('design_return_to_master_btn') }}
+          </button>
+        </div>
+
         <!-- Undo-Button zum Zurücksetzen der letzten Aktionen -->
         <button
           class="btn-design-tool btn-undo"
@@ -282,6 +315,34 @@ defineExpose({
             <span v-if="bgImageData" class="bg-indicator-dot" :class="{ 'is-hidden': !bgConfig.visible }"></span>
           </button>
         </div>
+
+        <!-- Hierarchisches Zweig-Design verknüpfen / bearbeiten / lösen -->
+        <template v-if="selectedDesignPerson && hasSelectedDescendants">
+          <button
+            v-if="isCurrentPersonSubtreeLinked && linkedSubtreeLayoutId"
+            class="btn-design-tool btn-edit-subtree"
+            :title="t('design_edit_subtree_tooltip')"
+            @click="emit('open-subtree', linkedSubtreeLayoutId)"
+          >
+            🌱 {{ t('design_edit_subtree_btn') }} ({{ linkedSubtreeLayoutName || 'Zweig' }})
+          </button>
+          <button
+            v-if="isCurrentPersonSubtreeLinked"
+            class="btn-design-tool btn-unlink-subtree"
+            :title="t('design_unlink_subtree_btn')"
+            @click="emit('unlink-subtree', selectedDesignPerson.id)"
+          >
+            🔓 {{ t('design_unlink_subtree_btn') }}
+          </button>
+          <button
+            v-else-if="currentLayoutType !== 'subtree'"
+            class="btn-design-tool btn-link-subtree"
+            :title="t('design_link_subtree_btn')"
+            @click="emit('open-link-subtree-modal', selectedDesignPerson.id)"
+          >
+            🌿 {{ t('design_link_subtree_btn') }}
+          </button>
+        </template>
 
         <!-- Button zum Gruppieren aller Nachkommeneinträge des gewählten Eintrags je Ebene -->
         <button
@@ -661,7 +722,11 @@ defineExpose({
                 class="design-preset-row"
               >
                 <div class="preset-info">
-                  <div class="preset-name">{{ entry.name }}</div>
+                  <div class="preset-name">
+                    {{ entry.name }}
+                    <span v-if="entry.layout_type === 'subtree'" class="preset-type-badge subtree">🌿 {{ t('design_preset_type_subtree') }}</span>
+                    <span v-else class="preset-type-badge master">🌳 {{ t('design_preset_type_master') }}</span>
+                  </div>
                   <div class="preset-meta">
                     <span>🕒 {{ formatDateStr(entry.created_at) }}</span>
                   </div>
@@ -723,7 +788,7 @@ defineExpose({
     <!-- Neues Design Modal (mit Stammahn-Auswahl) -->
     <div
       v-if="showNewDesignModal"
-      class="design-modal-backdrop"
+      class="design-modal-backdrop new-design-backdrop"
       @click="emit('close-new-design-modal')"
       @mousedown.stop
     >
@@ -741,8 +806,32 @@ defineExpose({
             {{ t('design_new_modal_intro') }}
           </p>
 
-          <!-- Stammahn Auswahl -->
-          <div class="design-form-group">
+          <!-- Auswahl: Master vs. Zweig-Design -->
+          <div class="new-design-type-selector">
+            <label class="new-design-radio">
+              <input
+                type="radio"
+                name="new-design-type"
+                value="master"
+                :checked="newDesignLayoutType === 'master'"
+                @change="emit('update:newDesignLayoutType', 'master')"
+              />
+              <span>🌳 {{ t('design_new_modal_type_master') }}</span>
+            </label>
+            <label class="new-design-radio">
+              <input
+                type="radio"
+                name="new-design-type"
+                value="subtree"
+                :checked="newDesignLayoutType === 'subtree'"
+                @change="emit('update:newDesignLayoutType', 'subtree')"
+              />
+              <span>🌿 {{ t('design_new_modal_type_subtree') }}</span>
+            </label>
+          </div>
+
+          <!-- Stammahn Auswahl (wenn Master) -->
+          <div v-if="newDesignLayoutType !== 'subtree'" class="design-form-group">
             <label class="design-form-label">{{ t('design_new_modal_proband_label') }}</label>
             <select
               :value="newDesignProbandId"
@@ -759,6 +848,28 @@ defineExpose({
             </select>
             <span class="design-input-hint">
               {{ t('design_new_modal_proband_hint') }}
+            </span>
+          </div>
+
+          <!-- Wurzelperson des Zweigs (wenn Zweig-Design) -->
+          <div v-else class="design-form-group">
+            <label class="design-form-label">{{ t('design_new_modal_anchor_label') }}</label>
+            <select
+              :value="newDesignAnchorPersonId"
+              class="design-modal-select"
+              @change="emit('update:newDesignAnchorPersonId', ($event.target as HTMLSelectElement).value)"
+            >
+              <option value="" disabled>– {{ t('select') || 'Bitte wählen' }} –</option>
+              <option
+                v-for="p in allPersonsList"
+                :key="'nd-anchor-' + p.id"
+                :value="p.id"
+              >
+                {{ p.name }} ({{ p.id }})
+              </option>
+            </select>
+            <span class="design-input-hint">
+              {{ t('design_new_modal_anchor_hint') }}
             </span>
           </div>
 
@@ -789,12 +900,93 @@ defineExpose({
         <div class="design-modal-footer">
           <button
             class="d-modal-btn d-modal-btn-primary"
-            :disabled="!newDesignFileName?.trim() || !newDesignProbandId"
+            :disabled="!newDesignFileName?.trim() || (newDesignLayoutType === 'subtree' ? !newDesignAnchorPersonId : !newDesignProbandId)"
             @click="emit('confirm-create-new-design')"
           >
             {{ t('design_new_modal_submit_btn') }}
           </button>
           <button class="d-modal-btn d-modal-btn-cancel" @click="emit('close-new-design-modal')">
+            {{ t('cancel') || 'Abbrechen' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: Zweig-Design verknüpfen -->
+    <div
+      v-if="showLinkSubtreeModal"
+      class="design-modal-backdrop link-subtree-backdrop"
+      @click="emit('close-link-subtree-modal')"
+      @mousedown.stop
+    >
+      <div class="design-modal-window" @click.stop>
+        <div class="design-modal-header">
+          <div class="design-modal-title">
+            <span class="design-modal-icon">🌿</span>
+            <h3>{{ t('design_link_modal_title') }}</h3>
+          </div>
+          <button class="design-modal-close-btn" @click="emit('close-link-subtree-modal')">✕</button>
+        </div>
+
+        <div class="design-modal-body">
+          <p class="design-modal-intro">
+            {{ t('design_link_modal_intro') }}
+          </p>
+
+          <div class="design-modal-proband-banner">
+            <span class="proband-label">{{ t('person') || 'Person' }}:</span>
+            <strong>{{ targetLinkAnchorPersonName || targetLinkAnchorPersonId }}</strong>
+          </div>
+
+          <!-- Verfügbare Zweig-Designs -->
+          <div class="design-presets-container">
+            <div v-if="isLoadingSubtreeLayouts" class="design-presets-loading">
+              Lade Zweig-Designs...
+            </div>
+            <div v-else-if="!availableSubtreeLayouts || availableSubtreeLayouts.length === 0" class="design-empty-presets">
+              <p>{{ t('design_no_subtree_layouts') }}</p>
+              <button
+                class="d-modal-btn d-modal-btn-primary"
+                style="margin-top: 10px;"
+                @click="emit('create-subtree-for-person', targetLinkAnchorPersonId || '')"
+              >
+                ➕ {{ t('design_create_subtree_btn') }}
+              </button>
+            </div>
+            <div v-else class="design-presets-list">
+              <div
+                v-for="entry in availableSubtreeLayouts"
+                :key="entry.id"
+                class="design-preset-row"
+              >
+                <div class="preset-info">
+                  <div class="preset-name">{{ entry.name }}</div>
+                  <div class="preset-meta">
+                    <span>🕒 {{ formatDateStr(entry.created_at) }}</span>
+                  </div>
+                </div>
+                <div class="preset-actions">
+                  <button
+                    class="d-preset-btn btn-apply"
+                    @click="emit('link-subtree', targetLinkAnchorPersonId || '', entry)"
+                  >
+                    🔗 Verknüpfen
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="design-modal-footer">
+          <button
+            v-if="availableSubtreeLayouts && availableSubtreeLayouts.length > 0"
+            class="d-modal-btn d-modal-btn-secondary"
+            @click="emit('create-subtree-for-person', targetLinkAnchorPersonId || '')"
+          >
+            ➕ {{ t('design_create_subtree_btn') }}
+          </button>
+          <button class="d-modal-btn d-modal-btn-cancel" @click="emit('close-link-subtree-modal')">
             {{ t('cancel') || 'Abbrechen' }}
           </button>
         </div>
@@ -1304,6 +1496,12 @@ defineExpose({
   padding: 20px;
   box-sizing: border-box;
 }
+.design-modal-backdrop.link-subtree-backdrop {
+  z-index: 105;
+}
+.design-modal-backdrop.new-design-backdrop {
+  z-index: 120;
+}
 .design-modal-window {
   background: #ffffff;
   border-radius: 12px;
@@ -1743,5 +1941,93 @@ defineExpose({
   font-size: 0.8rem;
   margin: 0;
   line-height: 1.4;
+}
+
+.subtree-banner-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+.subtree-banner-badge .badge-icon {
+  font-size: 0.95rem;
+}
+.subtree-banner-badge .badge-title {
+  font-size: 0.8rem;
+  color: #065f46;
+}
+.btn-return-master {
+  background: #10b981 !important;
+  color: #ffffff !important;
+  font-weight: 700;
+  border: 1px solid #059669 !important;
+}
+.btn-return-master:hover {
+  background: #059669 !important;
+}
+.btn-link-subtree {
+  background: #f0fdf4 !important;
+  color: #166534 !important;
+  border-color: #86efac !important;
+}
+.btn-link-subtree:hover {
+  background: #16a34a !important;
+  color: #ffffff !important;
+}
+.btn-edit-subtree {
+  background: #ecfdf5 !important;
+  color: #065f46 !important;
+  border-color: #6ee7b7 !important;
+}
+.btn-edit-subtree:hover {
+  background: #059669 !important;
+  color: #ffffff !important;
+}
+.btn-unlink-subtree {
+  background: #fff7ed !important;
+  color: #9a3412 !important;
+  border-color: #fed7aa !important;
+}
+.btn-unlink-subtree:hover {
+  background: #ea580c !important;
+  color: #ffffff !important;
+}
+.new-design-type-selector {
+  display: flex;
+  gap: 16px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  margin-bottom: 12px;
+}
+.new-design-radio {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+}
+.preset-type-badge {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 4px;
+  margin-left: 6px;
+  display: inline-block;
+  vertical-align: middle;
+}
+.preset-type-badge.subtree {
+  background: #d1fae5;
+  color: #065f46;
+}
+.preset-type-badge.master {
+  background: #dbeafe;
+  color: #1e40af;
 }
 </style>

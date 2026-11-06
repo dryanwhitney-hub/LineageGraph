@@ -5,6 +5,8 @@ import {
   DEFAULT_BACKGROUND_CONFIG,
   type DesignCardConfig,
   type DesignBackgroundConfig,
+  type DesignLayoutType,
+  type SubLayoutReference,
 } from '../types/design';
 import type { RootAncestorConfig } from './useDesignLayout';
 
@@ -16,6 +18,10 @@ export interface DesignSiblingGroup {
   x: number; // Horizontale Mittelposition auf dem Canvas
   memberIds: string[];
   isUngrouped?: boolean; // true wenn Geschwistergruppe in Einzeleinträge aufgelöst wurde
+  isReadOnly?: boolean;
+  subtreeAnchorId?: string;
+  subtreeLayoutName?: string;
+  subtreeLayoutId?: string;
 }
 
 export interface BranchWidthConstraint {
@@ -30,6 +36,7 @@ export interface HistorySnapshot {
   levelHeights: Record<number, number>;
   branchWidths: { personId: string; minX: number; maxX: number }[];
   expandedParentIds: string[];
+  subLayoutReferences?: Record<string, SubLayoutReference>;
 }
 
 export interface DesignPersistedState {
@@ -38,6 +45,9 @@ export interface DesignPersistedState {
   probandName?: string;
   name: string;
   savedAt: string;
+  layoutType?: DesignLayoutType;
+  anchorPersonId?: string | null;
+  subLayoutReferences?: Record<string, SubLayoutReference>;
   totalLevels: number;
   levelHeights: Record<number, number>;
   siblingGroups: DesignSiblingGroup[];
@@ -61,6 +71,8 @@ export interface DesignLayoutEntry {
   name: string;
   created_at: string;
   layout_data: string;
+  layout_type?: string | null;
+  anchor_person_id?: string | null;
 }
 
 export interface UseDesignHistoryOptions<TPerson extends { given_name: string | null; surname: string | null }> {
@@ -87,7 +99,7 @@ export interface UseDesignHistoryOptions<TPerson extends { given_name: string | 
     bridgeRadius?: number;
     minimizeBridges?: boolean;
   };
-  onBuildInitialDesignLayout: () => void;
+  onBuildInitialDesignLayout: (overrideRootId?: string) => void;
   onCenterOnOrigin: () => void;
   onSelectProband: (probandId: string) => void;
   onUpdateCardConfig: (cfg: DesignCardConfig) => void;
@@ -105,6 +117,7 @@ export interface UseDesignHistoryOptions<TPerson extends { given_name: string | 
     config: DesignBackgroundConfig
   ) => void;
   deleteProbandBg: (probandId: string | null | undefined) => void;
+  onIsolateSubtreeAnchor?: (anchorPersonId: string) => void;
 }
 
 export function useDesignHistory<
@@ -154,6 +167,7 @@ export function useDesignHistory<
       levelHeights: { ...levelHeights.value },
       branchWidths: bws,
       expandedParentIds: Array.from(expandedParentIds.value),
+      subLayoutReferences: JSON.parse(JSON.stringify(subLayoutReferences.value)),
     };
   }
 
@@ -167,6 +181,7 @@ export function useDesignHistory<
     });
     branchWidths.value = bwMap;
     expandedParentIds.value = new Set(snap.expandedParentIds);
+    subLayoutReferences.value = snap.subLayoutReferences ? JSON.parse(JSON.stringify(snap.subLayoutReferences)) : {};
     activeDesignPersonId.value = '';
   }
 
@@ -258,7 +273,21 @@ export function useDesignHistory<
   const isApplyingLoadedState = ref(false);
   let isCheckingLayout = false;
 
+  // Hierarchische Stamm- und Zweig-Layouts
+  const currentLayoutType = ref<DesignLayoutType>('master');
+  const currentAnchorPersonId = ref<string | null>(null);
+  const subLayoutReferences = ref<Record<string, SubLayoutReference>>({});
+  const subLayoutCache = ref<Map<string, DesignPersistedState>>(new Map());
+  const masterLayoutBackup = ref<DesignPersistedState | null>(null);
+
+  const showLinkSubtreeModal = ref(false);
+  const targetLinkAnchorPersonId = ref('');
+  const availableSubtreeLayouts = ref<DesignLayoutEntry[]>([]);
+  const isLoadingSubtreeLayouts = ref(false);
+
   const showNewDesignModal = ref(false);
+  const newDesignLayoutType = ref<DesignLayoutType>('master');
+  const newDesignAnchorPersonId = ref('');
   const newDesignProbandId = ref('');
   const newDesignFileName = ref('');
   const skipAutoLoadOnce = ref(false);
@@ -315,6 +344,9 @@ export function useDesignHistory<
       probandName: activeProbandName.value,
       name: name.trim() || 'Design',
       savedAt: new Date().toISOString(),
+      layoutType: currentLayoutType.value,
+      anchorPersonId: currentLayoutType.value === 'subtree' ? currentAnchorPersonId.value : null,
+      subLayoutReferences: { ...subLayoutReferences.value },
       totalLevels: totalLevels.value,
       levelHeights: { ...levelHeights.value },
       siblingGroups: JSON.parse(JSON.stringify(siblingGroups.value)),
@@ -485,11 +517,16 @@ export function useDesignHistory<
         createdAt: new Date().toISOString(),
         layoutData: jsonStr,
         overwriteId,
+        layoutType: currentLayoutType.value,
+        anchorPersonId: currentLayoutType.value === 'subtree' ? currentAnchorPersonId.value : null,
       });
       if (savedEntry) {
         currentLayoutId.value = savedEntry.id;
         selectedOverwriteId.value = savedEntry.id;
         localStorage.setItem('stammbaum_last_design_layout_id', savedEntry.id);
+        if (currentLayoutType.value === 'subtree') {
+          subLayoutCache.value.set(savedEntry.id, stateObj);
+        }
       }
       currentLayoutName.value = name;
       saveMode.value = 'overwrite';
@@ -556,11 +593,16 @@ export function useDesignHistory<
           createdAt: new Date().toISOString(),
           layoutData: jsonStr,
           overwriteId,
+          layoutType: currentLayoutType.value,
+          anchorPersonId: currentLayoutType.value === 'subtree' ? currentAnchorPersonId.value : null,
         });
         if (savedEntry) {
           currentLayoutId.value = savedEntry.id;
           selectedOverwriteId.value = savedEntry.id;
           localStorage.setItem('stammbaum_last_design_layout_id', savedEntry.id);
+          if (currentLayoutType.value === 'subtree') {
+            subLayoutCache.value.set(savedEntry.id, stateObj);
+          }
         }
         currentLayoutName.value = name;
         saveMode.value = 'overwrite';
@@ -609,7 +651,35 @@ export function useDesignHistory<
     }
   }
 
+  async function loadReferencedSubLayouts() {
+    const refs = Object.values(subLayoutReferences.value);
+    if (refs.length === 0) return;
+    try {
+      const allLayouts = await invoke<DesignLayoutEntry[]>('get_design_layouts', {});
+      const layoutMap = new Map<string, DesignLayoutEntry>();
+      allLayouts.forEach(l => layoutMap.set(l.id, l));
+      refs.forEach(r => {
+        const found = layoutMap.get(r.layoutId);
+        if (found) {
+          try {
+            const parsed = JSON.parse(found.layout_data) as DesignPersistedState;
+            subLayoutCache.value.set(r.layoutId, parsed);
+          } catch (e) {
+            console.error('Error parsing sub-layout data', e);
+          }
+        }
+      });
+    } catch (err) {
+      console.error('Failed to load referenced sub-layouts', err);
+    }
+  }
+
   function applyLoadedState(state: DesignPersistedState) {
+    currentLayoutType.value = state.layoutType || 'master';
+    currentAnchorPersonId.value = state.anchorPersonId || null;
+    subLayoutReferences.value = state.subLayoutReferences ? { ...state.subLayoutReferences } : {};
+    loadReferencedSubLayouts();
+
     if (state.totalLevels && state.totalLevels > 0) {
       totalLevels.value = state.totalLevels;
     }
@@ -618,6 +688,11 @@ export function useDesignHistory<
     }
     if (state.siblingGroups && Array.isArray(state.siblingGroups)) {
       siblingGroups.value = JSON.parse(JSON.stringify(state.siblingGroups));
+    }
+    if (state.subLayoutReferences && options.onIsolateSubtreeAnchor) {
+      Object.keys(state.subLayoutReferences).forEach(anchorId => {
+        options.onIsolateSubtreeAnchor?.(anchorId);
+      });
     }
     if (state.branchWidths && Array.isArray(state.branchWidths)) {
       const bwMap = new Map<string, BranchWidthConstraint>();
@@ -667,6 +742,8 @@ export function useDesignHistory<
   function loadStateFromEntry(entry: DesignLayoutEntry) {
     try {
       const parsed = JSON.parse(entry.layout_data) as DesignPersistedState;
+      currentLayoutType.value = (entry.layout_type as DesignLayoutType) || parsed.layoutType || 'master';
+      currentAnchorPersonId.value = entry.anchor_person_id || parsed.anchorPersonId || null;
       applyLoadedState(parsed);
       currentLayoutId.value = entry.id;
       currentLayoutName.value = entry.name;
@@ -719,11 +796,98 @@ export function useDesignHistory<
     }
   }
 
-  function openNewDesignModal() {
+  async function openLinkSubtreeModal(personId: string) {
+    targetLinkAnchorPersonId.value = personId;
+    showLinkSubtreeModal.value = true;
+    isLoadingSubtreeLayouts.value = true;
+    try {
+      const all = await invoke<DesignLayoutEntry[]>('get_design_layouts', {});
+      availableSubtreeLayouts.value = all.filter(
+        l => l.layout_type === 'subtree' && (l.anchor_person_id === personId || !l.anchor_person_id)
+      );
+    } catch (err) {
+      console.error('Failed to load subtree layouts for anchor', err);
+      availableSubtreeLayouts.value = [];
+    } finally {
+      isLoadingSubtreeLayouts.value = false;
+    }
+  }
+
+  function closeLinkSubtreeModal() {
+    showLinkSubtreeModal.value = false;
+    targetLinkAnchorPersonId.value = '';
+  }
+
+  function linkSubtreeToAnchor(anchorPersonId: string, entry: DesignLayoutEntry) {
+    try {
+      const parsed = JSON.parse(entry.layout_data) as DesignPersistedState;
+      subLayoutCache.value.set(entry.id, parsed);
+      subLayoutReferences.value = {
+        ...subLayoutReferences.value,
+        [anchorPersonId]: {
+          layoutId: entry.id,
+          layoutName: entry.name,
+          anchorPersonId,
+        },
+      };
+      options.onIsolateSubtreeAnchor?.(anchorPersonId);
+      pushHistoryState();
+      closeLinkSubtreeModal();
+    } catch (err) {
+      console.error('Failed to link subtree layout', err);
+    }
+  }
+
+  function unlinkSubtreeFromAnchor(anchorPersonId: string) {
+    if (subLayoutReferences.value[anchorPersonId]) {
+      const next = { ...subLayoutReferences.value };
+      delete next[anchorPersonId];
+      subLayoutReferences.value = next;
+      pushHistoryState();
+    }
+  }
+
+  async function switchToSubtreeDesign(layoutId: string) {
+    if (currentLayoutType.value === 'master') {
+      masterLayoutBackup.value = getSerializedDesignState(currentLayoutName.value || 'Master');
+    }
+
+    let entry: DesignLayoutEntry | null = null;
+    try {
+      const all = await invoke<DesignLayoutEntry[]>('get_design_layouts', {});
+      entry = all.find(l => l.id === layoutId) || null;
+    } catch (err) {
+      console.error('Error fetching layout', layoutId, err);
+    }
+
+    if (entry) {
+      loadStateFromEntry(entry);
+    }
+  }
+
+  async function returnToMasterDesign() {
+    if (masterLayoutBackup.value) {
+      const backup = masterLayoutBackup.value;
+      masterLayoutBackup.value = null;
+      applyLoadedState(backup);
+      await loadReferencedSubLayouts();
+    }
+  }
+
+  function openNewDesignModal(initialAnchorPersonId?: string, initialType: DesignLayoutType = 'master') {
+    const anchorId = initialAnchorPersonId || targetLinkAnchorPersonId.value;
+    closeLinkSubtreeModal();
     const { activeProbandId, rootAncestors } = getProps();
-    const currentId = activeProbandId || (rootAncestors && rootAncestors.length > 0 ? rootAncestors[0].person_id : '');
-    newDesignProbandId.value = currentId;
-    newDesignFileName.value = getProbandDefaultFileName(currentId);
+    newDesignLayoutType.value = initialType;
+    if (initialType === 'subtree' && anchorId) {
+      newDesignAnchorPersonId.value = anchorId;
+      newDesignFileName.value = `${getProbandDefaultFileName(anchorId)}_Zweig`;
+    } else {
+      newDesignAnchorPersonId.value = '';
+      const currentId = activeProbandId || (rootAncestors && rootAncestors.length > 0 ? rootAncestors[0].person_id : '');
+      newDesignProbandId.value = currentId;
+      newDesignFileName.value = getProbandDefaultFileName(currentId);
+    }
     showNewDesignModal.value = true;
   }
 
@@ -737,18 +901,22 @@ export function useDesignHistory<
   }
 
   function confirmCreateNewDesign() {
-    const targetProbandId = newDesignProbandId.value;
-    const targetName = newDesignFileName.value.trim() || getProbandDefaultFileName(targetProbandId);
+    const isSubtree = newDesignLayoutType.value === 'subtree';
+    const targetAnchorId = isSubtree ? newDesignAnchorPersonId.value : null;
+    const targetProbandId = isSubtree ? (getProps().activeProbandId || targetAnchorId || '') : newDesignProbandId.value;
+    const targetName = newDesignFileName.value.trim() || (isSubtree ? 'Zweig' : getProbandDefaultFileName(targetProbandId));
 
     showNewDesignModal.value = false;
     skipAutoLoadOnce.value = true;
 
-    if (targetProbandId && targetProbandId !== getProps().activeProbandId) {
-      onSelectProband(targetProbandId);
+    if (isSubtree && currentLayoutType.value === 'master' && !masterLayoutBackup.value) {
+      masterLayoutBackup.value = getSerializedDesignState(currentLayoutName.value || 'Master');
     }
 
+    currentLayoutType.value = isSubtree ? 'subtree' : 'master';
+    currentAnchorPersonId.value = targetAnchorId;
     currentLayoutId.value = null;
-    currentLayoutName.value = '';
+    currentLayoutName.value = targetName;
     selectedOverwriteId.value = '';
     saveMode.value = 'new';
     localStorage.removeItem('stammbaum_last_design_layout_id');
@@ -760,8 +928,19 @@ export function useDesignHistory<
     saveFileName.value = targetName;
     historyStack.value = [];
     redoStack.value = [];
+    subLayoutReferences.value = {};
 
-    onBuildInitialDesignLayout();
+    if (!isSubtree && targetProbandId && targetProbandId !== getProps().activeProbandId) {
+      onSelectProband(targetProbandId);
+    }
+
+    if (isSubtree && targetAnchorId) {
+      activeDesignPersonId.value = targetAnchorId;
+      onBuildInitialDesignLayout(targetAnchorId);
+    } else {
+      onBuildInitialDesignLayout();
+    }
+
     nextTick(() => {
       onCenterOnOrigin();
     });
@@ -945,6 +1124,24 @@ export function useDesignHistory<
     showNewDesignModal,
     newDesignProbandId,
     newDesignFileName,
+    newDesignLayoutType,
+    newDesignAnchorPersonId,
+    currentLayoutType,
+    currentAnchorPersonId,
+    subLayoutReferences,
+    subLayoutCache,
+    masterLayoutBackup,
+    showLinkSubtreeModal,
+    targetLinkAnchorPersonId,
+    availableSubtreeLayouts,
+    isLoadingSubtreeLayouts,
+    openLinkSubtreeModal,
+    closeLinkSubtreeModal,
+    linkSubtreeToAnchor,
+    unlinkSubtreeFromAnchor,
+    switchToSubtreeDesign,
+    returnToMasterDesign,
+    loadReferencedSubLayouts,
     hasUnsavedChanges,
     openNewDesignModal,
     closeNewDesignModal,

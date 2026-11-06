@@ -363,6 +363,26 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * Neues Design für `I1` erzeugt einen frischen Ausgangszustand und schlägt einen neuen Namen vor.
   * Dateiexport und -import übertragen den vollständigen Layoutzustand fehlerfrei.
 
+#### TC-DSG-006: Hierarchische Stamm- und Zweig-Layouts (Subtree Composition & Isolation)
+- **Traceability:** [REQ-DSG-006](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-006-hierarchische-stamm--und-zweig-layouts-subtree-composition) -> [SPEC-DSG-006](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-006---req-dsg-006)
+- **Test-Typ:** Unit & Integration Test (*Implemented: Rust Backend `test_save_and_get_design_layouts_with_subtrees` & Frontend `useDesignLayout.ts` / `useDesignHistory.ts`*)
+- **Test-Ziel:** Nachweis der isolierten Erstellung, Speicherung und Filterung von Zweig-Layouts (`subtree`), der automatischen Isolierung des Zweigankers aus Geschwistergruppen, der dynamischen, schreibgeschützten Einbettung in Master-Layouts mit Outward Push (Verdrängung nach links/rechts zur Kollisionsvermeidung) und lokalem Wappen/Hintergrund.
+- **Preconditions:** Stammbaum mit Stammahn `I1`, Nachkomme `I10` in einer Geschwistergruppe mit `I11` und `I12`, wobei `I10` eigene Nachkommen (`I101`, `I102`) besitzt.
+- **Testschritte:**
+  1. Im Backend via `save_design_layout` ein Master-Layout für `I1` sowie ein Subtree-Layout für `I10` (`layout_type: "subtree"`, `anchor_person_id: "I10"`) speichern.
+  2. `get_design_layouts` mit Filtern nach `anchor_person_id` und `layout_type` aufrufen.
+  3. Im Frontend das Master-Layout laden und die Person `I10` mit dem Subtree-Layout verknüpfen (`linkSubtreeToAnchor`).
+  4. Berechnete Gruppen in `visibleGroupAndMemberMap` prüfen: Ist `I10` aus der Geschwistergruppe mit `I11` und `I12` herausgelöst? Werden `I11` und `I12` sowie Nachbarzweige nach außen geschoben, sodass keine Überlappung mit dem Subtree entsteht?
+  5. Drag-, Einklapp- oder Trenn-Aktion auf einer eingebetteten Zweig-Gruppe anstoßen.
+  6. Via `switchToSubtreeDesign` in die Zweig-Bearbeitung wechseln und über `returnToMasterDesign` zurückkehren.
+- **Erwartetes Ergebnis:**
+  * Backend filtert Layouts exakt nach `layout_type` und `anchor_person_id`.
+  * `I10` wird automatisch in eine eigenständige Gruppe isoliert; links liegende Geschwister/Zweige werden nach links und rechts liegende nach rechts geschoben.
+  * Im Master-Layout werden die Nachkommen von `I10` durch die transformierten Zweig-Gruppen ersetzt; deren Koordinaten verschieben sich mit `deltaX` und `levelOffset` konsistent relativ zu `I10` bei 0 Überlappungen.
+  * Alle eingebetteten Zweig-Karten und Gruppen besitzen `isReadOnly: true`; Interaktionen sind gesperrt und mit Schloss-Symbolen gekennzeichnet.
+  * Ein eventuelles Hintergrundbild des Zweigs wird maßstabsgetreu und transparent am Zweiganker gerendert.
+  * Wechsel in den Zweig-Modus und Rückkehr zum Master behalten den Zustand verlustfrei bei.
+
 ---
 
 ### 2.6 Domäne: Import & Differentieller Datenabgleich (IMP)
@@ -498,6 +518,7 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 | **DSG** | [REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten) | [SPEC-DSG-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-003---req-dsg-003) | **TC-DSG-003** | Component Test (PersonCard) | 100 % |
 | **DSG** | [REQ-DSG-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-004-hintergrundgestaltung--bild-persistierung) | [SPEC-DSG-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-004---req-dsg-004) | **TC-DSG-004** | Integration Test (Storage / IO) | 100 % |
 | **DSG** | [REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-005-layout-persistenz--undoredo-verlauf) | [SPEC-DSG-005](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-005---req-dsg-005) | **TC-DSG-005** | Integration Test (History / DB) | 100 % |
+| **DSG** | [REQ-DSG-006](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-006-hierarchische-stamm--und-zweig-layouts-subtree-composition) | [SPEC-DSG-006](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-006---req-dsg-006) | **TC-DSG-006** | Unit & Integration Test (Rust / Vue) | 100 % |
 | **IMP** | [REQ-IMP-001](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-imp-001-atomarer-gedcom-vollimport-55--551) | [SPEC-IMP-001](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-imp-001---req-imp-001) | **TC-IMP-001** | Unit & Integration Test (Parser) | 100 % |
 | **IMP** | [REQ-IMP-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-imp-002-intelligentes-gedcom-staging--matching) | [SPEC-IMP-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-imp-002---req-imp-002) | **TC-IMP-002** | Unit Test (Staging Engine) | 100 % |
 | **IMP** | [REQ-IMP-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-imp-003-differentieller-3-wege-merge-mit-konfliktl%C3%B6sung) | [SPEC-IMP-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-imp-003---req-imp-003) | **TC-IMP-003** | Unit & Integration Test (Rust Merge) | 100 % |

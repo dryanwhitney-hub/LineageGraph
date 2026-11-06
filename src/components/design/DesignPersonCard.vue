@@ -63,6 +63,8 @@ function getLineStyle(bold: boolean, italic: boolean) {
       'is-origin-group': isOriginGroup,
       'is-docked': isGroupDocked,
       'is-group-dragging': isGroupDragging,
+      'is-subtree-readonly': cardBox.isReadOnly,
+      'is-subtree-anchor': cardBox.isSubtreeAnchor,
     }"
     :style="{ width: CARD_WIDTH + 'px', height: cardBox.height + 'px' }"
     @click.stop="emit('select')"
@@ -98,6 +100,13 @@ function getLineStyle(bold: boolean, italic: boolean) {
       </span>
       <span v-if="cardConfig.showGeneration && cardBox.generation" class="d-gen-badge">
         Gen. {{ cardBox.generation }}
+      </span>
+      <span
+        v-if="cardBox.isSubtreeAnchor"
+        class="d-subtree-anchor-badge"
+        :title="t('design_subtree_badge_tooltip')"
+      >
+        🌿 {{ cardBox.linkedSubLayoutName }}
       </span>
 
       <!-- Steuerung für einzelne Box innerhalb der Gruppe: erst auf Select dynamisch nachgeladen -->
@@ -564,6 +573,22 @@ function getLineStyle(bold: boolean, italic: boolean) {
 }
 .d-divorce-badge {
   color: #c0392b;
+}
+.d-subtree-anchor-badge {
+  background: #059669;
+  color: #ffffff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin-left: 2px;
+  white-space: nowrap;
+}
+.design-person-card.is-subtree-readonly {
+  background-color: #f8fafc;
+}
+.design-person-card.is-subtree-anchor {
+  border-bottom: 2px solid #059669;
 }
 </style>
 

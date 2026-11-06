@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { DesignCardConfig, DesignBackgroundConfig } from '../../types/design';
+import type {
+  DesignCardConfig,
+  DesignBackgroundConfig,
+  DesignLayoutType,
+  SubtreeBackground,
+} from '../../types/design';
 import type { DesignSiblingGroup, BranchWidthConstraint } from '../../composables/useDesignHistory';
 import {
   type DesignPerson,
@@ -42,6 +47,9 @@ const props = defineProps<{
   bgConfig: DesignBackgroundConfig;
   isBgDraggingOnCanvas: boolean;
   canUndo: boolean;
+  subtreeBackgrounds?: SubtreeBackground[];
+  currentLayoutType?: DesignLayoutType;
+  currentLayoutName?: string;
   // Navigation & Viewport handlers
   setViewportRef: (el: HTMLElement | null) => void;
   startCanvasPan: (e: MouseEvent) => void;
@@ -87,6 +95,7 @@ const emit = defineEmits<{
   (e: 'create-new-design'): void;
   (e: 'open-load-modal'): void;
   (e: 'open-save-modal'): void;
+  (e: 'open-subtree', layoutId: string): void;
 }>();
 
 const localViewportRef = ref<HTMLElement | null>(null);
@@ -327,6 +336,33 @@ function onBgMouseUp() {
         </div>
       </div>
 
+      <!-- 0b. Subtree-Hintergrundbilder (lokale Wappen/Bilder verknüpfter Zweige) -->
+      <div
+        v-for="subBg in subtreeBackgrounds"
+        :key="subBg.anchorPersonId"
+        class="design-subtree-bg-container"
+        :style="{
+          position: 'absolute',
+          left: `${subBg.originX}px`,
+          top: `${subBg.originY}px`,
+          zIndex: 1,
+          pointerEvents: 'none',
+        }"
+      >
+        <img
+          :src="subBg.imageData"
+          class="design-subtree-bg-image"
+          :style="{
+            transform: `scale(${(subBg.config.scale || 100) / 100})`,
+            opacity: (subBg.config.opacity !== undefined ? subBg.config.opacity : 45) / 100,
+            transformOrigin: 'top left',
+            display: 'block',
+          }"
+          :alt="subBg.layoutName"
+          draggable="false"
+        />
+      </div>
+
       <!-- Horizontale Ebenen-Bänder (von oben nach unten gerendert, Ebene 1 = unten beim Stammahn) -->
       <div
         v-for="lvlInfo in levelsTopToBottom"
@@ -434,6 +470,7 @@ function onBgMouseUp() {
           'is-docked': gl.isDocked,
           'is-origin-group': gl.group.parentId === null,
           'is-multi-sibling-group': gl.cards.length > 1,
+          'is-subtree-readonly': gl.isReadOnly,
         }"
         :style="{
           left: gl.left + 'px',
@@ -447,70 +484,84 @@ function onBgMouseUp() {
         <div
           v-if="gl.cards.some(c => isPersonSelected(c.person.id))"
           class="group-floating-controls"
+          :class="{ 'is-readonly': gl.isReadOnly }"
           @mousedown.stop
         >
-          <button
-            class="grp-btn"
-            :title="t('design_dock_left')"
-            @click.stop="dockToNeighbor(gl.group, 'left')"
-          >
-            ⇤
-          </button>
-          <button
-            class="grp-btn"
-            :title="t('design_dock_right')"
-            @click.stop="dockToNeighbor(gl.group, 'right')"
-          >
-            ⇥
-          </button>
-          <button
-            class="grp-btn"
-            :title="t('design_move_group_up')"
-            @click.stop="moveGroupLevel(gl.group, 1)"
-          >
-            ▲
-          </button>
-          <button
-            class="grp-btn"
-            :disabled="gl.group.level <= 1"
-            :title="t('design_move_group_down')"
-            @click.stop="moveGroupLevel(gl.group, -1)"
-          >
-            ▼
-          </button>
-          <button
-            class="grp-btn grp-btn-split"
-            :title="t('design_split_group_level')"
-            @click.stop="insertLevelAboveAndMoveGroup(gl.group)"
-          >
-            ➕
-          </button>
-          <!-- Geschwistergruppe nach links oder rechts auflösen -->
-          <button
-            v-if="gl.cards.length > 1"
-            class="grp-btn grp-btn-ungroup"
-            :title="t('design_ungroup_left_tooltip')"
-            @click.stop="ungroupAtPerson(gl.group, getSelectedOrAnchorPersonId(gl), 'left')"
-          >
-            ✂️◀ {{ t('design_ungroup_left') }}
-          </button>
-          <button
-            v-if="gl.cards.length > 1"
-            class="grp-btn grp-btn-ungroup"
-            :title="t('design_ungroup_right_tooltip')"
-            @click.stop="ungroupAtPerson(gl.group, getSelectedOrAnchorPersonId(gl), 'right')"
-          >
-            ✂️▶ {{ t('design_ungroup_right') }}
-          </button>
-          <!-- Aufgelöste Geschwister wieder zu einer Gruppe zusammenfassen -->
-          <button
-            v-else-if="gl.canRegroup"
-            class="grp-btn grp-btn-regroup"
-            :title="t('design_regroup_tooltip')"
-            @click.stop="regroupSelectedOrFirstInGroup(gl)"
-          >
-            {{ t('design_regroup_btn') }}
-          </button>
+          <template v-if="gl.isReadOnly">
+            <span class="readonly-subtree-pill">🔒 {{ gl.subtreeLayoutName || t('design_subtree_readonly') }}</span>
+            <button
+              v-if="gl.subtreeLayoutId"
+              class="grp-btn grp-btn-edit-subtree"
+              :title="t('design_edit_subtree_tooltip')"
+              @click.stop="emit('open-subtree', gl.subtreeLayoutId)"
+            >
+              🌱 {{ t('design_edit_subtree') }}
+            </button>
+          </template>
+          <template v-else>
+            <button
+              class="grp-btn"
+              :title="t('design_dock_left')"
+              @click.stop="dockToNeighbor(gl.group, 'left')"
+            >
+              ⇤
+            </button>
+            <button
+              class="grp-btn"
+              :title="t('design_dock_right')"
+              @click.stop="dockToNeighbor(gl.group, 'right')"
+            >
+              ⇥
+            </button>
+            <button
+              class="grp-btn"
+              :title="t('design_move_group_up')"
+              @click.stop="moveGroupLevel(gl.group, 1)"
+            >
+              ▲
+            </button>
+            <button
+              class="grp-btn"
+              :disabled="gl.group.level <= 1"
+              :title="t('design_move_group_down')"
+              @click.stop="moveGroupLevel(gl.group, -1)"
+            >
+              ▼
+            </button>
+            <button
+              class="grp-btn grp-btn-split"
+              :title="t('design_split_group_level')"
+              @click.stop="insertLevelAboveAndMoveGroup(gl.group)"
+            >
+              ➕
+            </button>
+            <!-- Geschwistergruppe nach links oder rechts auflösen -->
+            <button
+              v-if="gl.cards.length > 1"
+              class="grp-btn grp-btn-ungroup"
+              :title="t('design_ungroup_left_tooltip')"
+              @click.stop="ungroupAtPerson(gl.group, getSelectedOrAnchorPersonId(gl), 'left')"
+            >
+              ✂️◀ {{ t('design_ungroup_left') }}
+            </button>
+            <button
+              v-if="gl.cards.length > 1"
+              class="grp-btn grp-btn-ungroup"
+              :title="t('design_ungroup_right_tooltip')"
+              @click.stop="ungroupAtPerson(gl.group, getSelectedOrAnchorPersonId(gl), 'right')"
+            >
+              ✂️▶ {{ t('design_ungroup_right') }}
+            </button>
+            <!-- Aufgelöste Geschwister wieder zu einer Gruppe zusammenfassen -->
+            <button
+              v-else-if="gl.canRegroup"
+              class="grp-btn grp-btn-regroup"
+              :title="t('design_regroup_tooltip')"
+              @click.stop="regroupSelectedOrFirstInGroup(gl)"
+            >
+              {{ t('design_regroup_btn') }}
+            </button>
+          </template>
         </div>
 
         <!-- Personen-Boxen: Rahmenlinien von Geschwisterkindern stoßen direkt aneinander an -->
@@ -1013,6 +1064,33 @@ function onBgMouseUp() {
   z-index: 30;
   white-space: nowrap;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+.group-floating-controls.is-readonly {
+  background: rgba(6, 78, 59, 0.95);
+}
+.readonly-subtree-pill {
+  color: #a7f3d0;
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 1px 4px;
+}
+.grp-btn-edit-subtree {
+  background: #10b981;
+  color: #ffffff;
+  border-color: #059669;
+  font-size: 0.68rem;
+  padding: 2px 6px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.grp-btn-edit-subtree:hover {
+  background: #059669;
+  border-color: #047857;
+}
+.design-sibling-group.is-subtree-readonly {
+  border-style: dashed !important;
+  border-color: #059669 !important;
+  cursor: default !important;
 }
 .grp-btn {
   background: #ffffff;
