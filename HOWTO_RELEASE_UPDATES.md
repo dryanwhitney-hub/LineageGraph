@@ -157,10 +157,109 @@ Write-Host "✓ latest.json erfolgreich erzeugt!" -ForegroundColor Green
 ## Schritt 6: Was passiert nun auf den Zielgeräten?
 
 Sobald das Release online ist:
-1. Jede laufende oder neu gestartete Version `<a.b.d>` fragt die URL:  
+1. Jede laufende oder neu gestartete Version `<a.b.c>` fragt die URL:  
    `https://github.com/david-whitney/LineageGraph/releases/latest/download/latest.json` ab.
 2. Sie erkennt, dass `<a.b.d>` > `<a.b.c>` ist.
-3. Die App lädt `LineageGraph_<a.b.d>_x64.nsis.zip` herunter.
+3. Die App lädt `LineageGraph_<a.b.d>_x64-setup.exe` im Hintergrund herunter.
 4. Sie prüft die Signatur gegen den in `tauri.conf.json` hinterlegten öffentlichen Schlüssel.
 5. Nach Bestätigung/Neustart ist Version `<a.b.d>` installiert.
-6. Alle Datenbanken in `%APPDATA%\com.david-whitney.lineagegraph` bleiben unverändert erhalten.
+6. Alle SQLite-Datenbanken in `%APPDATA%\com.david-whitney.lineagegraph` bleiben unverändert erhalten.
+
+---
+
+## Besonderheit: Änderungen am Datenbank-Schema (Migrationen)
+
+Bei einem App-Update werden ausschließlich die Programmdateien (Binaries) ausgetauscht. Die SQLite-Datenbanken der Anwender (`<baum>.db` in `%APPDATA%\com.david-whitney.lineagegraph`) verbleiben unverändert auf dem System.
+
+Bringt eine neue Version strukturelle Datenbankänderungen mit, muss die Anwendung diese beim ersten Öffnen der bestehenden Datenbank **automatisch und abwärtskompatibel** anwenden.
+
+### Wo finden Datenbank-Änderungen statt?
+In [`src-tauri/src/db.rs`](src-tauri/src/db.rs) in der Funktion `setup_schema(conn: Connection)`. Diese Funktion wird bei jedem Öffnen eines Stammbaums (`init_database`) aufgerufen.
+
+---
+
+### Typische Szenarien und deren Umsetzung
+
+#### Szenario 1: Neue Tabelle oder neuer Index (Einfach)
+Verwenden Sie stets `CREATE TABLE IF NOT EXISTS` bzw. `CREATE INDEX IF NOT EXISTS`. Bestehende Datenbanken legen die neue Tabelle beim Start einfach an; existiert sie bereits, passiert nichts:
+
+```sql
+CREATE TABLE IF NOT EXISTS notes (
+    id TEXT PRIMARY KEY,
+    person_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    FOREIGN KEY(person_id) REFERENCES individuals(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_notes_person ON notes(person_id);
+```
+
+#### Szenario 2: Neue Spalte zu bestehender Tabelle hinzufügen (Häufig)
+Da SQLite kein bedingtes `ADD COLUMN IF NOT EXISTS` unterstützt, wird das Schema dynamisch per `PRAGMA table_info` geprüft (bereits als Standardmuster in `src-tauri/src/db.rs` etabliert):
+
+```rust
+// Spalten der Tabelle abfragen
+let columns: Vec<String> = {
+    let mut stmt = conn.prepare("PRAGMA table_info(individuals)")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    rows.filter_map(Result::ok).collect()
+};
+
+// Falls die Spalte noch nicht existiert -> hinzufügen
+if !columns.contains(&"email".to_string()) {
+    conn.execute("ALTER TABLE individuals ADD COLUMN email TEXT", [])?;
+}
+```
+
+> [!TIP]
+> Vergeben Sie bei `ADD COLUMN` für `NOT NULL`-Spalten immer einen `DEFAULT`-Wert (z. B. `DEFAULT ''` oder `DEFAULT 0`), da bestehende Datensätze sonst die Bedingung verletzen würden.
+
+#### Szenario 3: Spalte umbenennen, Typ ändern oder Spalte entfernen (Komplex)
+SQLite unterstützt bis Version 3.35 kein `DROP COLUMN` und nur eingeschränktes `ALTER TABLE`. Das empfohlene SQLite-Muster ist die **Table Recreation (Tabellen-Neuerstellung)** innerhalb einer Transaktion:
+
+```rust
+conn.execute_batch("
+    BEGIN TRANSACTION;
+
+    -- 1. Neue Tabelle mit der gewünschten Zielstruktur erstellen
+    CREATE TABLE individuals_new (
+        id TEXT PRIMARY KEY,
+        xref_id TEXT NOT NULL,
+        full_name TEXT, -- Zusammengeführtes Namensfeld
+        sex TEXT,
+        json_data TEXT NOT NULL
+    );
+
+    -- 2. Daten aus alter Tabelle transformiert übernehmen
+    INSERT INTO individuals_new (id, xref_id, full_name, sex, json_data)
+    SELECT id, xref_id, TRIM(COALESCE(given_name, '') || ' ' || COALESCE(surname, '')), sex, json_data
+    FROM individuals;
+
+    -- 3. Alte Tabelle verwerfen
+    DROP TABLE individuals;
+
+    -- 4. Neue Tabelle umbenennen
+    ALTER TABLE individuals_new RENAME TO individuals;
+
+    -- 5. Indizes neu anlegen
+    CREATE INDEX IF NOT EXISTS idx_individuals_xref ON individuals(xref_id);
+
+    COMMIT;
+")?;
+```
+
+---
+
+### Best Practices für schemaverändernde Releases
+
+1. **Automatisches Sicherheits-Backup vor Migrationen**:
+   Bei größeren Eingriffen sollte vor dem ersten `setup_schema` eine Sicherungskopie der `.db`-Datei angelegt werden:
+   ```rust
+   let backup_path = db_path.with_extension("db.backup_pre_migration");
+   if !backup_path.exists() {
+       let _ = std::fs::copy(db_path, backup_path);
+   }
+   ```
+2. **Versionssprünge bedenken (Sequentialität)**:
+   Ein Anwender könnte Version `0.2.0` nutzen und erst bei Version `0.5.0` wieder aktualisieren. Alle Migrationen müssen so geschrieben sein, dass sie auch nacheinander auf einer sehr alten Datenbank fehlerfrei durchlaufen.
+3. **Lokaler Test vor Veröffentlichung**:
+   Kopieren Sie vor dem Release eine Test-Datenbank einer älteren Version (z. B. aus einem Backup) in das AppData-Verzeichnis und prüfen Sie mit `npm run tauri dev`, ob die Migration sauber greift und alle Personen/Beziehungen intakt bleiben.
