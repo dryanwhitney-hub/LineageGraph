@@ -46,6 +46,7 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
     - [2.6.3 Interaktive HTML-Chronik für den Webbrowser](#263-interaktive-html-chronik-für-den-webbrowser)
     - [2.6.4 Stammbaum-Bilder exportieren (PNG / JPG / SVG)](#264-stammbaum-bilder-exportieren-png--jpg--svg)
     - [2.6.5 Druckfertige Buchchroniken mit LaTeX erzeugen](#265-druckfertige-buchchroniken-mit-latex-erzeugen)
+      - [2.6.5.1 LaTeX-Dateien (.tex) öffnen und als PDF setzen (z. B. mit MiKTeX & TeXstudio)](#2651-latex-dateien-tex-öffnen-und-als-pdf-setzen-z-b-mit-miktex--texstudio)
 - [Kapitel 3: Praktische Tipps, Fehlersicherheiten & Best Practices](#kapitel-3-praktische-tipps-fehlersicherheiten--best-practices)
   - [3.1 Das zweistufige Sicherheitskonzept gegen Datenverlust](#31-das-zweistufige-sicherheitskonzept-gegen-datenverlust)
   - [3.2 Warum der Schutz vor Verwandtschaftsschleifen unverzichtbar ist](#32-warum-der-schutz-vor-verwandtschaftsschleifen-unverzichtbar-ist)
@@ -420,18 +421,17 @@ Ein ästhetisches Diagramm mit sauber ausgerichteten Personenkarten und rechtwin
 
 ---
 
-### 2.4.2 Geschwistergruppen, Ebenen und Leitungsbrücken
+### 2.4.2 Geschwistergruppen, Track-Routing und Leitungsbrücken
 
 #### Was macht die Funktion?
-Löst das klassische Problem unübersichtlicher Stammbäume: Sich kreuzende Linien erhalten automatische **Leitungsbrücken** (Bögen), sodass der Betrachter Abstammungslinien mühelos mit dem Auge verfolgen kann. Zudem können Geschwister flexibel gruppiert oder verschoben werden.
+Verbindet im Bottom-Up-Stammbaum (Stammahn unten, Nachkommen fächern sich nach oben auf) Elterneinträge mit ihren Kindern bzw. zusammenhängenden Gruppierungen von Kindern über rechtwinklige Linien. Ein intelligenter **Track-Assignment-Algorithmus** ordnet horizontale Verbindungssegmente so in Spuren (*Tracks*) unterhalb der Kinder an, dass Höhen wiederverwendet und Linienkreuzungen minimiert werden: Weiter nach außen greifende Verbindungen liegen näher am Elternknoten, engere Verbindungen direkt unter den Kindern. Bei **Implex-Fällen** (Ahnenschwund, wenn beide Elternteile im Stammbaum vorkommen) wird automatisch eine **patrilineare Darstellung** (Verbindung über den Vater) verfolgt. Verbleibende Kreuzungen erhalten automatische **Leitungsbrücken** (Bögen), sowohl im interaktiven Design Mode als auch unter *„Export" > „Design Mode Bild"*.
 
 #### Wie bediene ich sie?
-* **Ebenenabstände optimieren:** Öffnen Sie die Kachel-Optionen und aktivieren Sie *„Ebenen-Anordnung der Querlinien optimieren (Linienbrücken minimieren)“*.
-* **Bogenradius einstellen:** Justieren Sie den Bogenradius der Kreuzungen nach eigenem Geschmack.
-* **Gruppen anpassen:** Über Schaltflächen an den Karten können Sie Geschwistergruppen bei Bedarf auftrennen (*„✂️ Gruppe auflösen“*) oder als geschlossenen Block verschieben.
+* **Spurabstand & Linienbrücken einstellen:** Öffnen Sie die Einstellungen (*Reiter „Design Mode"*) und passen Sie bei Bedarf den vertikalen Abstand paralleler Querlinien sowie den Bogenradius der Linienbrücken an.
+* **Gruppen anpassen:** Über Schaltflächen an den Karten können Sie Geschwistergruppen bei Bedarf auftrennen (*„✂️ Gruppe auflösen"*) oder als geschlossenen Block verschieben.
 
 #### Was ist das Ergebnis?
-Ein übersichtliches Schaubild ohne verwirrende Linienknoten.
+Ein übersichtliches, kreuzungsminimiertes Schaubild im Design Mode und beim Bild-/SVG-Export ohne optisch verschmelzende Linien.
 
 ---
 
@@ -468,19 +468,21 @@ Das Wappen fügt sich harmonisch hinter den Personenkarten ein und wird dauerhaf
 
 ---
 
-### 2.4.5 Design-Zustände speichern, laden und teilen
+### 2.4.5 Design-Zustände anlegen, öffnen, speichern und teilen
 
 #### Was macht die Funktion?
-Sie können verschiedene Layout-Entwürfe abspeichern, jederzeit wieder aufrufen oder als eigenständige Datei exportieren, um sie mit Verwandten zu teilen.
+Sie können neue Design-Entwürfe für jeden beliebigen Stammahnen anlegen, bestehende Layouts aus der Datenbank laden, externe Dateien öffnen und bearbeitete Stände als eigenständige `.json`-Dateien sichern oder mit anderen teilen.
 
 #### Wie bediene ich sie?
-* **Rückgängig (Undo):** Drücken Sie `Strg + Z` (oder klicken Sie auf *„Zurück“*), um eine versehentliche Verschiebung sofort rückgängig zu machen.
-* **Stand speichern:** Klicken Sie auf **„Design speichern“**, vergeben Sie einen Namen (z. B. `Hauptstamm_Poster_A0`) und wählen Sie *„In Stammbaum speichern“*.
-* **Stand laden:** Klicken Sie auf **„Design laden“** und wählen Sie einen gespeicherten Entwurf aus der Liste.
-* **Als Datei teilen:** Über *„Als Datei ablegen (.json)“* exportieren Sie das Layout als transportable Datei.
+* **Neues Design anlegen (mit Stammahn-Auswahl):** Klicken Sie unten rechts auf das runde Kreissymbol **📄**. Im Dialog können Sie den gewünschten Stammahnen (Ausgangspunkt des Schaubilds) aus allen definierten Stammahnen auswählen und einen individuellen Entwurfsnamen vergeben. Liegen ungespeicherte Änderungen vor, warnt eine Hinweismeldung direkt im Dialog. Beim Klick auf *„Neues Design erstellen“* wird ein frischer, initialer Entwurf für diesen Stammahnen erzeugt, ohne alte Speicherdateien zu laden.
+* **Stammahn im Dropdown wechseln:** Wenn Sie im Kopfbereich über das Dropdown *„🌳 Stammahnen-Auswahl (Sicht)“* zu einem anderen Stammahnen wechseln, lädt LineageGraph ausschließlich Speicherstände dieses spezifischen Stammahnen. Wurde für den gewählten Stammahnen noch kein Stand gesichert, wird automatisch das initiale Ausgangslayout berechnet (es wird kein Stand anderer Stammahnen fälschlich geladen).
+* **Gespeicherte Stände laden & Datei öffnen:** Klicken Sie unten rechts auf das Ordner-Symbol **📂**. Sie können direkt einen gespeicherten Entwurf aus der Liste des Stammahnen auswählen oder über die Schaltfläche *„📂 Datei auswählen & anwenden (.json)“* eine externe Datei von der Festplatte einlesen.
+* **Rückgängig (Undo):** Drücken Sie `Strg + Z` (oder klicken Sie unten rechts auf das Kreissymbol *„↩️“* bzw. in der Leiste auf *„↩️ Zurück“*), um eine versehentliche Verschiebung sofort rückgängig zu machen.
+* **Stand speichern:** Klicken Sie unten rechts auf das Disketten-Symbol **💾**, vergeben Sie einen Namen (z. B. `Hauptstamm_Poster_A0`) und wählen Sie *„In Stammbaum speichern“*.
+* **Als Datei exportieren:** Über die Schaltfläche *„⬇️ Als Datei ablegen (.json)“* im Speichern-Dialog exportieren Sie das Layout als transportable JSON-Datei auf Ihre Festplatte.
 
 #### Was ist das Ergebnis?
-Ihre manuelle Layoutarbeit ist absolut sicher und Sie können gefahrlos verschiedene Designvarianten ausprobieren.
+Ihre manuelle Layoutarbeit ist flexibel organisiert, Sie können jeden Stammahn unabhängig gestalten, sind vor versehentlichem Überschreiben geschützt und können Entwürfe jederzeit austauschen oder archivieren.
 
 ---
 
@@ -628,7 +630,53 @@ Für höchste buchbinderische Ansprüche: Generiert mehrseitige, gesetzte Buchch
 5. Klicken Sie auf **„LaTeX-Datei speichern“** (oder exportieren Sie das fertige Gesamtbündel).
 
 #### Was ist das Ergebnis?
-Ein professioneller Buchdruck-Satz, der über gängige PDF-Compiler direkt in ein edles Familienbuch gedruckt werden kann.
+Ein professioneller Buchdruck-Satz (`.tex`), der über gängige LaTeX-Compiler direkt in ein edles Familienbuch im PDF-Format umgewandelt werden kann.
+
+---
+
+#### 2.6.5.1 LaTeX-Dateien (.tex) öffnen und als PDF setzen (z. B. mit MiKTeX & TeXstudio)
+
+##### Was ist eine .tex-Datei?
+Eine Datei mit der Endung `.tex` ist ein Quelltextdokument für das professionelle Schriftsatz-System **LaTeX**. Im Unterschied zu herkömmlichen Textverarbeitungsprogrammen wie Microsoft Word trennt LaTeX Inhalt und Gestaltung strikt voneinander: Das System berechnet Absätze, Schrifthierarchien, Umbrüche und genealogische Zeichenfolgen nach mathematisch präzisen typografischen Regeln.
+
+Um eine `.tex`-Datei auf Ihrem Computer zu öffnen, anzusehen, individuell anzupassen und in ein fertiges, druckbares **PDF-Buch** zu verwandeln, benötigen Sie zwei kostenlose Werkzeuge:
+1. Eine **TeX-Distribution** (der „Motor“ bzw. Compiler, der die PDF berechnet, z. B. **MiKTeX**).
+2. Einen **TeX-Editor** (die komfortable Arbeitsumgebung mit Textfenster und PDF-Vorschau, z. B. **TeXstudio**).
+
+##### Empfohlene Werkzeuge (Kostenlos & Open Source)
+
+* **TeX-Distribution: MiKTeX**  
+  * **Was ist das?** MiKTeX stellt die Ausführungsumgebung (`pdflatex`, `lualatex`, `xelatex`) sowie alle grundlegenden Schriftsätze und Formatierungspakete bereit.
+  * **Bezugsquelle:** Kostenlos herunterladbar unter [miktex.org/download](https://miktex.org/download) (verfügbar für Windows, macOS und Linux).
+  * **Besonderer Vorteil:** MiKTeX verfügt über einen integrierten automatischen Paketmanager. Benötigt das Familienbuch zusätzliche Schriftpakete oder Layout-Erweiterungen, lädt MiKTeX diese beim ersten Kompiliervorgang vollautomatisch im Hintergrund herunter (*„Install missing packages on-the-fly“*).
+* **TeX-Editor: TeXstudio**  
+  * **Was ist das?** TeXstudio ist eine spezialisierte Entwicklungsumgebung mit Quelltext-Editor, Syntaxhervorhebung, Strukturbaum und integriertem PDF-Betrachter.
+  * **Bezugsquelle:** Kostenlos herunterladbar unter [texstudio.org](https://www.texstudio.org/) (verfügbar für Windows, macOS und Linux).
+  * **Besonderer Vorteil:** Durch die Zwei-Wege-Synchronisation (`Strg + Klick`) können Sie direkt zwischen Quelltext und gerenderter PDF-Seite hin- und herspringen.
+
+##### Schritt-für-Schritt-Anleitung: Von der .tex-Datei zum fertigen PDF
+
+1. **Software einrichten (einmalig):**
+   * Laden Sie zuerst **MiKTeX** herunter und führen Sie die Installation aus.
+     > [!TIP]
+     > Wählen Sie während der MiKTeX-Installation bei der Frage *„Install missing packages on-the-fly“* die Option **„Yes“** (oder *„Ask me first“*). Dadurch kann MiKTeX alle benötigten Satzpakete künftig ohne manuelle Eingriffe selbstständig nachinstallieren.
+   * Installieren Sie im Anschluss **TeXstudio**. TeXstudio erkennt die installierte MiKTeX-Umgebung beim Start automatisch.
+2. **Die exportierte .tex-Datei in TeXstudio öffnen:**
+   * **Einzelne Datei:** Starten Sie TeXstudio, wählen Sie im Menü **Datei → Öffnen...** (oder Tastenkombination `Strg + O`) und navigieren Sie zu der von LineageGraph exportierten `.tex`-Datei. Alternativ können Sie die `.tex`-Datei per Drag & Drop in das TeXstudio-Fenster ziehen oder per Rechtsklick *„Öffnen mit → TeXstudio“* auswählen.
+   * **Aufgeteilte Stämme (Gesamtbündel):** Wenn Sie in LineageGraph die Option *„Stämme erkennen & in eigene Dateien aufteilen“* gewählt haben, werden mehrere Dateien exportiert (z. B. `main.tex`, `stamm_1.tex`, `stamm_2.tex`). Öffnen Sie in TeXstudio stets die **Hauptdatei** (in der Regel `main.tex`). Diese enthält das Gesamtdokument-Setup, den Buchvorspann und bindet alle Stamm-Kapitel automatisch per `\input{...}` ein.
+3. **Das PDF erzeugen (Kompilieren):**
+   * Drücken Sie in TeXstudio die Taste **`F5`** (oder klicken Sie in der oberen Werkzeugleiste auf den **grünen Doppelpfeil** mit der Beschriftung *„Erstellen und Anzeigen“*).
+   * TeXstudio übergibt den Quelltext an MiKTeX. Beim ersten Durchlauf lädt MiKTeX bei Bedarf noch fehlende Standardpakete aus dem Internet nach (dies dauert beim ersten Mal etwa 10–30 Sekunden).
+   * Nach erfolgreichem Satzlauf öffnet sich auf der rechten Seite von TeXstudio automatisch der integrierte PDF-Betrachter mit Ihrem fertigen Familienbuch.
+     > [!NOTE]
+     > **Tipp für perfekte Inhaltsverzeichnisse:** LaTeX benötigt bei neu erzeugten Dokumenten oft einen **zweiten Durchlauf** (erneut **`F5`** drücken), damit alle internen Verweise, Gesamtseitenzahlen und Einträge im Inhaltsverzeichnis exakt berechnet werden.
+4. **Individuelle Anpassungen (optional):**
+   * Sie können im linken Textbereich von TeXstudio jederzeit persönliche Widmungen, Vorwörter, Anmerkungen oder Kapiteltexte einfügen.
+   * Durch erneutes Drücken von **`F5`** wird die PDF-Ausgabe sofort mit Ihren Änderungen aktualisiert.
+
+##### Was ist das Ergebnis?
+* Im selben Ordner, in dem Ihre `.tex`-Datei liegt, wird eine gleichnamige, druckfertige **`.pdf`**-Datei (z. B. `Familienchronik.pdf`) erzeugt.
+* Sie erhalten ein ansprechendes Buchwerk mit professionellem Buchsatz, gestochen scharfen Schriften, sauber aufgelösten genealogischen Sonderzeichen (`*`, `†`, `≈`, `⚭`, `⚮`) und perfekter Generationenhierarchie – bereit für den Heimdruck, den Copyshop oder eine Buchbinderei.
 
 ---
 

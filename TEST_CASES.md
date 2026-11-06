@@ -305,15 +305,21 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * Keine zwei Personenkarten weisen überschneidende Bounding-Boxes auf.
   * Dicht gedrängte Geschwistergruppen werden versetzt in Sub-Lanes platziert.
 
-#### TC-DSG-002: Orthogonale SVG-Linienbrücken bei Pfad-Kreuzungen
-- **Traceability:** [REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung--linienbr%C3%BCcken-line-bridges) -> [SPEC-DSG-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-002---req-dsg-002)
-- **Test-Typ:** Component Test (`DesignConnectorLayer.vue`)
-- **Test-Ziel:** Verifikation, dass sich kreuzende Verbindungslinien an den Schnittpunkten saubere Leitungsbrücken (Bögen) bilden.
-- **Preconditions:** Zwei Verbindungen kreuzen sich im SVG-Koordinatensystem bei `(200, 150)`.
+#### TC-DSG-002: Bottom-Up Track Assignment, Patrilineare Implex-Auflösung & SVG-Linienbrücken
+- **Traceability:** [REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung-bottom-up-track-assignment--linienbr%C3%BCcken-line-bridges) -> [SPEC-DSG-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-002---req-dsg-002)
+- **Test-Typ:** Unit & Component Test (`useDesignLayout.ts`, `designExport.ts`, `DesignConnectorLayer.vue`)
+- **Test-Ziel:** Verifikation der Greedy-Track-Zuweisung für Bottom-Up-Layouts (Bedingung A: keine horizontale Intervallüberlappung inkl. Padding; Bedingung B: vertikale Kreuzungsfreiheit zu darüberliegenden Tracks; weiter nach außen greifende Verbindungen liegen näher am Elternknoten), der patrilinearen Zuordnung bei Implex-Fällen sowie der SVG-Leitungsbrücken.
+- **Preconditions:**
+  1. Zwei oder mehr Verbindungen fächern sich von Elternknoten unten zu Kind-/Geschwistergruppen oben auf (z. B. innere Verbindung `[300, 500]` und äußere Verbindung `[100, 480]`).
+  2. Ein Kind besitzt sowohl Vater als auch Mutter als sichtbare Nachkommen im Baum (Implex-Fall).
 - **Testschritte:**
-  1. SVG-Pfad-String des überquerenden Verbinders analysieren.
+  1. Track-Zuweisung (`assignNonOverlappingLanes`) und Kantengeometrie in `useDesignLayout.ts` sowie `generateDesignExportSvg` in `designExport.ts` berechnen.
+  2. Zugewiesene Tracks (`Track 0` oben unter den Kindern, höhere Track-Indizes weiter unten Richtung Eltern) und verbundene Elternkacheln prüfen.
 - **Erwartetes Ergebnis:**
-  * Der Pfad enthält an Schnittkoordinaten den SVG-Befehl `A 8 8 0 0 1 ...` (Leitungsbrücke mit konfiguriertem Radius).
+  * Die engere Verbindung `[300, 500]` liegt in `Track 0` (oben unter den Kindern), die weiter nach außen greifende Verbindung `[100, 480]` in `Track 1` (weiter unten näher am Elternknoten), sodass 0 vertikale/horizontale Linienkreuzungen entstehen.
+  * Nicht überlappende Verbindungen verwenden denselben Track wieder.
+  * Im Implex-Fall wird das Kind bzw. die Kindergruppierung ausschließlich mit dem Vater verbunden (patrilineare Darstellung).
+  * Unvermeidbare Schnittpunkte enthalten im SVG-Pfad den Bogenbefehl `A 8 8 0 0 1 ...`.
 
 #### TC-DSG-003: Dynamisches Karten-Styling (Farben, Abmessungen, Badges)
 - **Traceability:** [REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten) -> [SPEC-DSG-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-003---req-dsg-003)
@@ -339,19 +345,23 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * Das Bild wird via `save_binary_file` oder IndexedDB persistent hinterlegt.
   * Nach dem Neuladen erscheint das Bild mit Deckkraft 0.35 hinter dem Stammbaum.
 
-#### TC-DSG-005: Undo/Redo-Verlauf und Probanden-bezogene Layout-Speicherung
-- **Traceability:** [REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-005-layout-persistenz--undoredo-verlauf) -> [SPEC-DSG-005](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-005---req-dsg-005)
-- **Test-Typ:** Integration & Composable Test (`useDesignHistory.ts`, Backend `design_layouts`)
-- **Test-Ziel:** Wiederherstellbarkeit von Bearbeitungsschritten und Speichern benannter Layouts in SQLite.
-- **Preconditions:** Layout für Proband `I1` geöffnet.
+#### TC-DSG-005: Undo/Redo-Verlauf, Design-Erstellung mit Stammahn-Auswahl und isolierte Layout-Persistenz
+- **Traceability:** [REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-005-layout-persistenz-dateiverwaltung--undoredo-verlauf) -> [SPEC-DSG-005](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-005---req-dsg-005)
+- **Test-Typ:** Integration & Composable Test (`useDesignHistory.ts`, `DesignSidebar.vue`, `DesignCanvas.vue`, Backend `design_layouts`)
+- **Test-Ziel:** Wiederherstellbarkeit von Bearbeitungsschritten, Anlegen neuer Entwürfe für beliebige Stammahnen ohne Auto-Load-Konflikte sowie isoliertes Laden von Speicherständen pro Proband.
+- **Preconditions:** Proband `I1` besitzt gespeichertes Layout `"Druckversion 1"`. Proband `I10` besitzt noch kein gespeichertes Layout.
 - **Testschritte:**
-  1. Ast einklappen.
-  2. Undo ausführen (`undo()`).
-  3. Layout unter dem Namen `"Druckversion 1"` speichern (`save_design_layout`).
-  4. Gespeicherte Layouts via `get_design_layouts` abfragen.
+  1. Ast einklappen und Undo ausführen (`undo()`).
+  2. Im Stammahnen-Dropdown von `I1` zu `I10` wechseln.
+  3. Prüfen, dass der initiale Baum für `I10` generiert wird und NICHT das Layout von `I1` geladen wird.
+  4. "Neues Design" anfordern (`openNewDesignModal`), Stammahn `I1` auswählen und neues Design bestätigen.
+  5. Prüfen, dass für `I1` ein frisches Ausgangslayout erzeugt wird, statt das bestehende `"Druckversion 1"` zu laden (`skipAutoLoadOnce`).
+  6. Layout als `.json`-Datei exportieren (`save_design_file`) und über Dateidialog öffnen (`read_design_file` via `loadStateFromFile`).
 - **Erwartetes Ergebnis:**
   * Nach Undo ist der Ast wieder ausgeklappt.
-  * In der Tabelle `design_layouts` existiert ein Datensatz mit `proband_id = "I1"` und `name = "Druckversion 1"`.
+  * Beim Wechsel zu `I10` verbleibt die Sicht auf `I10` ohne fremdes Layout.
+  * Neues Design für `I1` erzeugt einen frischen Ausgangszustand und schlägt einen neuen Namen vor.
+  * Dateiexport und -import übertragen den vollständigen Layoutzustand fehlerfrei.
 
 ---
 
@@ -484,7 +494,7 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 | **UI** | [REQ-UI-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-ui-004-freie-schnellabfrage-free-query-modal) | [SPEC-UI-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-004---req-ui-004) | **TC-UI-004** | Component Test (FreeQueryModal) | 100 % |
 | **UI** | [REQ-UI-005](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-ui-005-vollst%C3%A4ndige-internationalisierung-de--en) | [SPEC-UI-005](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-005---req-ui-005) | **TC-UI-005** | Component Test (Vue I18n) | 100 % |
 | **DSG** | [REQ-DSG-001](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-001-automatisches-hierarchisches-pedigree-layout) | [SPEC-DSG-001](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-001---req-dsg-001) | **TC-DSG-001** | Unit Test (Layout Engine) | 100 % |
-| **DSG** | [REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung--linienbr%C3%BCcken-line-bridges) | [SPEC-DSG-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-002---req-dsg-002) | **TC-DSG-002** | Component Test (SVG Connector) | 100 % |
+| **DSG** | [REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung-bottom-up-track-assignment--linienbr%C3%BCcken-line-bridges) | [SPEC-DSG-002](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-002---req-dsg-002) | **TC-DSG-002** | Unit & Component Test (Track Assignment & SVG) | 100 % |
 | **DSG** | [REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten) | [SPEC-DSG-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-003---req-dsg-003) | **TC-DSG-003** | Component Test (PersonCard) | 100 % |
 | **DSG** | [REQ-DSG-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-004-hintergrundgestaltung--bild-persistierung) | [SPEC-DSG-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-004---req-dsg-004) | **TC-DSG-004** | Integration Test (Storage / IO) | 100 % |
 | **DSG** | [REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-005-layout-persistenz--undoredo-verlauf) | [SPEC-DSG-005](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-005---req-dsg-005) | **TC-DSG-005** | Integration Test (History / DB) | 100 % |

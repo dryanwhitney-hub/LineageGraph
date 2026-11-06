@@ -21,6 +21,8 @@ export interface DesignExportPerson {
   birth_place: string | null;
   death_date: string | null;
   death_place: string | null;
+  father_id?: string | null;
+  mother_id?: string | null;
   gedcom_extra?: Record<string, any>;
   spouses?: {
     id: string;
@@ -93,10 +95,10 @@ export interface DesignExportResult {
   };
 }
 
-const CARD_WIDTH = 130;
-const CANVAS_PAD_TOP = 40;
-const MIN_LEVEL_HEIGHT = 160;
-const DEFAULT_LEVEL_HEIGHT = 180;
+const CARD_WIDTH = 174;
+const CANVAS_PAD_TOP = 65;
+const MIN_LEVEL_HEIGHT = 110;
+const DEFAULT_LEVEL_HEIGHT = 200;
 const CORRIDOR_PAD_TOP = 24;
 const CORRIDOR_PAD_BOTTOM = 28;
 const CORRIDOR_EMPTY = 36;
@@ -125,13 +127,26 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
-// Berechnet optimale Höhenstufen (Lanes) für Querlinien:
-// - Linien ohne gemeinsamen horizontalen Abschnitt dürfen Linienhöhen wiederverwenden.
-// Berechnet optimale Höhenstufen (Lanes) für Querlinien:
-// - Linien ohne gemeinsamen horizontalen Abschnitt dürfen Linienhöhen wiederverwenden,
-//   sofern sie einen horizontalen Sicherheitsabstand einhalten (keine Berührung an Endpunkten).
-// - Linien mit gemeinsamem horizontalem Abschnitt erhalten zwingend unterschiedliche Linienhöhen (keine Überdeckung).
-// - Vertikale Linien dürfen Querlinien kreuzen.
+/**
+ * Track Assignment für Bottom-Up-Layouts:
+ * Berechnet die Track-Indizes (0 = ganz oben direkt unter den Kind-Knoten,
+ * 1, 2, ... = weiter unten Richtung Eltern-Knoten) für die horizontalen Segmente
+ * der orthogonalen Verbindungslinien:
+ *
+ * 1. Datenaufbereitung & Intervalle:
+ *    Jede horizontale Verbindungslinie C hat x_start (Eltern) und x_end (Kind / Kindergruppierung)
+ *    mit dem horizontalen Intervall [min(x_start, x_end) - PADDING, max(x_start, x_end) + PADDING].
+ * 2. Sortierung (Längste zuerst):
+ *    Absteigend nach horizontaler Spannweite abs(x_start - x_end), sodass Verbindungen, die
+ *    weiter nach außen greifen, weiter unten (näher am Elternknoten) platziert werden.
+ * 3. Greedy Track-Zuweisung von oben nach unten (Kollisionsprüfung):
+ *    - Bedingung A (Horizontale Überlappung): Kein Intervall-Overlap innerhalb desselben Tracks T.
+ *    - Bedingung B (Vertikale Kreuzungsfreiheit): Die vertikalen Zuleitungen von C (von den
+ *      Kind-Knoten oben hinab zu Track T) kreuzen in den darüberliegenden Tracks (0 bis T-1)
+ *      keine dort bereits platzierten horizontalen Intervalle.
+ * 4. Ausgabe / Rendering:
+ *    Jedem Track T wird Y = Y_Basis_unter_Kindern + CORRIDOR_PAD_TOP + T * Zeilenabstand zugewiesen.
+ */
 function assignNonOverlappingLanes(
   items: { parentId?: string; parentX: number; minChildX: number; maxChildX: number; childrenX?: number[] }[],
   direction: 'up' | 'same' | 'down' = 'up'
@@ -140,279 +155,204 @@ function assignNonOverlappingLanes(
   if (n === 0) return { lanes: [], totalLanes: 0 };
   if (n === 1) return { lanes: [0], totalLanes: 1 };
 
-  const parsed = items.map((rel, origIdx) => {
-    const parentX = rel.parentX;
-    const minChildX = rel.minChildX;
-    const maxChildX = rel.maxChildX;
-    const childrenX = rel.childrenX ?? [minChildX, maxChildX];
-    const barMin = Math.min(parentX, minChildX);
-    const barMax = Math.max(parentX, maxChildX);
+  const PADDING = 8;
+
+  interface TrackConnection {
+    origIdx: number;
+    parentId?: string;
+    xStart: number;
+    xEnd: number;
+    childrenX: number[];
+    barMin: number;
+    barMax: number;
+    intervalMin: number;
+    intervalMax: number;
+    span: number;
+    topFeedXs: number[];
+    bottomFeedXs: number[];
+  }
+
+  // 1. Datenaufbereitung & Intervalle
+  const connections: TrackConnection[] = items.map((rel, origIdx) => {
+    const xStart = rel.parentX;
+    const childrenX = rel.childrenX && rel.childrenX.length > 0
+      ? rel.childrenX
+      : [rel.minChildX, rel.maxChildX];
+    const minChildX = childrenX.length > 0 ? Math.min(...childrenX) : rel.minChildX;
+    const maxChildX = childrenX.length > 0 ? Math.max(...childrenX) : rel.maxChildX;
+    const barMin = Math.min(xStart, minChildX);
+    const barMax = Math.max(xStart, maxChildX);
+    const xEnd = Math.abs(xStart - minChildX) >= Math.abs(xStart - maxChildX) ? minChildX : maxChildX;
     const span = Math.max(0, barMax - barMin);
-    const centerX = (barMin + barMax) / 2;
-    return { origIdx, parentX, barMin, barMax, span, centerX, childrenX };
+    const intervalMin = barMin - PADDING;
+    const intervalMax = barMax + PADDING;
+    const topFeedXs = direction === 'down' ? [xStart] : childrenX;
+    const bottomFeedXs = direction === 'down' ? childrenX : [xStart];
+
+    return {
+      origIdx,
+      parentId: rel.parentId,
+      xStart,
+      xEnd,
+      childrenX,
+      barMin,
+      barMax,
+      intervalMin,
+      intervalMax,
+      span,
+      topFeedXs,
+      bottomFeedXs,
+    };
   });
 
-  // Mindestabstand (in px) zwischen horizontalen Balken auf derselben Lane, um optisches Verschmelzen zu verhindern
-  const LANE_REUSE_SAFETY_GAP = 6;
+  // 2. Sortierung (Längste zuerst): absteigend nach horizontaler Spannweite abs(x_start - x_end)
+  const sortedConnections = [...connections].sort((a, b) => {
+    if (Math.abs(b.span - a.span) > 0.5) return b.span - a.span;
+    if (Math.abs(a.barMin - b.barMin) > 0.5) return a.barMin - b.barMin;
+    return a.origIdx - b.origIdx;
+  });
 
-  // Überlappungs-Prüfung: Haben zwei Items einen gemeinsamen horizontalen Abschnitt oder unterschreiten sie den Sicherheitsabstand?
-  function hasOverlap(i: number, j: number): boolean {
-    const a = parsed[i];
-    const b = parsed[j];
-    // Wirkungsbereich für horizontale Kollision:
-    // Auch Einzelkinder (span <= 1) definieren einen Knotenbereich um parentX, damit Querlinien nicht durch ihren Knoten laufen.
-    const aMin = a.span <= 1 ? a.parentX - 8 : a.barMin;
-    const aMax = a.span <= 1 ? a.parentX + 8 : a.barMax;
-    const bMin = b.span <= 1 ? b.parentX - 8 : b.barMin;
-    const bMax = b.span <= 1 ? b.parentX + 8 : b.barMax;
-
-    return Math.max(aMin, bMin) < Math.min(aMax, bMax) + LANE_REUSE_SAFETY_GAP;
+  // Bedingung A: Überschneiden sich die horizontalen Intervalle zweier Verbindungen?
+  function intervalsOverlap(a: TrackConnection, b: TrackConnection): boolean {
+    return Math.max(a.intervalMin, b.intervalMin) <= Math.min(a.intervalMax, b.intervalMax);
   }
 
-  // Precompute pair costs for crossing quality
-  // iBelowJ: Kosten/Kreuzungen, wenn Item i auf kleinerem Lane-Index liegt als Item j (lI < lJ)
-  // jBelowI: Kosten/Kreuzungen, wenn Item j auf kleinerem Lane-Index liegt als Item i (lJ < lI)
-  const pairCosts: { iBelowJ: number; jBelowI: number; overlap: boolean }[][] = [];
-  for (let i = 0; i < n; i++) {
-    pairCosts[i] = [];
-    for (let j = 0; j < n; j++) {
-      if (i === j) {
-        pairCosts[i][j] = { iBelowJ: 0, jBelowI: 0, overlap: false };
-        continue;
-      }
-      const overlap = hasOverlap(i, j);
-      let iBelowJ = 0;
-      let jBelowI = 0;
-
-      const sameParent = Math.abs(parsed[i].parentX - parsed[j].parentX) < 2;
-
-      if (direction !== 'down') {
-        // Standard (up): Lane 0 ist näher an Kindern (oben), höhere Lanes näher an Eltern (unten)
-        // 1. Wenn lI < lJ:
-        //    - Item i's Elternstamm steigt von unten nach Lane lI auf und kreuzt Lane lJ, falls parentX_i in j's Balken liegt.
-        if (!sameParent && parsed[i].parentX > parsed[j].barMin + 2 && parsed[i].parentX < parsed[j].barMax - 2) {
-          iBelowJ += 500;
-        }
-        //    - Item j's Kinder-Abgangslinien steigen von Lane lJ nach oben zu den Kindern auf und kreuzen Lane lI, falls cx in i's Balken liegt.
-        for (const cx of parsed[j].childrenX) {
-          if (cx > parsed[i].barMin + 2 && cx < parsed[i].barMax - 2) {
-            iBelowJ += 500;
-          }
-        }
-
-        // 2. Wenn lJ < lI:
-        //    - Item j's Elternstamm kreuzt Lane lI, falls parentX_j in i's Balken liegt.
-        if (!sameParent && parsed[j].parentX > parsed[i].barMin + 2 && parsed[j].parentX < parsed[i].barMax - 2) {
-          jBelowI += 500;
-        }
-        //    - Item i's Kinder-Abgangslinien steigen von Lane lI auf und kreuzen Lane lJ, falls cx in j's Balken liegt.
-        for (const cx of parsed[i].childrenX) {
-          if (cx > parsed[j].barMin + 2 && cx < parsed[j].barMax - 2) {
-            jBelowI += 500;
-          }
-        }
-      } else {
-        // Umgekehrt für down: Lane 0 ist näher an Eltern (oben), höhere Lanes näher an Kindern (unten)
-        if (!sameParent && parsed[i].parentX > parsed[j].barMin + 2 && parsed[i].parentX < parsed[j].barMax - 2) {
-          jBelowI += 500;
-        }
-        for (const cx of parsed[j].childrenX) {
-          if (cx > parsed[i].barMin + 2 && cx < parsed[i].barMax - 2) {
-            jBelowI += 500;
-          }
-        }
-
-        if (!sameParent && parsed[j].parentX > parsed[i].barMin + 2 && parsed[j].parentX < parsed[i].barMax - 2) {
-          iBelowJ += 500;
-        }
-        for (const cx of parsed[i].childrenX) {
-          if (cx > parsed[j].barMin + 2 && cx < parsed[j].barMax - 2) {
-            iBelowJ += 500;
-          }
-        }
-      }
-
-      pairCosts[i][j] = { iBelowJ, jBelowI, overlap };
-    }
-  }
-
-  function evaluate(assignment: number[]): number {
-    let cost = 0;
-    for (let i = 0; i < n; i++) {
-      cost += assignment[i] * 0.05;
-      for (let j = i + 1; j < n; j++) {
-        const pc = pairCosts[i][j];
-        const lI = assignment[i];
-        const lJ = assignment[j];
-        if (lI === lJ) {
-          if (pc.overlap) cost += 100000;
-        } else if (lI < lJ) {
-          cost += pc.iBelowJ;
-          // Maßgabe: Umso weiter "außen" ein Nachkommenknoten liegt, umso tiefer soll der horizontale Abschnitt liegen.
-          if (direction !== 'down') {
-            if (parsed[i].span > parsed[j].span + 4) cost += 3.0;
-          } else {
-            if (parsed[j].span > parsed[i].span + 4) cost += 3.0;
-          }
-        } else {
-          cost += pc.jBelowI;
-          if (direction !== 'down') {
-            if (parsed[j].span > parsed[i].span + 4) cost += 3.0;
-          } else {
-            if (parsed[i].span > parsed[j].span + 4) cost += 3.0;
-          }
-        }
+  // Bedingung B: Kreuzt eine vertikale Zuleitung von conn (von den Kind-Knoten oben hinab zu Track T)
+  // das horizontale Intervall einer Verbindung barConn in einem darüberliegenden Track (0 bis T-1)?
+  function verticalTopFeedsCrossInterval(conn: TrackConnection, barConn: TrackConnection): boolean {
+    if (conn.parentId && barConn.parentId && conn.parentId === barConn.parentId) return false;
+    for (const feedX of conn.topFeedXs) {
+      if (feedX >= barConn.intervalMin && feedX <= barConn.intervalMax) {
+        return true;
       }
     }
-    return cost;
+    return false;
   }
 
-  function buildAssignment(order: number[]): number[] {
-    const lanes = new Array<number>(n).fill(0);
-    const laneOccupants: number[][] = [];
-    for (const idx of order) {
-      let chosenLane = 0;
-      while (true) {
-        if (!laneOccupants[chosenLane]) {
-          laneOccupants[chosenLane] = [];
+  function verticalBottomFeedsCrossInterval(conn: TrackConnection, barConn: TrackConnection): boolean {
+    if (conn.parentId && barConn.parentId && conn.parentId === barConn.parentId) return false;
+    for (const feedX of conn.bottomFeedXs) {
+      if (feedX >= barConn.intervalMin && feedX <= barConn.intervalMax) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // 3. Greedy Track-Zuweisung von oben nach unten (Track 0 = ganz oben unter den Kind-Knoten,
+  //    Track 1, 2, ... = weiter unten Richtung Eltern-Knoten)
+  const tracks: TrackConnection[][] = [];
+
+  function placeIntoTracks(conn: TrackConnection, minTrackIndex: number): void {
+    for (let t = minTrackIndex; t < tracks.length; t++) {
+      let blockedAbove = false;
+      for (let upper = 0; upper < t; upper++) {
+        if (tracks[upper].some(d => verticalTopFeedsCrossInterval(conn, d))) {
+          blockedAbove = true;
           break;
         }
-        const hasConflict = laneOccupants[chosenLane].some(occIdx => pairCosts[idx][occIdx].overlap);
-        if (!hasConflict) break;
-        chosenLane++;
       }
-      lanes[idx] = chosenLane;
-      laneOccupants[chosenLane].push(idx);
-    }
-    return lanes;
-  }
+      if (blockedAbove) break;
 
-  // 1. Kandidat: Verschachtelung (innere umschlossene Spannen zuerst bei 'up', äußere zuerst bei 'down')
-  const order1 = parsed.map((it, idx) => {
-    let enclosedByCount = 0;
-    for (let other = 0; other < n; other++) {
-      if (other === idx) continue;
-      if (parsed[other].barMin <= it.barMin + 4 && parsed[other].barMax >= it.barMax - 4) {
-        enclosedByCount++;
-      }
-    }
-    const score = direction !== 'down'
-      ? (enclosedByCount * 10000 - it.span)
-      : (-enclosedByCount * 10000 + it.span);
-    return { idx, score };
-  }).sort((a, b) => b.score - a.score).map(o => o.idx);
-
-  // 2. Kandidat: Greedy nach Position (von links nach rechts)
-  const order2 = parsed.map((it, idx) => ({ idx, minX: it.barMin }))
-    .sort((a, b) => a.minX - b.minX).map(o => o.idx);
-
-  // 3. Kandidat: Kürzeste Spannen zuerst (bei 'up') bzw. Längste zuerst (bei 'down')
-  const order3 = parsed.map((it, idx) => ({ idx, span: it.span }))
-    .sort((a, b) => direction !== 'down' ? (a.span - b.span) : (b.span - a.span)).map(o => o.idx);
-
-  // 4. Kandidat: Längste Spannen zuerst (bei 'up') bzw. Kürzeste zuerst (bei 'down')
-  const order4 = parsed.map((it, idx) => ({ idx, span: it.span }))
-    .sort((a, b) => direction !== 'down' ? (b.span - a.span) : (a.span - b.span)).map(o => o.idx);
-
-  // 5. Kandidat: Rangfolge nach gerichteter Kreuzungspräferenz
-  const order5 = parsed.map((_it, i) => {
-    let prefScore = 0;
-    for (let j = 0; j < n; j++) {
-      if (i === j) continue;
-      prefScore += (pairCosts[i][j].jBelowI - pairCosts[i][j].iBelowJ);
-    }
-    return { idx: i, prefScore };
-  }).sort((a, b) => b.prefScore - a.prefScore).map(o => o.idx);
-
-  const candidates = [order1, order2, order3, order4, order5].map(buildAssignment);
-  let bestAssignment = candidates[0];
-  let bestScore = evaluate(bestAssignment);
-
-  for (let c = 1; c < candidates.length; c++) {
-    const score = evaluate(candidates[c]);
-    if (score < bestScore) {
-      bestScore = score;
-      bestAssignment = candidates[c];
-    }
-  }
-
-  // Lokale Suche zur weiteren Minimierung von Linienkreuzungen (sofern n <= 60)
-  if (n <= 60) {
-    const current = [...bestAssignment];
-    let improved = true;
-    let iters = 0;
-    while (improved && iters < 14) {
-      improved = false;
-      iters++;
-
-      // 1. Pairwise Swaps: Tauscht die Lanes von zwei Items, um lokale Minima bei kreuzungsreduzierender Sortierung zu überwinden
-      for (let i = 0; i < n; i++) {
-        for (let j = i + 1; j < n; j++) {
-          const li = current[i];
-          const lj = current[j];
-          if (li === lj) continue;
-
-          let canSwap = true;
-          for (let k = 0; k < n; k++) {
-            if (k !== i && k !== j) {
-              if (current[k] === lj && pairCosts[i][k].overlap) { canSwap = false; break; }
-              if (current[k] === li && pairCosts[j][k].overlap) { canSwap = false; break; }
-            }
-          }
-          if (!canSwap) continue;
-
-          current[i] = lj;
-          current[j] = li;
-          const score = evaluate(current);
-          if (score < bestScore - 0.001) {
-            bestScore = score;
-            improved = true;
-            bestAssignment[i] = lj;
-            bestAssignment[j] = li;
-          } else {
-            current[i] = li;
-            current[j] = lj;
-          }
+      let blocksLowerFeeds = false;
+      for (let lower = t + 1; lower < tracks.length; lower++) {
+        if (tracks[lower].some(e => verticalTopFeedsCrossInterval(e, conn))) {
+          blocksLowerFeeds = true;
+          break;
         }
       }
 
-      // 2. Einzel-Verschiebungen in freie oder andere Lanes
-      const maxLane = Math.max(...current);
-      for (let i = 0; i < n; i++) {
-        const origL = current[i];
-        for (let targetL = 0; targetL <= maxLane + 1; targetL++) {
-          if (targetL === origL) continue;
-          let conflict = false;
-          for (let other = 0; other < n; other++) {
-            if (other === i) continue;
-            if (current[other] === targetL && pairCosts[i][other].overlap) {
-              conflict = true;
-              break;
-            }
-          }
-          if (conflict) continue;
+      const overlappingInTrack = tracks[t].filter(d => intervalsOverlap(conn, d));
 
-          current[i] = targetL;
-          const score = evaluate(current);
-          if (score < bestScore - 0.001) {
-            bestScore = score;
-            improved = true;
-            bestAssignment[i] = targetL;
-          } else {
-            current[i] = origL;
+      if (overlappingInTrack.length === 0 && !blocksLowerFeeds) {
+        tracks[t].push(conn);
+        return;
+      }
+
+      if (overlappingInTrack.length > 0 && !blocksLowerFeeds) {
+        const shouldDisplaceDown = overlappingInTrack.some(
+          d => verticalTopFeedsCrossInterval(conn, d) || verticalBottomFeedsCrossInterval(d, conn)
+        );
+        const safeForDisplaced = overlappingInTrack.every(
+          d => !verticalTopFeedsCrossInterval(d, conn)
+        );
+
+        if (shouldDisplaceDown && safeForDisplaced) {
+          const displacedSet = new Set(overlappingInTrack.map(d => d.origIdx));
+          tracks[t] = tracks[t].filter(d => !displacedSet.has(d.origIdx));
+          tracks[t].push(conn);
+          for (const d of overlappingInTrack) {
+            placeIntoTracks(d, t + 1);
           }
+          return;
         }
       }
     }
+
+    let canAppendWithoutAboveCrossing = true;
+    for (let upper = 0; upper < tracks.length; upper++) {
+      if (tracks[upper].some(d => verticalTopFeedsCrossInterval(conn, d))) {
+        canAppendWithoutAboveCrossing = false;
+        break;
+      }
+    }
+
+    if (canAppendWithoutAboveCrossing) {
+      tracks.push([conn]);
+      return;
+    }
+
+    for (let t = minTrackIndex; t < tracks.length; t++) {
+      const hasOverlapInT = tracks[t].some(d => intervalsOverlap(conn, d));
+      if (!hasOverlapInT) {
+        tracks[t].push(conn);
+        return;
+      }
+    }
+
+    tracks.push([conn]);
   }
 
-  const usedLanes = Array.from(new Set(bestAssignment)).sort((a, b) => a - b);
-  const laneMap = new Map<number, number>();
-  usedLanes.forEach((l, idx) => laneMap.set(l, idx));
-  const compacted = bestAssignment.map(l => laneMap.get(l) ?? 0);
-  const totalLanes = usedLanes.length > 0 ? Math.max(...compacted) + 1 : 0;
+  for (const conn of sortedConnections) {
+    placeIntoTracks(conn, 0);
+  }
 
-  return { lanes: compacted, totalLanes };
+  const nonEmptyTracks = tracks.filter(trk => trk.length > 0);
+  const assignedLanes = new Array<number>(n).fill(0);
+  nonEmptyTracks.forEach((trk, trackIdx) => {
+    trk.forEach(conn => {
+      assignedLanes[conn.origIdx] = trackIdx;
+    });
+  });
+
+  return {
+    lanes: assignedLanes,
+    totalLanes: nonEmptyTracks.length,
+  };
+}
+
+function partitionIntoChildGroupings<T extends { groupId: string; left: number; right: number; centerX: number }>(
+  cBoxes: T[]
+): T[][] {
+  if (cBoxes.length === 0) return [];
+  const sorted = [...cBoxes].sort((a, b) => a.centerX - b.centerX);
+  const groups: T[][] = [];
+  let currentGroup: T[] = [sorted[0]];
+  groups.push(currentGroup);
+
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    const sameGroup = prev.groupId === curr.groupId;
+    const isAdjacent = Math.abs(curr.left - prev.right) <= 2;
+    if (sameGroup && isAdjacent) {
+      currentGroup.push(curr);
+    } else {
+      currentGroup = [curr];
+      groups.push(currentGroup);
+    }
+  }
+  return groups;
 }
 
 interface ExportCard {
@@ -480,13 +420,52 @@ export function generateDesignExportSvg(
   const personById = new Map<string, DesignExportPerson>();
   persons.forEach(p => personById.set(p.id, p));
 
-  // Determine biological parent for each child
+  const visiblePersonIds = new Set<string>();
+  siblingGroups.forEach(g => {
+    g.memberIds.forEach(id => visiblePersonIds.add(id));
+  });
+
+  function resolvePatrilinearParentId(
+    person: DesignExportPerson | undefined,
+    activeTreeIds: { has(id: string): boolean }
+  ): string | null {
+    if (!person) return null;
+
+    // 1. Explizite Vater-ID prüfen (patrilinearer Vorrang bei Implex)
+    if (person.father_id && activeTreeIds.has(person.father_id)) {
+      return person.father_id;
+    }
+
+    // 2. Männlichen Elternteil in parent_ids prüfen
+    const parentIds = person.parent_ids || [];
+    for (const pid of parentIds) {
+      if (activeTreeIds.has(pid)) {
+        const pObj = personById.get(pid);
+        if (pObj?.sex === 'M') {
+          return pid;
+        }
+      }
+    }
+
+    // 3. Fallback auf Mutter oder sonstigen im aktiven Baum sichtbaren Elternteil
+    if (person.mother_id && activeTreeIds.has(person.mother_id)) {
+      return person.mother_id;
+    }
+    for (const pid of parentIds) {
+      if (activeTreeIds.has(pid)) {
+        return pid;
+      }
+    }
+
+    return null;
+  }
+
+  // Determine patrilinear biological parent in the visible tree for each child
   const biologicalParentMap = new Map<string, string>();
   persons.forEach(p => {
-    for (const pid of p.parent_ids || []) {
-      if (!biologicalParentMap.has(p.id) && personById.has(pid)) {
-        biologicalParentMap.set(p.id, pid);
-      }
+    const resolved = resolvePatrilinearParentId(p, visiblePersonIds);
+    if (resolved) {
+      biologicalParentMap.set(p.id, resolved);
     }
   });
 
@@ -613,10 +592,7 @@ export function generateDesignExportSvg(
 
   const corridorChildrenByParentAndLevel = new Map<string, Map<number, HorizCardPos[]>>();
   cardPosByPersonId.forEach(cb => {
-    let pId: string | undefined;
-    if (cb.person.parent_ids && cb.person.parent_ids.length > 0) {
-      pId = cb.person.parent_ids.find(id => cardPosByPersonId.has(id));
-    }
+    const pId = resolvePatrilinearParentId(cb.person, cardPosByPersonId) || biologicalParentMap.get(cb.id);
     if (!pId) return;
     const pBox = cardPosByPersonId.get(pId);
     if (!pBox) return;
@@ -641,15 +617,9 @@ export function generateDesignExportSvg(
         childLevel > pBox.level ? 'up' : (childLevel === pBox.level ? 'same' : 'down');
       const corridorLevel = direction === 'down' ? pBox.level : childLevel;
 
-      const cBoxesByGroup = new Map<string, HorizCardPos[]>();
-      cBoxes.forEach(cb => {
-        const gId = cb.groupId || cb.id;
-        if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
-        cBoxesByGroup.get(gId)!.push(cb);
-      });
-
+      const childGroupings = partitionIntoChildGroupings(cBoxes);
       const targetXs: number[] = [];
-      cBoxesByGroup.forEach(boxes => {
+      childGroupings.forEach(boxes => {
         const minL = Math.min(...boxes.map(c => c.left));
         const maxR = Math.max(...boxes.map(c => c.right));
         targetXs.push(Math.round((minL + maxR) / 2));
@@ -844,10 +814,7 @@ export function generateDesignExportSvg(
 
   const childrenByParentAndLevel = new Map<string, Map<number, ExportCard[]>>();
   cardBoxByPersonId.forEach(cb => {
-    let pId = biologicalParentMap.get(cb.person.id);
-    if (!pId && cb.person.parent_ids) {
-      pId = cb.person.parent_ids.find(id => cardBoxByPersonId.has(id));
-    }
+    const pId = resolvePatrilinearParentId(cb.person, cardBoxByPersonId) || biologicalParentMap.get(cb.person.id);
     if (!pId) return;
     const pBox = cardBoxByPersonId.get(pId);
     if (!pBox) return;
@@ -932,16 +899,11 @@ export function generateDesignExportSvg(
       const { parentId, childLevel, pBox, cBoxes, direction } = rel;
       const commonEdgeKey = `edge-${parentId}-lvl${childLevel}`;
 
-      const cBoxesByGroup = new Map<string, ExportCard[]>();
-      cBoxes.forEach(cb => {
-        const gId = cb.groupId || cb.person.id;
-        if (!cBoxesByGroup.has(gId)) cBoxesByGroup.set(gId, []);
-        cBoxesByGroup.get(gId)!.push(cb);
-      });
+      const childGroupings = partitionIntoChildGroupings(cBoxes);
 
       const groupTargets: { targetX: number; targetY: number; key: string }[] = [];
       let targetIdx = 0;
-      cBoxesByGroup.forEach((boxes) => {
+      childGroupings.forEach((boxes) => {
         const minL = Math.min(...boxes.map(c => c.left));
         const maxR = Math.max(...boxes.map(c => c.right));
         const targetX = Math.round((minL + maxR) / 2);

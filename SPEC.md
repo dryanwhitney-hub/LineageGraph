@@ -187,11 +187,18 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
   `useDesignLayout.ts` berechnet rekursiv die Subtree-Breiten jeder Familie, partitioniert Generationen in Y-Ebenen und platziert Eltern- und Kindergruppen mit horizontalen Ausgleichsabständen (`horizontalLaneGap`). Überlappungen dichter Unterzweige werden durch automatische Versetzung in Sub-Lanes aufgelöst.
 
 #### SPEC-DSG-002 -> REQ-DSG-002
-- **Fachliche Anforderung:** Orthogonale Linienführung & Linienbrücken (Line Bridges) ([REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung--linienbr%C3%BCcken-line-bridges))
+- **Fachliche Anforderung:** Orthogonale Linienführung, Bottom-Up Track Assignment & Linienbrücken (Line Bridges) ([REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung-bottom-up-track-assignment--linienbr%C3%BCcken-line-bridges))
 - **Architektonische Schicht & Komponenten-Mapping:**
+  - Vue Composable: [`src/composables/useDesignLayout.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignLayout.ts) (`resolvePatrilinearParentId`, `partitionIntoChildGroupings`, `assignNonOverlappingLanes`, `edgeGeometry`)
+  - Export Utility: [`src/utils/designExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/designExport.ts) (`resolvePatrilinearParentId`, `partitionIntoChildGroupings`, `assignNonOverlappingLanes`, `generateDesignExportSvg`)
   - Vue Komponente: [`src/components/design/DesignConnectorLayer.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignConnectorLayer.vue)
 - **Technische Umsetzung:**
-  Die Komponente rendert ein SVG-Overlay über der Leinwand. Verbindungslinien zwischen Eltern-Karten und Kindern werden als rechtwinklige Pfade (`M ... L ...`) berechnet. Kreuzen horizontale Linien bestehende vertikale Verbinder, wird an den Schnittpunkten ein SVG-Bogenbefehl (`A radius radius ...`) eingefügt, der den optischen Eindruck einer Leitungsbrücke erzeugt.
+  1. **Patrilineare Elternauflösung (`resolvePatrilinearParentId`) & Kindergruppierungen (`partitionIntoChildGroupings`):** Für jede sichtbare Personenkachel wird der maßgebliche Elterneintrag im aktiven Baum ermittelt; sind bei Implex-Fällen sowohl Vater als auch Mutter im Baum enthalten, erhält stets der Vater (`father_id` bzw. männlicher Elternteil `sex === 'M'`) den Vorrang. Kinder desselben Elternteils auf einer Ebene werden in zusammenhängende Gruppierungen (`targetX = Math.round((minLeft + maxRight) / 2)`) zusammengefasst.
+  2. **Track Assignment für Bottom-Up-Layouts (`assignNonOverlappingLanes`):**
+     - **Datenaufbereitung & Intervalle:** Jede Verbindung `C` zwischen Eltern-Mitte (`x_start`) und Kind-/Gruppen-Mitte (`x_end`) definiert das Intervall `[min(x_start, x_end) - PADDING, max(x_start, x_end) + PADDING]` (`PADDING = 8`).
+     - **Sortierung (Längste zuerst):** Absteigend nach horizontaler Spannweite `abs(x_start - x_end)`.
+     - **Greedy Track-Zuweisung von oben nach unten:** `Track 0` liegt ganz oben direkt unter den Kind-Knoten, `Track 1, 2, ...` liegen darunter Richtung Eltern-Knoten. Geprüft werden **Bedingung A** (keine horizontale Intervall-Überlappung in Track `T`) und **Bedingung B** (vertikale Zuleitungen von den Kind-Knoten oben hinab zu Track `T` kreuzen in `0..T-1` keine horizontalen Intervalle; überdeckt eine bereits platzierte weitere Verbindung die vertikale Kind-Zuleitung einer engeren Verbindung, rückt die weitere Verbindung nach unten Richtung Elternknoten).
+     - **Rendering:** Jedem Track `T` wird `jogY = levelMaxBottom + CORRIDOR_PAD_TOP + T * gap` zugewiesen. An verbleibenden Schnittpunkten wird ein SVG-Bogenbefehl (`A radius radius ...`) eingefügt.
 
 #### SPEC-DSG-003 -> REQ-DSG-003
 - **Fachliche Anforderung:** Voll konfigurierbare Personenkarten ([REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten))
@@ -211,13 +218,13 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
   Hintergrundbilder werden im Browser als Data-URL oder Binär-Blob eingelesen. `designBgStorage.ts` speichert das Bild in IndexedDB bzw. über das Backend-Kommando `save_binary_file` im Anwendungsordner. In der Sidebar lassen sich Opacity (0–100 %), Positionierung (`cover`, `contain`, `center`) und Farbtönungen justieren.
 
 #### SPEC-DSG-005 -> REQ-DSG-005
-- **Fachliche Anforderung:** Layout-Persistenz & Undo/Redo-Verlauf ([REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-005-layout-persistenz--undoredo-verlauf))
+- **Fachliche Anforderung:** Layout-Persistenz, Dateiverwaltung & Undo/Redo-Verlauf ([REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-005-layout-persistenz-dateiverwaltung--undoredo-verlauf))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Vue Composable: [`src/composables/useDesignHistory.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignHistory.ts)
-  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs#L2250-L2300) (`save_design_layout`, `get_design_layouts`, `delete_design_layout`)
+  - Vue Composables & Views: [`src/composables/useDesignHistory.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignHistory.ts), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue)
+  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs#L2250-L2495) (`save_design_layout`, `get_design_layouts`, `delete_design_layout`, `read_design_file`, `save_design_file`)
   - SQLite Schema: [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs#L85-L93) (`design_layouts`)
 - **Technische Umsetzung:**
-  `useDesignHistory` führt zwei Stacks (`undoStack`, `redoStack`) mit tiefengeklonten Snapshots des gesamten Layoutzustands. Layouts werden über `save_design_layout` als JSON-String in die Tabelle `design_layouts` serialisiert und sind pro Proband filterbar.
+  `useDesignHistory` führt Stacks (`historyStack`, `redoStack`) mit Snapshots des gesamten Layoutzustands. Layouts werden über `save_design_layout` als JSON-String in die Tabelle `design_layouts` serialisiert und sind strikt pro Proband filterbar. Beim Umschalten auf einen anderen Probanden (`checkAndLoadLatestStateOrOffer`) wird die Abfrage isoliert auf diesen Probanden begrenzt, sodass fremde Stände niemals geladen oder Stammahn-Auswahlen überschrieben werden. Das Anlegen neuer Designs (`openNewDesignModal`, `confirmCreateNewDesign`) bietet eine Auswahlliste aller definierten Stammahnen (`rootAncestors`), aktualisiert den Standard-Entwurfsnamen reaktiv, warnt vor ungespeicherten Änderungen und unterdrückt über `skipAutoLoadOnce` das Laden alter Speicherdateien beim Wechsel. Über `loadStateFromFile` und `exportStateToFile` werden native Dateioperationen via Tauri-Dateidialog (`read_design_file`, `save_design_file`) angebunden.
 
 ---
 

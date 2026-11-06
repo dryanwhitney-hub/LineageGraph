@@ -84,6 +84,7 @@ const emit = defineEmits<{
   (e: 'update:isBgDraggingOnCanvas', val: boolean): void;
   (e: 'drop-bg-file', file: File): void;
   (e: 'undo'): void;
+  (e: 'create-new-design'): void;
   (e: 'open-load-modal'): void;
   (e: 'open-save-modal'): void;
 }>();
@@ -593,6 +594,14 @@ function onBgMouseUp() {
         @click.stop="emit('undo')"
       >
         ↩️
+      </button>
+      <!-- Neu / Neue Datei Button: Kreis mit "Neues Dokument" Icon -->
+      <button
+        class="persist-circle-btn persist-btn-new"
+        :title="t('design_new_file_tooltip')"
+        @click.stop="emit('create-new-design')"
+      >
+        📄
       </button>
       <!-- Laden Button: etwas kleinerer Kreis mit "Open File" Icon -->
       <button
@@ -1189,6 +1198,22 @@ function onBgMouseUp() {
   cursor: not-allowed;
   transform: none !important;
   box-shadow: none !important;
+}
+.persist-circle-btn.persist-btn-new {
+  width: 44px;
+  height: 44px;
+  background: #ffffff;
+  color: #1e293b;
+  border: 2px solid #94a3b8;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  font-size: 1.25rem;
+}
+.persist-circle-btn.persist-btn-new:hover {
+  background: #f8fafc;
+  border-color: #10b981;
+  color: #059669;
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.3);
 }
 .persist-circle-btn.persist-btn-load {
   width: 44px;

@@ -151,6 +151,14 @@ const {
   loadStateFromEntry,
   exportEntryToFile,
   deleteStateEntry,
+  showNewDesignModal,
+  newDesignProbandId,
+  newDesignFileName,
+  hasUnsavedChanges,
+  openNewDesignModal,
+  closeNewDesignModal,
+  onNewDesignProbandChange,
+  confirmCreateNewDesign,
   loadStateFromFile,
   onFileInputChange,
   formatDateStr,
@@ -171,6 +179,7 @@ const {
   getProps: () => ({
     personsLength: props.persons.length,
     activeProbandId: props.activeProbandId,
+    rootAncestors: props.rootAncestors,
     horizontalLaneGap: props.horizontalLaneGap,
     autoSubLanes: props.autoSubLanes,
     enableLineBridges: props.enableLineBridges,
@@ -396,12 +405,20 @@ function handleDropBgFile(file: File) {
       :saved-layouts-list="savedLayoutsList"
       :format-date-str="formatDateStr"
       :set-design-file-input-ref="el => { designFileInputRef = el }"
+      :show-new-design-modal="showNewDesignModal"
+      :new-design-proband-id="newDesignProbandId"
+      :new-design-file-name="newDesignFileName"
+      :has-unsaved-changes="hasUnsavedChanges"
       @select-proband="id => emit('select-proband', id)"
       @open-settings="emit('open-settings')"
       @undo="undoLastAction"
       @expand-all="expandAllDescendants"
       @collapse-all="collapseAllToOrigin"
       @reset-layout="buildInitialDesignLayout"
+      @close-new-design-modal="closeNewDesignModal"
+      @update:new-design-proband-id="id => onNewDesignProbandChange(id)"
+      @update:new-design-file-name="name => { newDesignFileName = name }"
+      @confirm-create-new-design="confirmCreateNewDesign"
       @update:is-bg-popover-open="val => { isBgPopoverOpen = val }"
       @update:is-bg-dragging-on-canvas="val => { isBgDraggingOnCanvas = val }"
       @update:bg-image-data="val => { bgImageData = val }"
@@ -488,6 +505,7 @@ function handleDropBgFile(file: File) {
       @update:is-bg-dragging-on-canvas="val => { isBgDraggingOnCanvas = val }"
       @drop-bg-file="handleDropBgFile"
       @undo="undoLastAction"
+      @create-new-design="openNewDesignModal"
       @open-load-modal="openLoadModal"
       @open-save-modal="openSaveModal"
     />

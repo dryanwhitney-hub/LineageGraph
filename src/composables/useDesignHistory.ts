@@ -6,6 +6,7 @@ import {
   type DesignCardConfig,
   type DesignBackgroundConfig,
 } from '../types/design';
+import type { RootAncestorConfig } from './useDesignLayout';
 
 export interface DesignSiblingGroup {
   id: string;
@@ -79,6 +80,7 @@ export interface UseDesignHistoryOptions<TPerson extends { given_name: string | 
   getProps: () => {
     personsLength: number;
     activeProbandId: string | null;
+    rootAncestors?: RootAncestorConfig[];
     horizontalLaneGap?: number;
     autoSubLanes?: boolean;
     enableLineBridges?: boolean;
@@ -256,6 +258,12 @@ export function useDesignHistory<
   const isApplyingLoadedState = ref(false);
   let isCheckingLayout = false;
 
+  const showNewDesignModal = ref(false);
+  const newDesignProbandId = ref('');
+  const newDesignFileName = ref('');
+  const skipAutoLoadOnce = ref(false);
+  const hasUnsavedChanges = computed<boolean>(() => historyStack.value.length > 0);
+
   const showLoadModal = ref(false);
   const savedLayoutsList = ref<DesignLayoutEntry[]>([]);
   const isLoadingLayouts = ref(false);
@@ -331,16 +339,20 @@ export function useDesignHistory<
     saveFeedbackMessage.value = '';
   }
 
-  function openInitialOfferModal() {
-    const { activeProbandId } = getProps();
-    const probandPerson = activeProbandId ? personById.value.get(activeProbandId) : null;
-    const rawName = probandPerson
-      ? `${probandPerson.given_name || ''}_${probandPerson.surname || ''}`
+  function getProbandDefaultFileName(probandId: string | null | undefined): string {
+    const p = probandId ? personById.value.get(probandId) : null;
+    const rawName = p
+      ? `${p.given_name || ''}_${p.surname || ''}`
           .replace(/\s+/g, '_')
           .replace(/[^a-zA-Z0-9_\-äöüÄÖÜß]/g, '')
       : 'Stammbaum';
     const dateStr = new Date().toISOString().slice(0, 10);
-    saveFileName.value = `${rawName || 'Design'}_${dateStr}`;
+    return `${rawName || 'Design'}_${dateStr}`;
+  }
+
+  function openInitialOfferModal() {
+    const { activeProbandId } = getProps();
+    saveFileName.value = getProbandDefaultFileName(activeProbandId);
     saveFeedbackMessage.value = '';
     saveMode.value = 'new';
     selectedOverwriteId.value = '';
@@ -351,37 +363,29 @@ export function useDesignHistory<
 
   async function checkAndLoadLatestStateOrOffer() {
     const { personsLength, activeProbandId } = getProps();
-    if (personsLength === 0 || isCheckingLayout) return;
+    if (personsLength === 0 || isCheckingLayout || !activeProbandId) return;
+
+    if (skipAutoLoadOnce.value) {
+      skipAutoLoadOnce.value = false;
+      return;
+    }
+
     isCheckingLayout = true;
     isApplyingLoadedState.value = true;
     try {
       let layouts: DesignLayoutEntry[] = [];
-      const currentProband = activeProbandId || '';
+      const currentProband = activeProbandId;
 
-      // 1. Zuerst Layouts für aktuellen Probanden abrufen
-      if (currentProband) {
-        try {
-          layouts = await invoke<DesignLayoutEntry[]>('get_design_layouts', {
-            probandId: currentProband,
-          });
-        } catch (err) {
-          console.error('Error fetching layouts for proband', err);
-        }
+      // 1. Zuerst Layouts für aktuellen Probanden abrufen (ausschließlich für diesen Probanden)
+      try {
+        layouts = await invoke<DesignLayoutEntry[]>('get_design_layouts', {
+          probandId: currentProband,
+        });
+      } catch (err) {
+        console.error('Error fetching layouts for proband', err);
       }
 
-      // 2. Falls für aktuellen Probanden keine Layouts vorliegen: alle Layouts des Stammbaums prüfen
-      if (layouts.length === 0) {
-        try {
-          const all = await invoke<DesignLayoutEntry[]>('get_design_layouts', { probandId: '' });
-          if (all.length > 0) {
-            layouts = all;
-          }
-        } catch (err) {
-          console.error('Error fetching all layouts', err);
-        }
-      }
-
-      // 3. Wenn gespeicherte Stände existieren: den zuletzt bearbeiteten laden!
+      // 2. Wenn für diesen Probanden gespeicherte Stände existieren: den zuletzt bearbeiteten laden!
       if (layouts.length > 0) {
         const lastId = localStorage.getItem('stammbaum_last_design_layout_id');
         const targetLayout = (lastId ? layouts.find(l => l.id === lastId) : null) || layouts[0];
@@ -395,10 +399,6 @@ export function useDesignHistory<
           selectedOverwriteId.value = targetLayout.id;
           saveMode.value = 'overwrite';
           localStorage.setItem('stammbaum_last_design_layout_id', targetLayout.id);
-
-          if (targetLayout.proband_id && targetLayout.proband_id !== activeProbandId) {
-            onSelectProband(targetLayout.proband_id);
-          }
 
           autoLoadToast.value = t('design_auto_loaded_toast', { name: targetLayout.name });
           setTimeout(() => {
@@ -416,11 +416,16 @@ export function useDesignHistory<
         }
       }
 
-      // 4. Wurde noch kein Stand bearbeitet: Ausgangs-Layout erstellen und Erstellen einer neuen Datei anbieten
+      // 3. Wurde für diesen Stammahn noch kein Stand gespeichert: Ausgangs-Layout erstellen
+      currentLayoutId.value = null;
+      currentLayoutName.value = '';
+      selectedOverwriteId.value = '';
+      saveMode.value = 'new';
+      saveFileName.value = getProbandDefaultFileName(currentProband);
+
       onBuildInitialDesignLayout();
       nextTick(() => {
         onCenterOnOrigin();
-        openInitialOfferModal();
       });
     } finally {
       isApplyingLoadedState.value = false;
@@ -714,17 +719,83 @@ export function useDesignHistory<
     }
   }
 
+  function openNewDesignModal() {
+    const { activeProbandId, rootAncestors } = getProps();
+    const currentId = activeProbandId || (rootAncestors && rootAncestors.length > 0 ? rootAncestors[0].person_id : '');
+    newDesignProbandId.value = currentId;
+    newDesignFileName.value = getProbandDefaultFileName(currentId);
+    showNewDesignModal.value = true;
+  }
+
+  function closeNewDesignModal() {
+    showNewDesignModal.value = false;
+  }
+
+  function onNewDesignProbandChange(probandId: string) {
+    newDesignProbandId.value = probandId;
+    newDesignFileName.value = getProbandDefaultFileName(probandId);
+  }
+
+  function confirmCreateNewDesign() {
+    const targetProbandId = newDesignProbandId.value;
+    const targetName = newDesignFileName.value.trim() || getProbandDefaultFileName(targetProbandId);
+
+    showNewDesignModal.value = false;
+    skipAutoLoadOnce.value = true;
+
+    if (targetProbandId && targetProbandId !== getProps().activeProbandId) {
+      onSelectProband(targetProbandId);
+    }
+
+    currentLayoutId.value = null;
+    currentLayoutName.value = '';
+    selectedOverwriteId.value = '';
+    saveMode.value = 'new';
+    localStorage.removeItem('stammbaum_last_design_layout_id');
+
+    bgImageData.value = null;
+    bgConfig.value = { ...DEFAULT_BACKGROUND_CONFIG };
+    deleteProbandBg(targetProbandId);
+
+    saveFileName.value = targetName;
+    historyStack.value = [];
+    redoStack.value = [];
+
+    onBuildInitialDesignLayout();
+    nextTick(() => {
+      onCenterOnOrigin();
+    });
+
+    autoLoadToast.value = t('design_new_file_created');
+    setTimeout(() => {
+      autoLoadToast.value = '';
+    }, 2500);
+  }
+
+  function createNewDesignFile() {
+    openNewDesignModal();
+  }
+
   async function loadStateFromFile() {
     try {
       let selected: string | null = null;
+      let dialogCancelled = false;
       try {
         const res = await open({
           multiple: false,
           filters: [{ name: 'Stammbaum Design (*.json)', extensions: ['json'] }],
         });
-        if (typeof res === 'string') selected = res;
+        if (typeof res === 'string') {
+          selected = res;
+        } else {
+          dialogCancelled = true;
+        }
       } catch {
         selected = null;
+      }
+
+      if (dialogCancelled) {
+        return;
       }
 
       if (selected) {
@@ -738,6 +809,10 @@ export function useDesignHistory<
       }
     } catch (err) {
       loadFeedbackMessage.value = t('design_load_error', { error: String(err) });
+      autoLoadToast.value = t('design_load_error', { error: String(err) });
+      setTimeout(() => {
+        autoLoadToast.value = '';
+      }, 3500);
     }
   }
 
@@ -784,12 +859,18 @@ export function useDesignHistory<
       saveMode.value = 'overwrite';
 
       loadFeedbackMessage.value = t('design_load_file_success');
+      autoLoadToast.value = t('design_load_file_success');
       setTimeout(() => {
         showLoadModal.value = false;
         loadFeedbackMessage.value = '';
-      }, 1000);
+        autoLoadToast.value = '';
+      }, 2000);
     } catch (err) {
       loadFeedbackMessage.value = t('design_load_error', { error: String(err) });
+      autoLoadToast.value = t('design_load_error', { error: String(err) });
+      setTimeout(() => {
+        autoLoadToast.value = '';
+      }, 3500);
     }
   }
 
@@ -860,6 +941,15 @@ export function useDesignHistory<
     loadStateFromEntry,
     exportEntryToFile,
     deleteStateEntry,
+    createNewDesignFile,
+    showNewDesignModal,
+    newDesignProbandId,
+    newDesignFileName,
+    hasUnsavedChanges,
+    openNewDesignModal,
+    closeNewDesignModal,
+    onNewDesignProbandChange,
+    confirmCreateNewDesign,
     loadStateFromFile,
     onFileInputChange,
     processLoadedJsonString,

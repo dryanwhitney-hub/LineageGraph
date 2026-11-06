@@ -50,6 +50,11 @@ const props = defineProps<{
   savedLayoutsList: DesignLayoutEntry[];
   formatDateStr: (iso: string) => string;
   setDesignFileInputRef: (el: HTMLInputElement | null) => void;
+  // New Design Modal props
+  showNewDesignModal?: boolean;
+  newDesignProbandId?: string;
+  newDesignFileName?: string;
+  hasUnsavedChanges?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -59,6 +64,10 @@ const emit = defineEmits<{
   (e: 'expand-all'): void;
   (e: 'collapse-all'): void;
   (e: 'reset-layout'): void;
+  (e: 'close-new-design-modal'): void;
+  (e: 'update:newDesignProbandId', id: string): void;
+  (e: 'update:newDesignFileName', name: string): void;
+  (e: 'confirm-create-new-design'): void;
   (e: 'update:isBgPopoverOpen', val: boolean): void;
   (e: 'update:isBgDraggingOnCanvas', val: boolean): void;
   (e: 'update:bgImageData', val: string | null): void;
@@ -706,6 +715,87 @@ defineExpose({
         <div class="design-modal-footer">
           <button class="d-modal-btn d-modal-btn-cancel" @click="emit('close-load-modal')">
             {{ t('close') || 'Schließen' }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Neues Design Modal (mit Stammahn-Auswahl) -->
+    <div
+      v-if="showNewDesignModal"
+      class="design-modal-backdrop"
+      @click="emit('close-new-design-modal')"
+      @mousedown.stop
+    >
+      <div class="design-modal-window new-design-modal-window" @click.stop>
+        <div class="design-modal-header">
+          <div class="design-modal-title">
+            <span class="design-modal-icon">📄</span>
+            <h3>{{ t('design_new_modal_title') }}</h3>
+          </div>
+          <button class="design-modal-close-btn" @click="emit('close-new-design-modal')">✕</button>
+        </div>
+
+        <div class="design-modal-body">
+          <p class="design-modal-intro">
+            {{ t('design_new_modal_intro') }}
+          </p>
+
+          <!-- Stammahn Auswahl -->
+          <div class="design-form-group">
+            <label class="design-form-label">{{ t('design_new_modal_proband_label') }}</label>
+            <select
+              :value="newDesignProbandId"
+              class="design-modal-select"
+              @change="emit('update:newDesignProbandId', ($event.target as HTMLSelectElement).value)"
+            >
+              <option
+                v-for="r in rootAncestors"
+                :key="'nd-root-' + r.person_id"
+                :value="r.person_id"
+              >
+                [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }} ({{ r.person_id }})
+              </option>
+            </select>
+            <span class="design-input-hint">
+              {{ t('design_new_modal_proband_hint') }}
+            </span>
+          </div>
+
+          <!-- Name des Entwurfs -->
+          <div class="design-form-group">
+            <label class="design-form-label">{{ t('design_save_filename_label') }}</label>
+            <input
+              :value="newDesignFileName"
+              type="text"
+              class="design-modal-input"
+              :placeholder="t('design_save_filename_placeholder')"
+              @input="emit('update:newDesignFileName', ($event.target as HTMLInputElement).value)"
+              @keyup.enter="emit('confirm-create-new-design')"
+              autofocus
+            />
+          </div>
+
+          <!-- Warnung bei ungespeicherten Änderungen -->
+          <div v-if="hasUnsavedChanges" class="design-unsaved-warning">
+            <span class="warn-icon">⚠️</span>
+            <div class="warn-text">
+              <strong>{{ t('attention') || 'Achtung' }}</strong>
+              <p>{{ t('design_new_file_confirm') }}</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="design-modal-footer">
+          <button
+            class="d-modal-btn d-modal-btn-primary"
+            :disabled="!newDesignFileName?.trim() || !newDesignProbandId"
+            @click="emit('confirm-create-new-design')"
+          >
+            {{ t('design_new_modal_submit_btn') }}
+          </button>
+          <button class="d-modal-btn d-modal-btn-cancel" @click="emit('close-new-design-modal')">
+            {{ t('cancel') || 'Abbrechen' }}
           </button>
         </div>
       </div>
@@ -1617,5 +1707,41 @@ defineExpose({
 }
 .d-modal-btn-open-file:hover {
   background: #059669;
+}
+.new-design-modal-window {
+  max-width: 520px;
+}
+.design-modal-intro {
+  margin: 0;
+  font-size: 0.86rem;
+  color: #475569;
+  line-height: 1.45;
+}
+.design-unsaved-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: #fffbeb;
+  border: 1px solid #fef3c7;
+  border-left: 4px solid #f59e0b;
+  padding: 10px 14px;
+  border-radius: 6px;
+  margin-top: 4px;
+}
+.design-unsaved-warning .warn-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+.design-unsaved-warning .warn-text strong {
+  color: #b45309;
+  font-size: 0.85rem;
+  display: block;
+  margin-bottom: 2px;
+}
+.design-unsaved-warning .warn-text p {
+  color: #92400e;
+  font-size: 0.8rem;
+  margin: 0;
+  line-height: 1.4;
 }
 </style>

@@ -256,13 +256,17 @@ graph TD
   3. Konfigurierbare Mindestabstände zwischen Zweigen und Personen.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-001---req-dsg-001)
 
-#### REQ-DSG-002: Orthogonale Linienführung & Linienbrücken (Line Bridges)
-- **Titel & Kurzbeschreibung:** Rechtwinklige SVG-Verbindungslinien mit bogenförmigen Brücken bei Kreuzungen.
-- **Fachlicher Zweck / Business Value:** Klare Nachverfolgbarkeit von Abstammungslinien auch in hochgradig vernetzten Stammbäumen.
+#### REQ-DSG-002: Orthogonale Linienführung, Bottom-Up Track Assignment & Linienbrücken (Line Bridges)
+- **Titel & Kurzbeschreibung:** Rechtwinklige SVG-Verbindungslinien nach dem „Track Assignment für Bottom-Up-Layouts"-Verfahren mit patrilinearer Implex-Auflösung und bogenförmigen Brücken bei Kreuzungen.
+- **Fachlicher Zweck / Business Value:** Klare, kreuzungsminimierte Nachverfolgbarkeit von Abstammungslinien zwischen Elterneinträgen und Kindern bzw. Gruppierungen von Kindern im Design Mode sowie im Bild-/Vektorexport.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Horizontale und vertikale Segmente verbinden Eltern mit Kindern.
-  2. Schneiden sich zwei Linien, überspringt eine Linie die andere mit einem definierten Halbkreis-Bogen (`bridgeRadius`).
-  3. Umschaltbare Option zur Minimierung von Brücken.
+  1. Verbunden werden Elterneinträge (unten) mit ihren Kindern bzw. zusammenhängenden Gruppierungen von Kindern (oben) über orthogonale Segmente (`Start/Eltern unten -> hoch -> horizontal -> hoch -> Ziel/Kinder oben`).
+  2. Bei Implex-Fällen (beide Elternteile sind im Baum enthalten) wird strikt eine patrilineare Darstellung verfolgt (Vater hat Vorrang vor Mutter; die Mutter wird nur dann verbunden, wenn der Vater nicht im Baum enthalten ist).
+  3. **Track Assignment für Bottom-Up-Layouts:**
+     - Jede horizontale Verbindung `C` definiert das gepolsterte Intervall `[min(x_start, x_end) - PADDING, max(x_start, x_end) + PADDING]`.
+     - Alle Verbindungen eines Korridors werden absteigend nach ihrer horizontalen Spannweite `abs(x_start - x_end)` sortiert, sodass weiter nach außen greifende Verbindungen weiter unten (näher am Elternknoten) platziert werden.
+     - Greedy Track-Zuweisung von oben nach unten (`Track 0` direkt unter den Kind-Knoten, `Track 1` darunter Richtung Eltern-Knoten): Eine Verbindung `C` erhält den kleinsten Track-Index `T`, in dem weder eine horizontale Intervall-Überlappung in Track `T` (**Bedingung A**) noch eine Kreuzung der vertikalen Kind-Zuleitungen mit horizontalen Intervallen in den darüberliegenden Tracks `0` bis `T-1` (**Bedingung B**) auftritt.
+  4. Unvermeidbare Schnittpunkte zwischen horizontalen und vertikalen Segmenten werden als Halbkreis-Bogen (`bridgeRadius`) gerendert.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-002---req-dsg-002)
 
 #### REQ-DSG-003: Voll konfigurierbare Personenkarten
@@ -282,12 +286,16 @@ graph TD
   3. Frei justierbare Deckkraft (Opacity), Skalierung und Positionierung.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-004---req-dsg-004)
 
-#### REQ-DSG-005: Layout-Persistenz & Undo/Redo-Verlauf
-- **Titel & Kurzbeschreibung:** Speichern beliebig vieler benannter Design-Layouts pro Proband sowie lückenlose Rückgängig-Funktion.
-- **Fachlicher Zweck / Business Value:** Sicheres Experimentieren mit visuellen Anordnungen ohne Datenverlust.
+#### REQ-DSG-005: Layout-Persistenz, Dateiverwaltung & Undo/Redo-Verlauf
+- **Titel & Kurzbeschreibung:** Speichern beliebig vieler benannter Design-Layouts pro Proband in SQLite, Anlegen neuer Designs, Öffnen und Exportieren externer JSON-Dateien sowie lückenlose Rückgängig-Funktion.
+- **Fachlicher Zweck / Business Value:** Sicheres Experimentieren mit visuellen Anordnungen ohne Datenverlust, nahtloser Austausch und Archivierung von Stammbaum-Layouts.
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Speichern und Laden von Layouts pro Proband in der Tabelle `design_layouts`.
-  2. Undo/Redo-Stack für Verschiebungen, Einklappungen und Stilanpassungen.
+  2. Möglichkeit zum Anlegen eines neuen Entwurfs ("Neues Design") über das schwebende Aktions-Overlay unten rechts mit freier Stammahnen-Auswahl und Warnhinweis bei ungespeicherten Änderungen.
+  3. Beim Umschalten auf einen anderen Stammahnen (über das Stammahnen-Dropdown oder die Neuanlage) werden ausschließlich Layouts dieses spezifischen Stammahnen geladen bzw. ein initialer Zustand erzeugt; fremde Speicherstände anderer Stammahnen werden niemals fälschlich geladen.
+  4. Direktes Öffnen externer Design-Dateien (`.json`) über den nativen Dateidialog (`read_design_file`) aus dem Lade-Dialog.
+  5. Exportieren des aktuellen Zustands oder gespeicherter Einträge als eigenständige `.json`-Datei (`save_design_file`).
+  6. Undo/Redo-Stack für Verschiebungen, Einklappungen und Stilanpassungen.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-005---req-dsg-005)
 
 ---
