@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import DesignTree from './components/DesignTree.vue';
 import ExportView from './components/ExportView.vue';
 import PersonTableView from './components/table/PersonTableView.vue';
@@ -201,6 +203,18 @@ function changeLanguage(lang: string) {
   locale.value = lang;
 }
 
+async function openUserGuide() {
+  try {
+    await invoke('open_user_guide');
+  } catch {
+    try {
+      await openUrl('https://github.com/dryanwhitney-hub/LineageGraph/blob/main/USER_GUIDE.md');
+    } catch {
+      window.open('https://github.com/dryanwhitney-hub/LineageGraph/blob/main/USER_GUIDE.md', '_blank');
+    }
+  }
+}
+
 watch(currentView, () => {
   selectedPerson.value = null;
   personDetails.value = null;
@@ -244,6 +258,7 @@ onMounted(() => {
           <button @click="currentView = 'export'" :class="{ active: currentView === 'export' }">📦 {{ t('view_export') }}</button>
         </div>
         <button class="btn-settings" @click="showSettings = true; loadRootAncestors()">⚙️ {{ t('settings') }}</button>
+        <button class="btn-guide" @click="openUserGuide" :title="t('user_guide_tooltip')">📖 {{ t('user_guide_btn') }}</button>
         <button @click="changeLanguage('de')" :class="{ active: locale === 'de' }">DE</button>
         <button @click="changeLanguage('en')" :class="{ active: locale === 'en' }">EN</button>
       </div>
@@ -511,7 +526,9 @@ h1 { font-size: 1.8rem; margin: 0; color: #2c3e50; }
 .view-toggle button:disabled { opacity: 0.5; cursor: not-allowed; }
 .lang-switcher > button { padding: 0.3rem 0.6rem; background-color: #ecf0f1; color: #2c3e50; border: 1px solid #bdc3c7; border-radius: 4px; cursor: pointer; font-weight: bold; }
 .lang-switcher > button.active { background-color: #3498db; color: white; border-color: #2980b9; }
-.btn-settings { background-color: #95a5a6 !important; color: white !important; border: none !important; margin-right: 1rem; }
+.btn-settings { background-color: #95a5a6 !important; color: white !important; border: none !important; margin-right: 0.5rem; }
+.btn-guide { background-color: #2c3e50 !important; color: white !important; border: none !important; margin-right: 1rem; }
+.btn-guide:hover { background-color: #1a252f !important; }
 .btn-add-rel { background-color: #27ae60 !important; }
 .toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
 .actions { display: flex; gap: 1rem; }

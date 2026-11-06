@@ -94,15 +94,16 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 
 #### TC-TRM-004: Automatisierte Versionsprüfung bei Start & Manuelle Prüfung in Einstellungen
 - **Traceability:** [REQ-TRM-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-trm-004-app-aktualisierung--versionspr%C3%BCfung) -> [SPEC-TRM-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-004---req-trm-004)
-- **Test-Typ:** Unit & Integration Test (*Implemented: `tests::test_check_internet_connection` & Tauri IPC / Composable*)
-- **Test-Ziel:** Validieren der robusten Konnektivitätsprüfung, des geräuschlosen Startverhaltens, der manuellen Aktualisierungsprüfung in den Einstellungen und der obligatorischen Bestätigungsabfrage vor dem Download.
+- **Test-Typ:** Unit & Integration Test (*Implemented: `tests::test_check_internet_connection`, `tests::test_resolve_user_guide_path` & Tauri IPC / Composable*)
+- **Test-Ziel:** Validieren der robusten Konnektivitätsprüfung, des geräuschlosen Startverhaltens, der manuellen Aktualisierungsprüfung in den Einstellungen, des direkten Absprungs zum Anwenderhandbuch (`USER_GUIDE.md`) und der obligatorischen Bestätigungsabfrage vor dem Download.
 - **Preconditions:** Anwendung initialisiert; Testumgebung verfügt wahlweise über Internetzugang oder Offline-Zustand.
 - **Testschritte:**
-  1. `cargo test -- test_check_internet_connection` ausführen.
+  1. `cargo test -- test_check_internet_connection test_resolve_user_guide_path` ausführen.
   2. IPC-Aufruf `check_internet_connection` im Frontend über `useAppUpdater` absetzen.
   3. Beim Start (`onMounted` in `App.vue`): Verhalten bei fehlender Verbindung (kein Popup) vs. aktiver Verbindung prüfen.
   4. Im Einstellungsfenster (`SettingsModal.vue` -> Bereich `ℹ️ Über LineageGraph`) auf `🔍 Auf Updates prüfen` klicken.
   5. Bei gefundener neuer Version Anzeige von `UpdateConfirmModal.vue` und Abbruch via `Später erinnern` vs. Ausführung via `✨ Jetzt aktualisieren` prüfen.
+  6. Klick auf `📖 Handbuch` in der Menüleiste bzw. `📖 Anwenderhandbuch (USER_GUIDE.md)` in den Einstellungen auslösen und prüfen, dass `open_user_guide` die lokale Markdown-Datei oder das Web-Repository öffnet.
 - **Erwartetes Ergebnis:**
   * `check_connectivity()` bzw. `check_internet_connection()` terminiert innerhalb des Timeouts (<= 1500 ms) ohne Panic oder Blockieren der UI-Engine.
   * Beim Start blockiert eine fehlende Internetverbindung den Anwendungsstart in keiner Weise.

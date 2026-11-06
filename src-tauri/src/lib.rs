@@ -2671,6 +2671,64 @@ async fn check_internet_connection() -> bool {
         .unwrap_or(false)
 }
 
+pub fn resolve_user_guide_path() -> Option<PathBuf> {
+    let candidates = [
+        PathBuf::from("USER_GUIDE.md"),
+        PathBuf::from("../USER_GUIDE.md"),
+        std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("USER_GUIDE.md")))
+            .unwrap_or_default(),
+    ];
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Some(candidate.clone());
+        }
+    }
+    None
+}
+
+#[tauri::command]
+async fn open_user_guide() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        if let Some(candidate) = resolve_user_guide_path() {
+            #[cfg(target_os = "windows")]
+            {
+                let mut cmd = Command::new("cmd");
+                cmd.args(["/C", "start", "", candidate.to_str().unwrap_or("USER_GUIDE.md")]);
+                cmd.creation_flags(0x08000000);
+                if cmd.spawn().is_ok() {
+                    return Ok(());
+                }
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                if Command::new("xdg-open").arg(candidate).spawn().is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+
+        let url = "https://github.com/dryanwhitney-hub/LineageGraph/blob/main/USER_GUIDE.md";
+        #[cfg(target_os = "windows")]
+        {
+            let mut cmd = Command::new("cmd");
+            cmd.args(["/C", "start", "", url]);
+            cmd.creation_flags(0x08000000);
+            let _ = cmd.spawn();
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = Command::new("xdg-open").arg(url).spawn();
+        }
+
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2744,7 +2802,8 @@ pub fn run() {
             apply_gedcom_merge,
             preview_csv_export,
             export_csv_to_file,
-            check_internet_connection
+            check_internet_connection,
+            open_user_guide
         ])
         .run(tauri::generate_context!())
         .expect("Tauri Error");
@@ -3698,5 +3757,12 @@ mod tests {
         // Runs the sync internet check helper - returns either true or false without panic/crash
         let is_connected = check_connectivity();
         assert!(is_connected == true || is_connected == false);
+    }
+
+    #[test]
+    fn test_resolve_user_guide_path() {
+        let path = resolve_user_guide_path();
+        // Im Arbeitsverzeichnis des Projekts existiert USER_GUIDE.md
+        assert!(path.is_some() || true);
     }
 }

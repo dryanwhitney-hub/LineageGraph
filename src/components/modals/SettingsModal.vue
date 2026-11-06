@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { invoke } from '@tauri-apps/api/core';
+import { openUrl } from '@tauri-apps/plugin-opener';
 import { computeCardHeight, formatLocalizedDate, type DesignCardConfig } from '../../types/design';
 import { useAppUpdater } from '../../composables/useAppUpdater';
 import type {
@@ -69,6 +71,26 @@ const {
 onMounted(() => {
   loadCurrentVersion();
 });
+
+async function openExternalUrl(url: string) {
+  try {
+    await openUrl(url);
+  } catch {
+    if (url.startsWith('mailto:')) {
+      window.location.href = url;
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+}
+
+async function openUserGuide() {
+  try {
+    await invoke('open_user_guide');
+  } catch {
+    await openExternalUrl('https://github.com/dryanwhitney-hub/LineageGraph/blob/main/USER_GUIDE.md');
+  }
+}
 
 const showColDropdown = ref<boolean>(false);
 const showDetailAttrDropdown = ref<boolean>(false);
@@ -966,23 +988,70 @@ function onTreeSelectChange(event: Event) {
                 <div class="about-hero-info">
                   <h3 class="about-app-title">LineageGraph</h3>
                   <p class="about-app-subtitle">{{ t('about_app_subtitle') }}</p>
-                  <span class="about-version-badge">v{{ currentVersion || '0.2.1' }}</span>
+                  <span class="about-version-badge">v{{ currentVersion || '0.2.2' }}</span>
                 </div>
               </div>
 
               <div class="about-info-grid">
-                <div class="about-info-card">
-                  <span class="about-info-label">{{ t('about_developer') }}</span>
+                <!-- 1. Entwickler & Kontakt (Zusammengeführte Kachel) -->
+                <div class="about-info-card about-dev-card">
+                  <span class="about-info-label">{{ t('about_developer_contact') }}</span>
                   <span class="about-info-value font-bold">{{ t('about_developer_name') }}</span>
+                  <a
+                    href="mailto:lineagegraph@gmail.com"
+                    class="about-contact-link"
+                    @click.prevent="openExternalUrl('mailto:lineagegraph@gmail.com')"
+                    :title="t('about_contact_tooltip')"
+                  >
+                    ✉️ {{ t('about_contact_email') }}
+                  </a>
                 </div>
+
+                <!-- 2. Technologie-Stack -->
                 <div class="about-info-card">
                   <span class="about-info-label">{{ t('about_technology') }}</span>
                   <span class="about-info-value">{{ t('about_tech_stack') }}</span>
                 </div>
+
+                <!-- 3. Lizenz -->
                 <div class="about-info-card">
                   <span class="about-info-label">{{ t('about_license') }}</span>
                   <span class="about-info-value">{{ t('about_license_name') }}</span>
                 </div>
+
+                <!-- 4. Speicherung & Privatsphäre (Offline-First) -->
+                <div class="about-info-card">
+                  <span class="about-info-label">{{ t('about_storage_privacy') }}</span>
+                  <span class="about-info-value">{{ t('about_storage_privacy_desc') }}</span>
+                </div>
+              </div>
+
+              <!-- Quick Links: Anwenderhandbuch, GitHub Repository & Issue Tracker -->
+              <div class="about-links-row">
+                <button
+                  type="button"
+                  class="btn-about-link btn-about-guide"
+                  @click="openUserGuide"
+                  :title="t('about_link_guide_tooltip')"
+                >
+                  📖 {{ t('about_link_guide') }}
+                </button>
+                <a
+                  href="https://github.com/dryanwhitney-hub/LineageGraph"
+                  class="btn-about-link"
+                  @click.prevent="openExternalUrl('https://github.com/dryanwhitney-hub/LineageGraph')"
+                  :title="t('about_link_repo_tooltip')"
+                >
+                  🐙 {{ t('about_link_repo') }}
+                </a>
+                <a
+                  href="https://github.com/dryanwhitney-hub/LineageGraph/issues"
+                  class="btn-about-link"
+                  @click.prevent="openExternalUrl('https://github.com/dryanwhitney-hub/LineageGraph/issues')"
+                  :title="t('about_link_issues_tooltip')"
+                >
+                  🐛 {{ t('about_link_issues') }}
+                </a>
               </div>
 
               <div class="about-update-card">
@@ -990,7 +1059,7 @@ function onTreeSelectChange(event: Event) {
                   <div class="about-update-text">
                     <h4>🔄 {{ t('about_updates_title') }}</h4>
                     <p class="about-update-hint">
-                      {{ t('updater_current_version') }}: <strong>v{{ currentVersion || '0.2.1' }}</strong>
+                      {{ t('updater_current_version') }}: <strong>v{{ currentVersion || '0.2.2' }}</strong>
                     </p>
                   </div>
                   <button
@@ -1012,9 +1081,23 @@ function onTreeSelectChange(event: Event) {
                 <div v-else-if="statusType === 'update-available'" class="updater-feedback info">
                   🚀 {{ t('updater_modal_desc', { version: newVersion }) }}
                 </div>
-                <div v-else-if="statusType === 'error'" class="updater-feedback error">
-                  ❌ {{ t('updater_error', { error: statusMessage }) }}
+                <div
+                  v-else-if="statusType === 'error'"
+                  class="updater-feedback"
+                  :class="statusMessage === 'no_release_manifest' ? 'info' : 'error'"
+                >
+                  <span v-if="statusMessage === 'no_release_manifest'">
+                    ℹ️ {{ t('updater_error_no_release') }}
+                  </span>
+                  <span v-else>
+                    ❌ {{ t('updater_error', { error: statusMessage }) }}
+                  </span>
                 </div>
+              </div>
+
+              <!-- Copyright & Datenschutzhinweis -->
+              <div class="about-footer-meta">
+                <p class="about-copyright">{{ t('about_copyright') }}</p>
               </div>
             </div>
           </div>
@@ -1614,10 +1697,11 @@ button:disabled {
   width: 80px;
   height: 80px;
   border-radius: 16px;
-  object-fit: contain;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  background: #ffffff;
-  padding: 4px;
+  object-fit: cover;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
+  background: #1a1d22;
+  border: 1px solid #334155;
+  padding: 0;
 }
 .about-hero-info {
   display: flex;
@@ -1671,8 +1755,73 @@ button:disabled {
   font-size: 0.95rem;
   color: #1e293b;
 }
+.about-contact-link {
+  color: #2563eb;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.88rem;
+  word-break: break-all;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  transition: color 0.15s ease;
+  cursor: pointer;
+}
+.about-contact-link:hover {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
 .font-bold {
   font-weight: 600;
+}
+.about-dev-card {
+  border-left: 3px solid #2563eb;
+}
+.about-links-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.btn-about-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0.45rem 0.85rem;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  color: #334155;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.btn-about-link:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+  border-color: #94a3b8;
+}
+.btn-about-guide {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+.btn-about-guide:hover {
+  background: #dbeafe;
+  color: #1e40af;
+  border-color: #93c5fd;
+}
+.about-footer-meta {
+  text-align: center;
+  padding-top: 0.5rem;
+}
+.about-copyright {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #94a3b8;
+  line-height: 1.4;
 }
 .about-update-card {
   background: #ffffff;

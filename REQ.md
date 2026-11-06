@@ -107,7 +107,7 @@ graph TD
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Beim Start der Desktop-Applikation muss im Hintergrund über einen Low-Level-TCP-Ping geprüft werden, ob eine Internetverbindung aufgebaut werden kann.
   2. Nur bei aktiver Internetverbindung wird die Update-Schnittstelle (GitHub Releases / Tauri Updater) abgefragt. Ist keine Verbindung vorhanden, bleibt die App geräuschlos im regulären Betrieb, ohne blockierende Fehlermeldungen anzuzeigen.
-  3. Im Einstellungsfenster (`⚙️ Einstellungen` -> dedizierter Bereich `ℹ️ Über LineageGraph`) muss der Anwender jederzeit manuell nach neuen Versionen suchen sowie App-Metadaten (Logo, Entwickler, Version, Technologie, Lizenz) einsehen können (`🔍 Auf Updates prüfen`).
+  3. Im Einstellungsfenster (`⚙️ Einstellungen` -> dedizierter Bereich `ℹ️ Über LineageGraph`) sowie in der oberen Kopfleiste muss der Anwender jederzeit das Anwenderhandbuch (`USER_GUIDE.md`) aufrufen, manuell nach neuen Versionen suchen sowie App-Metadaten (Logo, Entwickler & Kontakt, Version, Technologie, Lizenz, 100% lokale Datenspeicherung) einsehen können.
   4. Liegt eine neuere Version vor (sowohl beim Start als auch bei manueller Suche), muss ein Bestätigungsdialog eingeblendet werden, der Versionsnummer, optionale Release Notes und Optionen zum sofortigen Installieren (`✨ Jetzt aktualisieren`) oder Verschieben (`Später erinnern`) anbietet.
   5. Erst nach expliziter Bestätigung durch den Anwender wird das Installationspaket heruntergeladen und die Installation eingeleitet.
 - **Technische Spezifikation:** Siehe [SPEC-TRM-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-004---req-trm-004)

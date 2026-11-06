@@ -22,7 +22,13 @@ flowchart TD
 * **Speicherort des privaten Schlüssels**: 
   `$env:USERPROFILE\.tauri\lineagegraph.key` (bereits auf Ihrem Entwicklungsrechner vorhanden).
 * **Ziel-Repository auf GitHub**: 
-  `https://github.com/david-whitney/LineageGraph`
+  `https://github.com/dryanwhitney-hub/LineageGraph`
+
+> [!WARNING]
+> **Wichtiger Hinweis zu privaten Repositories:**
+> Releases auf privaten GitHub-Repositories sind für unauthentifizierte Anfragen **nicht** öffentlich erreichbar (GitHub antwortet mit `404 Not Found`). Damit installierte Instanzen von LineageGraph die `latest.json` und Update-Pakete ohne geheime GitHub-Zugriffstoken abrufen können, gibt es zwei gängige Wege:
+> 1. **Repository auf "Public" stellen (Empfohlen):** Wenn der Code öffentlich sein darf, stellen Sie das Repository in den GitHub-Settings auf *Public*. Dadurch funktioniert der direkte Download-Link für jeden Anwender sofort und kostenlos.
+> 2. **Code privat lassen, Updates öffentlich hosten:** Der Quellcode bleibt im privaten Repository `dryanwhitney-hub/LineageGraph`. Die fertig gebauten Release-Dateien (`latest.json`, `.exe`, `.sig`) werden auf einem öffentlich erreichbaren Speicherort (z. B. ein separates öffentliches GitHub-Repository `LineageGraph-releases` oder Cloudflare R2 / AWS S3) bereitgestellt.
 
 > [!IMPORTANT]
 > Geben Sie die Datei `lineagegraph.key` niemals weiter und committen Sie sie unter keinen Umständen in das Git-Repository. Nur mit diesem privaten Schlüssel erzeugte Updates werden von den installierten Programmen akzeptiert.
@@ -97,7 +103,7 @@ Kopieren Sie dieses Snippet in Ihr PowerShell-Terminal (ersetzen Sie bei Bedarf 
 ```powershell
 $version = "a.b.d"
 $notes   = "Fehlerbehebungen und Verbesserungen im Stammbaum-Canvas."
-$repo    = "david-whitney/LineageGraph"
+$repo    = "dryanwhitney-hub/LineageGraph"
 
 $sigPath = "src-tauri\target\release\bundle\nsis\LineageGraph_${version}_x64.nsis.zip.sig"
 $sig = (Get-Content $sigPath -Raw).Trim()
@@ -116,8 +122,9 @@ $manifest = @{
 }
 
 $manifestJson = $manifest | ConvertTo-Json -Depth 4
-Set-Content -Path "src-tauri\target\release\bundle\nsis\latest.json" -Value $manifestJson -Encoding utf8
-Write-Host "✓ latest.json erfolgreich erzeugt!" -ForegroundColor Green
+# UTF-8 OHNE BOM schreiben, da serverseitige JSON-Parser (serde_json) sonst mit 'Could not fetch a valid release JSON' abbrechen
+[System.IO.File]::WriteAllText("src-tauri\target\release\bundle\nsis\latest.json", $manifestJson, [System.Text.UTF8Encoding]::new($false))
+Write-Host "✓ latest.json erfolgreich erzeugt (UTF-8 ohne BOM)!" -ForegroundColor Green
 ```
 
 ### Aufbau der resultierenden `latest.json` (Zur Kontrolle):
@@ -129,7 +136,7 @@ Write-Host "✓ latest.json erfolgreich erzeugt!" -ForegroundColor Green
   "platforms": {
     "windows-x86_64": {
       "signature": "<signature string>",
-      "url": "https://github.com/david-whitney/LineageGraph/releases/download/v<version>/LineageGraph_<version>_x64.nsis.zip"
+      "url": "https://github.com/dryanwhitney-hub/LineageGraph/releases/download/v<version>/LineageGraph_<version>_x64.nsis.zip"
     }
   }
 }
@@ -140,7 +147,7 @@ Write-Host "✓ latest.json erfolgreich erzeugt!" -ForegroundColor Green
 ## Schritt 5: GitHub Release veröffentlichen
 
 1. Öffnen Sie Ihr GitHub-Repository:  
-   `https://github.com/david-whitney/LineageGraph/releases`
+   `https://github.com/dryanwhitney-hub/LineageGraph/releases`
 2. Klicken Sie auf **"Draft a new release"** (Neues Release erstellen).
 3. Füllen Sie die Felder aus:
    * **Tag**: Wählen Sie `Create new tag: v<a.b.d>` (mit vorangestelltem `v`).
@@ -150,7 +157,10 @@ Write-Host "✓ latest.json erfolgreich erzeugt!" -ForegroundColor Green
    * `LineageGraph_<a.b.d>_x64-setup.exe`
    * `LineageGraph_<a.b.d>_x64-setup.exe.sig`
    * `latest.json`
-5. Klicken Sie auf **"Publish release"**.
+5. **Release-Optionen prüfen:**
+   * Stellen Sie sicher, dass **"Set as the latest release"** ausgewählt ist.
+   * Das Kontrollkästchen **"Set as a pre-release"** darf **nicht** aktiviert sein (GitHubs `/releases/latest`-Endpunkt ignoriert Pre-Releases).
+6. Klicken Sie auf **"Publish release"** (bzw. bei bestehendem Pre-Release auf **"Update release"**).
 
 ---
 
@@ -158,7 +168,7 @@ Write-Host "✓ latest.json erfolgreich erzeugt!" -ForegroundColor Green
 
 Sobald das Release online ist:
 1. Jede laufende oder neu gestartete Version `<a.b.c>` fragt die URL:  
-   `https://github.com/david-whitney/LineageGraph/releases/latest/download/latest.json` ab.
+   `https://github.com/dryanwhitney-hub/LineageGraph/releases/latest/download/latest.json` ab.
 2. Sie erkennt, dass `<a.b.d>` > `<a.b.c>` ist.
 3. Die App lädt `LineageGraph_<a.b.d>_x64-setup.exe` im Hintergrund herunter.
 4. Sie prüft die Signatur gegen den in `tauri.conf.json` hinterlegten öffentlichen Schlüssel.

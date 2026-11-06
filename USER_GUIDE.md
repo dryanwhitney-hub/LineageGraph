@@ -146,7 +146,7 @@ Hält LineageGraph stets auf dem neuesten Stand. Bei jedem Start prüft die Anwe
 2. **Manuelle Prüfung in den Einstellungen:**
    * Klicken Sie in der Kopfzeile auf **„⚙️ Einstellungen“**.
    * Ganz unten in der linken Navigationsleiste finden Sie den eigenen Bereich **„ℹ️ Über LineageGraph“**.
-   * Dort werden Ihnen das offizielle App-Logo, der Entwickler (David Whitney), die Technologien, die Lizenz sowie Ihre installierte Versionsnummer (z. B. `v0.2.1`) übersichtlich präsentiert.
+   * Dort werden Ihnen das offizielle App-Logo (mit markantem Anthrazit-Hintergrund, `icon_dark.png`), der Entwickler samt Kontaktadresse in einer zusammengeführten Kachel (David Whitney, `lineagegraph@gmail.com`), der Technologie-Stack, die Lizenz, die 100% lokale Speicherung sowie Ihre installierte Versionsnummer (z. B. `v0.2.2`) übersichtlich präsentiert. Über Schnellzugriff-Schaltflächen können Sie direkt das Anwenderhandbuch (`📖 Anwenderhandbuch (USER_GUIDE.md)`), das GitHub-Repository oder den Issue-Tracker im Browser aufrufen. Zudem befindet sich in der oberen Menüleiste neben den Einstellungen eine direkte Schaltfläche **„📖 Handbuch“**, über die das Handbuch jederzeit mit einem Klick aufgerufen werden kann. Ein Klick auf die E-Mail-Adresse öffnet direkt Ihr Standard-Mailprogramm.
    * Klicken Sie auf die Schaltfläche **„🔍 Auf Updates prüfen“**.
 3. **Bestätigungsdialog:**
    * Wenn eine Aktualisierung verfügbar ist, zeigt Ihnen der Dialog die neue Versionsnummer und die Versionshinweise (Changelog) an.

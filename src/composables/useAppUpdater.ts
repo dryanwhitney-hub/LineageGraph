@@ -23,7 +23,7 @@ export function useAppUpdater() {
       try {
         currentVersion.value = await getVersion();
       } catch {
-        currentVersion.value = '0.2.1';
+        currentVersion.value = '0.2.2';
       }
     }
     return currentVersion.value;
@@ -48,9 +48,12 @@ export function useAppUpdater() {
     try {
       const online = await isInternetAvailable();
       if (!online) {
-        statusType.value = 'offline';
         if (manual) {
+          statusType.value = 'offline';
           statusMessage.value = 'offline';
+        } else {
+          statusType.value = 'idle';
+          statusMessage.value = null;
         }
         isChecking.value = false;
         return false;
@@ -69,17 +72,32 @@ export function useAppUpdater() {
         return true;
       } else {
         availableUpdate.value = null;
-        statusType.value = 'up-to-date';
         if (manual) {
+          statusType.value = 'up-to-date';
           statusMessage.value = 'up_to_date';
+        } else {
+          statusType.value = 'idle';
+          statusMessage.value = null;
         }
         isChecking.value = false;
         return false;
       }
     } catch (err: unknown) {
-      statusType.value = 'error';
       if (manual) {
-        statusMessage.value = err instanceof Error ? err.message : String(err);
+        statusType.value = 'error';
+        const raw = err instanceof Error ? err.message : String(err);
+        if (
+          raw.includes('Could not fetch a valid release JSON') ||
+          raw.includes('404') ||
+          raw.includes('Not Found')
+        ) {
+          statusMessage.value = 'no_release_manifest';
+        } else {
+          statusMessage.value = raw;
+        }
+      } else {
+        statusType.value = 'idle';
+        statusMessage.value = null;
       }
       isChecking.value = false;
       return false;
