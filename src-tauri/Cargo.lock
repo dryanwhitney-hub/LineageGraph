@@ -2213,7 +2213,7 @@ dependencies = [
 
 [[package]]
 name = "lineagegraph"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "petgraph",
