@@ -90,6 +90,7 @@ const excludedNewPersonXrefs = ref<Set<string>>(new Set());
 
 // Filter & Pagination
 const activeFilterTab = ref<'all_mapped' | 'conflicts_only' | 'new_persons'>('all_mapped');
+const stagingSearchQuery = ref<string>('');
 const pageSize = ref<number>(50);
 const currentPage = ref<number>(1);
 
@@ -111,6 +112,7 @@ watch(
       workingMappings.value.clear();
       excludedNewPersonXrefs.value.clear();
       activeFilterTab.value = 'all_mapped';
+      stagingSearchQuery.value = '';
       currentPage.value = 1;
 
       // Vorschlag für neuen Projektnamen
@@ -190,11 +192,16 @@ function unlinkMatch(stagedXref: string) {
 // Gefilterte gemappte Personen
 const filteredMappedPersons = computed(() => {
   if (!mergePlan.value) return [];
+  const q = stagingSearchQuery.value.trim().toLowerCase();
   return mergePlan.value.mapped_persons.filter(p => {
     const state = workingMappings.value.get(p.staged_xref);
     if (state?.isUnlinked) return false;
-    if (activeFilterTab.value === 'conflicts_only') {
-      return p.has_conflicts;
+    if (activeFilterTab.value === 'conflicts_only' && !p.has_conflicts) {
+      return false;
+    }
+    if (q) {
+      const hay = `${p.staged_label} ${p.db_label} ${p.staged_xref} ${p.db_person_id}`.toLowerCase();
+      return hay.includes(q);
     }
     return true;
   });
@@ -213,6 +220,9 @@ const paginatedMappedPersons = computed(() => {
 });
 
 watch(activeFilterTab, () => {
+  currentPage.value = 1;
+});
+watch(stagingSearchQuery, () => {
   currentPage.value = 1;
 });
 watch(pageSize, () => {
@@ -243,6 +253,32 @@ const allNewPersons = computed(() => {
   }
   return list;
 });
+
+const filteredNewPersons = computed(() => {
+  const q = stagingSearchQuery.value.trim().toLowerCase();
+  if (!q) return allNewPersons.value;
+  return allNewPersons.value.filter(np => {
+    const hay = `${np.surname || ''} ${np.given_name || ''} ${np.staged_xref} ${np.birth_date || ''}`.toLowerCase();
+    return hay.includes(q);
+  });
+});
+
+const areAllFilteredNewPersonsSelected = computed(() => {
+  if (filteredNewPersons.value.length === 0) return false;
+  return filteredNewPersons.value.every(np => !excludedNewPersonXrefs.value.has(np.staged_xref));
+});
+
+function toggleAllFilteredNewPersons() {
+  if (areAllFilteredNewPersonsSelected.value) {
+    for (const np of filteredNewPersons.value) {
+      excludedNewPersonXrefs.value.add(np.staged_xref);
+    }
+  } else {
+    for (const np of filteredNewPersons.value) {
+      excludedNewPersonXrefs.value.delete(np.staged_xref);
+    }
+  }
+}
 
 // Staging ausführen (Wechsel zu Phase 2)
 async function startStaging() {
@@ -533,6 +569,24 @@ function fieldDisplayName(fname: string): string {
             </button>
           </div>
 
+          <!-- Suchfeld für Phase 2 -->
+          <div class="staging-search-wrap">
+            <input
+              type="text"
+              v-model="stagingSearchQuery"
+              class="staging-search-input"
+              :placeholder="t('gedcom_import_search_placeholder')"
+            />
+            <button
+              v-if="stagingSearchQuery"
+              type="button"
+              class="staging-search-clear"
+              @click="stagingSearchQuery = ''"
+            >
+              ✕
+            </button>
+          </div>
+
           <!-- Pagination Bar bei gemappten Tabs -->
           <div v-if="activeFilterTab !== 'new_persons'" class="pagination-bar">
             <label class="page-size-label">
@@ -704,7 +758,16 @@ function fieldDisplayName(fname: string): string {
             <table class="new-persons-table">
               <thead>
                 <tr>
-                  <th style="width: 40px">Import?</th>
+                  <th style="width: 110px">
+                    <label style="display: inline-flex; align-items: center; gap: 5px; cursor: pointer;">
+                      <input
+                        type="checkbox"
+                        :checked="areAllFilteredNewPersonsSelected"
+                        @change="toggleAllFilteredNewPersons"
+                      />
+                      <span>{{ t('gedcom_import_select_all_new') }}</span>
+                    </label>
+                  </th>
                   <th style="width: 90px">XREF</th>
                   <th>Name</th>
                   <th>Geburtsdatum</th>
@@ -712,7 +775,7 @@ function fieldDisplayName(fname: string): string {
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="np in allNewPersons" :key="'new-' + np.staged_xref">
+                <tr v-for="np in filteredNewPersons" :key="'new-' + np.staged_xref">
                   <td>
                     <input
                       type="checkbox"
@@ -1046,7 +1109,45 @@ function fieldDisplayName(fname: string): string {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 10px 0;
+  flex-wrap: wrap;
+}
+
+.staging-search-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 220px;
+  max-width: 340px;
+}
+
+.staging-search-input {
+  width: 100%;
+  padding: 5px 28px 5px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  color: #1e293b;
+  background: #ffffff;
+  outline: none;
+}
+
+.staging-search-input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.12);
+}
+
+.staging-search-clear {
+  position: absolute;
+  right: 6px;
+  background: none;
+  border: none;
+  color: #64748b;
+  font-size: 0.78rem;
+  cursor: pointer;
+  padding: 2px 4px;
 }
 
 .filter-tabs {

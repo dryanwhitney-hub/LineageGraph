@@ -504,6 +504,7 @@ export function usePersons(
   const sortKey = ref<string>('henry_code');
   const sortAsc = ref<boolean>(true);
   const columnFilters = ref<Record<string, ColumnFilter>>({});
+  const tableQuickSearch = ref<string>('');
 
   function ensureColumnFilters() {
     columns.value.forEach(c => {
@@ -513,6 +514,27 @@ export function usePersons(
     });
   }
   ensureColumnFilters();
+
+  const activeFilterCount = computed(() => {
+    let count = tableQuickSearch.value.trim() ? 1 : 0;
+    for (const col of activeTableColumns.value) {
+      const f = columnFilters.value[col.key];
+      if (!f) continue;
+      if (col.isDate || col.key.includes('date')) {
+        if (f.date1.trim() || (f.dateOp === 'between' && f.date2.trim())) count++;
+      } else if (f.text.trim()) {
+        count++;
+      }
+    }
+    return count;
+  });
+
+  function clearAllColumnFilters() {
+    tableQuickSearch.value = '';
+    columns.value.forEach(c => {
+      columnFilters.value[c.key] = { text: '', dateOp: 'before', date1: '', date2: '' };
+    });
+  }
 
   function getColLabel(col: ColumnConfig): string {
     return col.customLabel ? col.customLabel : t(col.labelKey);
@@ -672,9 +694,15 @@ export function usePersons(
         break;
       case 'father':
         person.father_id = valOrNull;
+        if (selectedPerson.value && selectedPerson.value.id === person.id) {
+          selectedFatherId.value = value || '';
+        }
         break;
       case 'mother':
         person.mother_id = valOrNull;
+        if (selectedPerson.value && selectedPerson.value.id === person.id) {
+          selectedMotherId.value = value || '';
+        }
         break;
       case 'surname':
         person.surname = valOrNull;
@@ -822,6 +850,23 @@ export function usePersons(
     let filtered = persons.value;
     if (activeProbandTab.value)
       filtered = filtered.filter(p => p.proband_data[activeProbandTab.value!]);
+
+    const q = tableQuickSearch.value.trim().toLowerCase();
+    if (q) {
+      filtered = filtered.filter(p => {
+        const hc = getCode(p) || '';
+        return (
+          p.id.toLowerCase().includes(q) ||
+          (p.surname || '').toLowerCase().includes(q) ||
+          (p.given_name || '').toLowerCase().includes(q) ||
+          hc.toLowerCase().includes(q) ||
+          (p.birth_date || '').toLowerCase().includes(q) ||
+          (p.birth_place || '').toLowerCase().includes(q) ||
+          (p.death_date || '').toLowerCase().includes(q) ||
+          (p.death_place || '').toLowerCase().includes(q)
+        );
+      });
+    }
 
     filtered = filtered.filter(p => {
       for (const col of activeTableColumns.value) {
@@ -1213,7 +1258,14 @@ export function usePersons(
       }
     }
 
-    // 1c. Modifizierte Elternzuweisungen speichern
+    // 1c. Modifizierte Elternzuweisungen speichern (inkl. synchronisierter Auswahl aus Detail-Drawer)
+    if (selectedPerson.value) {
+      const edSel = editedPersons.value.get(selectedPerson.value.id);
+      if (edSel) {
+        edSel.father_id = selectedFatherId.value || null;
+        edSel.mother_id = selectedMotherId.value || null;
+      }
+    }
     let parentsUpdated = false;
     for (const [origId, editedPerson] of editedPersons.value.entries()) {
       const origPerson = personsMap.value.get(origId);
@@ -1238,11 +1290,16 @@ export function usePersons(
     if (updates.length === 0) {
       isEditing.value = false;
       statusMessage.value = t('changes_saved');
+      if (parentsUpdated && rootAncestors.value.length > 0) {
+        await invoke('calculate_henry_codes_from_roots');
+      }
       if ((marriageUpdated || parentsUpdated) && selectedPerson.value) {
         await loadPersons();
+        await loadRootAncestors();
         await loadDetails(selectedPerson.value.id);
       } else if (marriageUpdated || parentsUpdated) {
         await loadPersons();
+        await loadRootAncestors();
       }
       return;
     }
@@ -1401,6 +1458,7 @@ export function usePersons(
     selectedFatherId.value = '';
     selectedMotherId.value = '';
     activeProbandTab.value = null;
+    tableQuickSearch.value = '';
     columns.value.forEach(c => {
       columnFilters.value[c.key] = { text: '', dateOp: 'before', date1: '', date2: '' };
     });
@@ -1597,6 +1655,9 @@ export function usePersons(
     sortKey,
     sortAsc,
     columnFilters,
+    tableQuickSearch,
+    activeFilterCount,
+    clearAllColumnFilters,
     activeTableColumns,
     activeDetailColumns,
     hasInvalidEditedPerson,

@@ -336,7 +336,16 @@ async function saveHtmlFile() {
           </div>
         </div>
 
-        <!-- 5. Export Aktionen -->
+        <!-- 5. Plattform- & Offline-Kompatibilität -->
+        <div class="export-compat-card" v-if="selectedRootPerson && exportTreeResult">
+          <div class="compat-badge-header">
+            <span class="compat-icon">📱</span>
+            <span class="compat-title">{{ t('export_compat_badge_title') }}</span>
+          </div>
+          <p class="compat-desc">{{ t('export_compat_badge_desc') }}</p>
+        </div>
+
+        <!-- 6. Export Aktionen -->
         <div class="export-actions-footer">
           <button
             class="btn-export-save"
@@ -375,6 +384,9 @@ async function saveHtmlFile() {
           <span class="preview-meta">
             ({{ exportTreeResult.stats.totalNodes }} {{ t('export_stat_nodes') }},
             {{ exportTreeResult.stats.maxGeneration }} {{ t('export_stat_generations') }})
+          </span>
+          <span class="preview-offline-pill" :title="t('export_compat_badge_desc')">
+            ✓ {{ t('export_compat_badge_pill') }}
           </span>
         </div>
 
@@ -883,6 +895,53 @@ async function saveHtmlFile() {
 .preview-meta {
   font-size: 0.78rem;
   color: #64748b;
+}
+
+.preview-offline-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: #ecfdf5;
+  border: 1px solid #a7f3d0;
+  padding: 2px 7px;
+  border-radius: 4px;
+  color: #047857;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.export-compat-card {
+  margin: 12px 14px 4px 14px;
+  padding: 10px 12px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.compat-badge-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compat-icon {
+  font-size: 0.95rem;
+}
+
+.compat-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #166534;
+}
+
+.compat-desc {
+  font-size: 0.72rem;
+  color: #15803d;
+  line-height: 1.35;
+  margin: 0;
 }
 
 .viewport-toggle-area {

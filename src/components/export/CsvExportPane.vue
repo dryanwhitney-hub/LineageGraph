@@ -41,6 +41,43 @@ const previewData = ref<{
   total_persons: number;
   preview_text: string;
 } | null>(null);
+const previewMode = ref<'table' | 'raw'>('table');
+
+const parsedCsvTable = computed<{ headers: string[]; rows: string[][] }>(() => {
+  const txt = previewData.value?.preview_text?.replace(/^\uFEFF/, '') || '';
+  if (!txt.trim()) return { headers: [], rows: [] };
+  const delim = csvDelimiter.value || ';';
+  const lines = txt.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length === 0) return { headers: [], rows: [] };
+
+  function splitCsvLine(line: string): string[] {
+    const out: string[] = [];
+    let cur = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === delim && !inQuotes) {
+        out.push(cur);
+        cur = '';
+      } else {
+        cur += ch;
+      }
+    }
+    out.push(cur);
+    return out;
+  }
+
+  const headers = splitCsvLine(lines[0]);
+  const rows = lines.slice(1).map(splitCsvLine);
+  return { headers, rows };
+});
 
 // Schneller Map-Zugriff auf Personen nach ID
 const personsMap = computed(() => {
@@ -554,22 +591,58 @@ async function exportCsvFile() {
           </div>
         </div>
 
-        <button
-          type="button"
-          class="btn-refresh-preview"
-          :disabled="isLoadingPreview"
-          @click="refreshPreview"
-          :title="t('export_csv_preview_refresh')"
-        >
-          🔄 {{ isLoadingPreview ? '...' : t('export_csv_preview_refresh') }}
-        </button>
+        <div class="preview-header-right">
+          <div class="csv-view-toggle">
+            <button
+              type="button"
+              class="csv-toggle-btn"
+              :class="{ active: previewMode === 'table' }"
+              @click="previewMode = 'table'"
+            >
+              📊 {{ t('csv_preview_mode_table') }}
+            </button>
+            <button
+              type="button"
+              class="csv-toggle-btn"
+              :class="{ active: previewMode === 'raw' }"
+              @click="previewMode = 'raw'"
+            >
+              📝 {{ t('csv_preview_mode_raw') }}
+            </button>
+          </div>
+
+          <button
+            type="button"
+            class="btn-refresh-preview"
+            :disabled="isLoadingPreview"
+            @click="refreshPreview"
+            :title="t('export_csv_preview_refresh')"
+          >
+            🔄 {{ isLoadingPreview ? '...' : t('export_csv_preview_refresh') }}
+          </button>
+        </div>
       </header>
 
-      <div class="csv-preview-body">
+      <div class="csv-preview-body" :class="{ 'table-mode-bg': previewMode === 'table' }">
         <div v-if="isLoadingPreview" class="loading-overlay">
           <span>⏳ Lade Vorschau...</span>
         </div>
-        <pre v-if="previewData" class="csv-code-view"><code>{{ previewData.preview_text }}</code></pre>
+
+        <div v-if="previewData && previewMode === 'table' && parsedCsvTable.headers.length > 0" class="csv-table-preview-wrap">
+          <table class="csv-rendered-table">
+            <thead>
+              <tr>
+                <th v-for="(h, hIdx) in parsedCsvTable.headers" :key="'csv-h-' + hIdx">{{ h }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, rIdx) in parsedCsvTable.rows" :key="'csv-r-' + rIdx">
+                <td v-for="(cell, cIdx) in row" :key="'csv-c-' + rIdx + '-' + cIdx">{{ cell || '–' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <pre v-else-if="previewData" class="csv-code-view"><code>{{ previewData.preview_text }}</code></pre>
         <div v-else class="empty-preview-hint">
           {{ t('export_empty_hint') }}
         </div>
@@ -1007,6 +1080,79 @@ async function exportCsvFile() {
 
 .btn-refresh-preview:hover:not(:disabled) {
   background: #475569;
+}
+
+.preview-header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.csv-view-toggle {
+  display: flex;
+  background: #0f172a;
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid #334155;
+}
+
+.csv-toggle-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  font-size: 0.74rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+
+.csv-toggle-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.csv-preview-body.table-mode-bg {
+  background: #f8fafc;
+}
+
+.csv-table-preview-wrap {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: auto;
+  max-height: 100%;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.csv-rendered-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  text-align: left;
+}
+
+.csv-rendered-table th {
+  position: sticky;
+  top: 0;
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 700;
+  padding: 8px 12px;
+  border-bottom: 2px solid #cbd5e1;
+  white-space: nowrap;
+}
+
+.csv-rendered-table td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+  white-space: nowrap;
+}
+
+.csv-rendered-table tr:hover td {
+  background: #eff6ff;
 }
 
 .csv-preview-body {

@@ -78,6 +78,9 @@ const {
   sortKey,
   sortAsc,
   columnFilters,
+  tableQuickSearch,
+  activeFilterCount,
+  clearAllColumnFilters,
   activeTableColumns,
   activeDetailColumns,
   hasInvalidEditedPerson,
@@ -131,7 +134,7 @@ const {
     }
   },
   onCodesCalculated: () => {
-    showSettings.value = false;
+    // Keep settings modal open when recalculating Henry codes in the background
   },
   onResetTreeViewState: () => {
     isDetailsOpen.value = false;
@@ -194,9 +197,15 @@ function onProbandSelectChange(val: string) {
   setProbandTab(val || null);
 }
 
-function openFreeTreeView() {
-  setProbandTab(null);
-  currentView.value = 'tree';
+async function onQuickTreeSelectChange(val: string) {
+  if (val === '__manage__') {
+    activeSettingsTab.value = 'general';
+    showSettings.value = true;
+    await loadRootAncestors();
+    return;
+  }
+  activeTree.value = val;
+  await handleTreeSwitch();
 }
 
 function changeLanguage(lang: string) {
@@ -215,10 +224,10 @@ async function openUserGuide() {
   }
 }
 
-watch(currentView, () => {
-  selectedPerson.value = null;
-  personDetails.value = null;
-  isDetailsOpen.value = false;
+watch(currentView, newView => {
+  if (newView === 'design' || newView === 'export') {
+    isDetailsOpen.value = false;
+  }
 });
 
 watch(rootAncestors, newVal => {
@@ -234,7 +243,9 @@ watch(rootAncestors, newVal => {
 watch(selectedPerson, newVal => {
   if (newVal) {
     loadDetails(newVal.id);
-    isDetailsOpen.value = true;
+    if (currentView.value === 'table' || currentView.value === 'tree') {
+      isDetailsOpen.value = true;
+    }
   } else {
     personDetails.value = null;
   }
@@ -247,58 +258,103 @@ onMounted(() => {
 </script>
 
 <template>
-  <main class="container">
-    <div class="header-row">
-      <h1>{{ t('title') }} <span v-if="activeTree" class="tree-badge">({{ activeTree }})</span></h1>
-      <div class="lang-switcher">
-        <div class="view-toggle">
-          <button @click="currentView = 'table'" :class="{ active: currentView === 'table' }">📋 {{ t('view_table') }}</button>
-          <button @click="currentView = 'tree'" :class="{ active: currentView === 'tree' }">🌳 {{ t('view_tree') }}</button>
-          <button @click="currentView = 'design'" :class="{ active: currentView === 'design' }">📐 {{ t('view_design') }}</button>
-          <button @click="currentView = 'export'" :class="{ active: currentView === 'export' }">📦 {{ t('view_export') }}</button>
+  <main class="app-shell">
+    <!-- Zeile 1: Globale Navigations- & Projekt-Leiste -->
+    <header class="top-navbar">
+      <div class="brand-and-tree">
+        <div class="brand-logo">
+          <span class="brand-icon">🌳</span>
+          <h1 class="brand-title">{{ t('title') }}</h1>
         </div>
-        <button class="btn-settings" @click="showSettings = true; loadRootAncestors()">⚙️ {{ t('settings') }}</button>
-        <button class="btn-guide" @click="openUserGuide" :title="t('user_guide_tooltip')">📖 {{ t('user_guide_btn') }}</button>
-        <button @click="changeLanguage('de')" :class="{ active: locale === 'de' }">DE</button>
-        <button @click="changeLanguage('en')" :class="{ active: locale === 'en' }">EN</button>
+
+        <div class="quick-tree-wrapper" :title="t('quick_tree_switch_tooltip')">
+          <span class="folder-icon">📁</span>
+          <select
+            class="quick-tree-select"
+            :value="activeTree"
+            @change="onQuickTreeSelectChange(($event.target as HTMLSelectElement).value)"
+          >
+            <option v-if="!activeTree" value="" disabled>{{ t('no_active_tree') }}</option>
+            <option v-for="tr in trees" :key="tr" :value="tr">{{ tr }}</option>
+            <option value="__manage__">{{ t('manage_trees_option') }}</option>
+          </select>
+        </div>
       </div>
-    </div>
 
-    <div class="toolbar">
-      <div class="actions">
-        <button @click="handleImport" :disabled="isLoading">{{ t('import_btn') }}</button>
-        <button @click="toggleEditMode" :class="{ active: isEditing }">{{ isEditing ? t('edit_toggle_off') : t('edit_toggle_on') }}</button>
-        <button v-if="isEditing" @click="saveChanges" class="btn-save" :disabled="isLoading || hasInvalidEditedPerson">{{ t('save_changes') }}</button>
+      <nav class="view-toggle">
+        <button @click="currentView = 'table'" :class="{ active: currentView === 'table' }">
+          📋 {{ t('view_table') }}
+        </button>
+        <button @click="currentView = 'tree'" :class="{ active: currentView === 'tree' }">
+          🌳 {{ t('view_tree') }}
+        </button>
+        <button @click="currentView = 'design'" :class="{ active: currentView === 'design' }">
+          📐 {{ t('view_design') }}
+        </button>
+        <button @click="currentView = 'export'" :class="{ active: currentView === 'export' }">
+          📦 {{ t('view_export') }}
+        </button>
+      </nav>
 
-        <button @click="openAddModal" class="btn-add-rel">➕ Neue Person anlegen</button>
+      <div class="utility-bar">
+        <span v-if="statusMessage" class="status-pill">{{ statusMessage }}</span>
+        <button class="util-btn" @click="showSettings = true; loadRootAncestors()">
+          ⚙️ {{ t('settings') }}
+        </button>
+        <button class="util-btn" @click="openUserGuide" :title="t('user_guide_tooltip')">
+          📖 {{ t('user_guide_btn') }}
+        </button>
+        <div class="lang-segmented">
+          <button @click="changeLanguage('de')" :class="{ active: locale === 'de' }">DE</button>
+          <button @click="changeLanguage('en')" :class="{ active: locale === 'en' }">EN</button>
+        </div>
       </div>
-      <span class="status">{{ statusMessage }}</span>
-    </div>
+    </header>
 
-    <div class="proband-selector-bar" v-if="currentView !== 'export' && (rootAncestors.length > 0 || persons.length > 0)">
-      <label for="proband-view-select" class="proband-select-label">
-        🌳 <strong>{{ t('proband_view_label') }}:</strong>
-      </label>
-      <select
-        id="proband-view-select"
-        class="proband-select-dropdown"
-        :value="activeProbandTab ?? ''"
-        @change="onProbandSelectChange(($event.target as HTMLSelectElement).value)"
-      >
-        <option v-if="currentView !== 'design'" value="">{{ t('free_view_option') }}</option>
-        <option v-else value="" disabled>{{ t('please_select') }}</option>
-        <option v-for="r in rootAncestors" :key="r.person_id" :value="r.person_id">
-          [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }} ({{ r.person_id }})
-        </option>
-      </select>
-      <button
-        v-if="currentView !== 'design'"
-        class="btn-free-view"
-        :class="{ active: currentView === 'tree' && !activeProbandTab }"
-        @click="openFreeTreeView"
-      >
-        🧭 {{ t('free_tree_btn') }}
-      </button>
+    <!-- Zeile 2: Kontextsensitive Arbeitsleiste (nur in Tabelle & Stammbaum-Ansicht) -->
+    <div class="context-subbar" v-if="currentView === 'table' || currentView === 'tree'">
+      <div class="subbar-left">
+        <label for="proband-view-select" class="proband-select-label">
+          🌳 {{ t('proband_view_selector_label') }}
+        </label>
+        <select
+          id="proband-view-select"
+          class="proband-select-dropdown"
+          :value="activeProbandTab ?? ''"
+          @change="onProbandSelectChange(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ t('proband_free_view_option') }}</option>
+          <option v-for="r in rootAncestors" :key="r.person_id" :value="r.person_id">
+            [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }} ({{ r.person_id }})
+          </option>
+        </select>
+      </div>
+
+      <div class="subbar-actions">
+        <button class="subbar-btn" @click="handleImport" :disabled="isLoading">
+          📥 {{ t('import_btn') }}
+        </button>
+        <button class="subbar-btn btn-add-rel" @click="openAddModal">
+          {{ t('add_new_person_btn') }}
+        </button>
+        <div class="subbar-divider"></div>
+        <button
+          class="subbar-btn btn-edit-toggle"
+          :class="{ active: isEditing }"
+          @click="toggleEditMode"
+        >
+          ✏️ {{ t('edit_mode_label') }}
+          <span class="edit-state-badge">{{ isEditing ? t('edit_mode_on') : t('edit_mode_off') }}</span>
+        </button>
+        <button
+          v-if="isEditing"
+          @click="saveChanges"
+          class="subbar-btn btn-save"
+          :disabled="isLoading || hasInvalidEditedPerson"
+        >
+          💾 {{ t('save_changes') }}
+        </button>
+      </div>
     </div>
 
     <!-- Modal: Person anlegen -->
@@ -339,7 +395,7 @@ onMounted(() => {
       @calculate-codes="calculateCodes"
     />
 
-    <!-- Modal: Stammbaum entfernen (2-stufige Sicherheitsabfrage, liegt über dem Einstellungsfenster) -->
+    <!-- Modal: Stammbaum entfernen -->
     <DeleteTreeModal
       :visible="showDeleteTreeModal"
       :tree-name="treeToDelete"
@@ -347,7 +403,7 @@ onMounted(() => {
       @confirm="confirmDeleteTree"
     />
 
-    <!-- Modal: GEDCOM-Import-Assistent (Neu, Ersetzen, Update/Merge) -->
+    <!-- Modal: GEDCOM-Import-Assistent -->
     <GedcomImportModal
       :visible="isImportModalVisible"
       :file-path="selectedImportFilePath"
@@ -371,7 +427,7 @@ onMounted(() => {
       @cancel="dismissConfirmModal"
     />
 
-    <div class="workspace" :class="{ 'tree-mode': currentView === 'tree' || currentView === 'design' || currentView === 'export' }">
+    <div class="workspace">
       <!-- 1. Tabellen-Ansicht -->
       <PersonTableView
         v-if="currentView === 'table'"
@@ -384,6 +440,8 @@ onMounted(() => {
         :sort-key="sortKey"
         :sort-asc="sortAsc"
         :column-filters="columnFilters"
+        v-model:quick-search="tableQuickSearch"
+        :active-filter-count="activeFilterCount"
         :save-error-alert="saveErrorAlert"
         :male-persons="malePersons"
         :female-persons="femalePersons"
@@ -398,6 +456,7 @@ onMounted(() => {
           if (found) selectedPerson = found;
         }"
         @sort="sortBy"
+        @clear-all-filters="clearAllColumnFilters"
         @clear-save-error="saveErrorAlert = ''"
         @link-spouses="({ personId, partnerId }) => linkSpouses(partnerId, personId)"
         @unlink-family="({ personId, familyId }) => unlinkFamily(familyId, personId)"
@@ -405,7 +464,7 @@ onMounted(() => {
         @remove-child-link="({ parentId, childId }) => removeChildLink(childId, parentId)"
       />
 
-      <!-- 2. Grafische Stammbaum-Ansicht (Volle Breite) -->
+      <!-- 2. Grafische Stammbaum-Ansicht -->
       <TreeCanvasView
         v-if="currentView === 'tree'"
         :persons="persons"
@@ -428,7 +487,7 @@ onMounted(() => {
         @show-partner-path="showPartnerPath"
       />
 
-      <!-- 3. Stammbaum Design-Mode (Ursprung unten -> nach oben, Geschwistergruppen & Ebenen frei verschiebbar, Linienbrücken) -->
+      <!-- 3. Stammbaum Design-Mode -->
       <DesignTree
         v-if="currentView === 'design'"
         :persons="persons"
@@ -460,7 +519,7 @@ onMounted(() => {
         @jump-to="jumpToTreePerson"
       />
 
-      <!-- 4. Interaktiver HTML-Export & Browser-Vorschau -->
+      <!-- 4. Export-Hub -->
       <ExportView
         v-if="currentView === 'export'"
         :persons="persons"
@@ -469,7 +528,7 @@ onMounted(() => {
         @select-proband="pid => setProbandTab(pid)"
       />
 
-      <!-- Rechte Spalte: Detailansicht (im Design-Mode und Export-Bereich nicht angezeigt) -->
+      <!-- Rechte Spalte: Detail-Drawer (nur in Tabelle & Stammbaum-Ansicht) -->
       <PersonDetailsDrawer
         :current-view="currentView"
         v-model:is-details-open="isDetailsOpen"
@@ -514,75 +573,339 @@ onMounted(() => {
   </main>
 </template>
 
-<style scoped>
-.container { padding: 2rem; font-family: Arial, sans-serif; max-width: 1600px; margin: 0 auto; }
-.header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; }
-h1 { font-size: 1.8rem; margin: 0; color: #2c3e50; }
-.tree-badge { font-size: 1.1rem; color: #7f8c8d; font-weight: normal; }
-.lang-switcher { display: flex; gap: 0.5rem; align-items: center; }
-.view-toggle { display: flex; background: #ecf0f1; border-radius: 4px; padding: 2px; margin-right: 1rem; }
-.view-toggle button { background: transparent; color: #7f8c8d; border: none; padding: 0.4rem 0.8rem; font-size: 0.85rem; border-radius: 3px; }
-.view-toggle button.active { background: #3498db; color: white; font-weight: bold; }
-.view-toggle button:disabled { opacity: 0.5; cursor: not-allowed; }
-.lang-switcher > button { padding: 0.3rem 0.6rem; background-color: #ecf0f1; color: #2c3e50; border: 1px solid #bdc3c7; border-radius: 4px; cursor: pointer; font-weight: bold; }
-.lang-switcher > button.active { background-color: #3498db; color: white; border-color: #2980b9; }
-.btn-settings { background-color: #95a5a6 !important; color: white !important; border: none !important; margin-right: 0.5rem; }
-.btn-guide { background-color: #2c3e50 !important; color: white !important; border: none !important; margin-right: 1rem; }
-.btn-guide:hover { background-color: #1a252f !important; }
-.btn-add-rel { background-color: #27ae60 !important; }
-.toolbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
-.actions { display: flex; gap: 1rem; }
-button { padding: 0.5rem 1rem; background-color: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; }
-button:hover:not(:disabled) { background-color: #2980b9; }
-button:disabled { background-color: #95a5a6; cursor: not-allowed; }
-.btn-save { background-color: #2ecc71 !important; }
+<style>
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+html, body, #app {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+</style>
 
-.proband-selector-bar {
+<style scoped>
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+/* Zeile 1: Top Navbar */
+.top-navbar {
   display: flex;
   align-items: center;
-  gap: 0.75rem;
-  margin-bottom: 1rem;
-  background: #f8f9fa;
-  border: 1px solid #dcdde1;
-  border-radius: 6px;
-  padding: 0.55rem 0.9rem;
+  justify-content: space-between;
+  gap: 1rem;
+  height: 52px;
+  padding: 0 1.1rem;
+  background: #0f172a;
+  color: #f8fafc;
+  border-bottom: 1px solid #1e293b;
+  flex-shrink: 0;
 }
-.proband-select-label {
-  font-size: 0.9rem;
-  color: #2c3e50;
+
+.brand-and-tree {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+}
+
+.brand-logo {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.brand-icon {
+  font-size: 1.25rem;
+}
+
+.brand-title {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #ffffff;
+}
+
+.quick-tree-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 7px;
+  padding: 0.22rem 0.55rem;
+  transition: border-color 0.15s;
+}
+
+.quick-tree-wrapper:hover {
+  border-color: #64748b;
+}
+
+.folder-icon {
+  font-size: 0.82rem;
+}
+
+.quick-tree-select {
+  background: transparent;
+  color: #e2e8f0;
+  border: none;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+  max-width: 200px;
+}
+
+.quick-tree-select option {
+  background: #0f172a;
+  color: #f8fafc;
+}
+
+/* Segmented View Navigation */
+.view-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.view-toggle button {
+  background: transparent;
+  color: #94a3b8;
+  border: none;
+  padding: 0.36rem 0.85rem;
+  font-size: 0.82rem;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
   white-space: nowrap;
 }
-.proband-select-dropdown {
-  min-width: 280px;
-  max-width: 480px;
-  padding: 0.45rem 0.7rem;
-  border: 1px solid #3498db;
+
+.view-toggle button:hover:not(.active) {
+  color: #f1f5f9;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.view-toggle button.active {
+  background: #2563eb;
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* Utility Bar */
+.utility-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.status-pill {
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #6ee7b7;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.util-btn {
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 0.34rem 0.68rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.util-btn:hover {
+  background: #334155;
+  color: #ffffff;
+}
+
+.lang-segmented {
+  display: flex;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.lang-segmented button {
+  background: transparent;
+  color: #94a3b8;
+  border: none;
+  padding: 0.22rem 0.48rem;
+  font-size: 0.73rem;
+  font-weight: 700;
   border-radius: 4px;
-  background: white;
-  color: #2c3e50;
-  font-size: 0.9rem;
-  font-weight: bold;
   cursor: pointer;
 }
+
+.lang-segmented button.active {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+/* Zeile 2: Context Subbar */
+.context-subbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 44px;
+  padding: 0.35rem 1.1rem;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.subbar-left {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.proband-select-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #334155;
+  white-space: nowrap;
+}
+
+.proband-select-dropdown {
+  min-width: 260px;
+  max-width: 440px;
+  padding: 0.34rem 0.65rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
 .proband-select-dropdown:focus {
-  outline: 2px solid rgba(52, 152, 219, 0.4);
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.18);
 }
-.btn-free-view {
-  background-color: #8e44ad;
-  color: white;
-  font-size: 0.85rem;
-  padding: 0.45rem 0.85rem;
+
+.subbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.subbar-divider {
+  width: 1px;
+  height: 22px;
+  background: #e2e8f0;
+  margin: 0 0.15rem;
+}
+
+.subbar-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.36rem 0.78rem;
+  background: #f8fafc;
+  color: #1e293b;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.subbar-btn:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.subbar-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-add-rel {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+}
+
+.btn-add-rel:hover:not(:disabled) {
+  background: #dbeafe;
+  border-color: #93c5fd;
+}
+
+.btn-edit-toggle.active {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fcd34d;
+}
+
+.edit-state-badge {
+  font-size: 0.7rem;
+  font-weight: 800;
+  padding: 0.08rem 0.38rem;
   border-radius: 4px;
+  background: rgba(15, 23, 42, 0.08);
 }
-.btn-free-view:hover:not(:disabled) {
-  background-color: #732d91;
+
+.btn-edit-toggle.active .edit-state-badge {
+  background: #f59e0b;
+  color: #ffffff;
 }
-.btn-free-view.active {
-  background-color: #6c3483;
-  box-shadow: 0 0 0 2px rgba(142, 68, 173, 0.35);
+
+.btn-save {
+  background: #10b981;
+  color: #ffffff;
+  border-color: #059669;
+  font-weight: 700;
+}
+
+.btn-save:hover:not(:disabled) {
+  background: #059669;
 }
 
 /* Workspace */
-.workspace { display: grid; grid-template-columns: 2fr 1fr; gap: 1.5rem; position: relative; }
-.workspace.tree-mode { display: block; height: 75vh; overflow: hidden; border: 1px solid #dcdde1; border-radius: 4px; background: white; }
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+  background: #f8fafc;
+}
 </style>

@@ -20,6 +20,8 @@ const props = withDefaults(
     sortKey: string;
     sortAsc: boolean;
     columnFilters: Record<string, ColumnFilter>;
+    quickSearch?: string;
+    activeFilterCount?: number;
     saveErrorAlert: string;
     malePersons?: Person[];
     femalePersons?: Person[];
@@ -30,6 +32,8 @@ const props = withDefaults(
     setPersonAttr: (person: Person, key: string, value: string) => void;
   }>(),
   {
+    quickSearch: '',
+    activeFilterCount: 0,
     allPersons: () => [],
     malePersons: () => [],
     femalePersons: () => [],
@@ -40,6 +44,8 @@ const emit = defineEmits<{
   select: [person: Person];
   'select-by-id': [personId: string];
   sort: [key: string];
+  'update:quickSearch': [val: string];
+  'clear-all-filters': [];
   'clear-save-error': [];
   'link-spouses': [payload: { personId: string; partnerId: string }];
   'unlink-family': [payload: { personId: string; familyId: string }];
@@ -49,6 +55,34 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const activeIdField = ref<string | null>(null);
+const activeDateFilterCol = ref<string | null>(null);
+
+function toggleDateFilterPopover(colKey: string) {
+  activeDateFilterCol.value = activeDateFilterCol.value === colKey ? null : colKey;
+}
+
+function isDateFilterActive(colKey: string): boolean {
+  const f = props.columnFilters[colKey];
+  if (!f) return false;
+  return Boolean(f.date1.trim() || (f.dateOp === 'between' && f.date2.trim()));
+}
+
+function getDateFilterSummary(colKey: string): string {
+  const f = props.columnFilters[colKey];
+  if (!f || !f.date1.trim()) return t('table_date_filter_btn');
+  if (f.dateOp === 'before') return `📅 < ${f.date1.trim()}`;
+  if (f.dateOp === 'after') return `📅 > ${f.date1.trim()}`;
+  return `📅 ${f.date1.trim()}–${f.date2.trim() || '...'}`;
+}
+
+function clearDateFilterForCol(colKey: string) {
+  const f = props.columnFilters[colKey];
+  if (f) {
+    f.dateOp = 'before';
+    f.date1 = '';
+    f.date2 = '';
+  }
+}
 
 // Schnelles O(1) Lookup für Personen
 const personPool = computed<Person[]>(() => {
@@ -241,53 +275,128 @@ watch(
 </script>
 
 <template>
-  <div class="table-container">
+  <div class="table-view-wrapper" @click="activeDateFilterCol = null">
     <div v-if="saveErrorAlert" class="save-error-banner" @click.stop>
       <span>⚠️ {{ saveErrorAlert }}</span>
       <button class="btn-close-sm" @click="emit('clear-save-error')">✕</button>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th v-for="col in activeTableColumns" :key="col.key">
-            <div class="th-header" @click="emit('sort', col.key)">
-              {{ getColLabel(col) }}<span v-if="col.key === 'id'" style="color: #e74c3c;"> *</span>
-              <span class="sort-icon">{{ sortKey === col.key ? (sortAsc ? '▲' : '▼') : '↕' }}</span>
-            </div>
-            <div class="filter-controls" @click.stop v-if="columnFilters[col.key]">
-              <template v-if="col.isDate || col.key.includes('date')">
-                <select v-model="columnFilters[col.key].dateOp" class="filter-sel">
-                  <option value="before">Vor</option>
-                  <option value="after">Nach</option>
-                  <option value="between">Zwischen</option>
-                </select>
-                <input
-                  type="text"
-                  v-model="columnFilters[col.key].date1"
-                  placeholder="Jahr..."
-                  class="filter-inp"
-                />
-                <input
-                  type="text"
-                  v-model="columnFilters[col.key].date2"
-                  v-if="columnFilters[col.key].dateOp === 'between'"
-                  placeholder="Jahr..."
-                  class="filter-inp mt-1"
-                />
-              </template>
-              <template v-else>
-                <input
-                  type="text"
-                  v-model="columnFilters[col.key].text"
-                  placeholder="Suche..."
-                  class="filter-inp"
-                />
-              </template>
-            </div>
-          </th>
-        </tr>
-      </thead>
-      <tbody>
+
+    <!-- Obere Schnellfilter-Leiste -->
+    <div class="table-toolbar" @click.stop>
+      <div class="quick-search-box">
+        <span class="search-icon">🔍</span>
+        <input
+          type="text"
+          :value="quickSearch"
+          @input="emit('update:quickSearch', ($event.target as HTMLInputElement).value)"
+          :placeholder="t('table_quick_search_placeholder')"
+          class="quick-search-input"
+        />
+        <button
+          v-if="quickSearch"
+          type="button"
+          class="btn-clear-search"
+          @click="emit('update:quickSearch', '')"
+        >
+          ✕
+        </button>
+      </div>
+      <div class="toolbar-meta">
+        <button
+          v-if="activeFilterCount > 0"
+          type="button"
+          class="btn-clear-all-filters"
+          @click="emit('clear-all-filters')"
+        >
+          {{ t('table_clear_all_filters', { count: activeFilterCount }) }}
+        </button>
+      </div>
+    </div>
+
+    <div class="table-scroll-area">
+      <table>
+        <thead>
+          <tr>
+            <th v-for="col in activeTableColumns" :key="col.key">
+              <div class="th-header" @click="emit('sort', col.key)">
+                <span>{{ getColLabel(col) }}<span v-if="col.key === 'id'" style="color: #dc2626;"> *</span></span>
+                <span class="sort-icon" :class="{ active: sortKey === col.key }">
+                  {{ sortKey === col.key ? (sortAsc ? '▲' : '▼') : '↕' }}
+                </span>
+              </div>
+              <div class="filter-controls" @click.stop v-if="columnFilters[col.key]">
+                <template v-if="col.isDate || col.key.includes('date')">
+                  <div class="date-filter-wrapper">
+                    <button
+                      type="button"
+                      class="btn-date-filter-trigger"
+                      :class="{ active: isDateFilterActive(col.key) }"
+                      @click.stop="toggleDateFilterPopover(col.key)"
+                    >
+                      {{ getDateFilterSummary(col.key) }}
+                    </button>
+                    <div
+                      v-if="activeDateFilterCol === col.key"
+                      class="date-filter-popover"
+                      @click.stop
+                    >
+                      <div class="popover-header">
+                        <span>{{ getColLabel(col) }}</span>
+                        <button type="button" class="btn-popover-close" @click="activeDateFilterCol = null">✕</button>
+                      </div>
+                      <div class="date-popover-body">
+                        <select v-model="columnFilters[col.key].dateOp" class="filter-sel">
+                          <option value="before">{{ t('table_date_before') }}</option>
+                          <option value="after">{{ t('table_date_after') }}</option>
+                          <option value="between">{{ t('table_date_between_from') }} / {{ t('table_date_between_to') }}</option>
+                        </select>
+                        <input
+                          type="text"
+                          v-model="columnFilters[col.key].date1"
+                          :placeholder="columnFilters[col.key].dateOp === 'between' ? t('table_date_between_from') : 'YYYY'"
+                          class="filter-inp"
+                        />
+                        <input
+                          v-if="columnFilters[col.key].dateOp === 'between'"
+                          type="text"
+                          v-model="columnFilters[col.key].date2"
+                          :placeholder="t('table_date_between_to')"
+                          class="filter-inp"
+                        />
+                        <div class="date-popover-actions">
+                          <button
+                            v-if="isDateFilterActive(col.key)"
+                            type="button"
+                            class="btn-date-clear"
+                            @click="clearDateFilterForCol(col.key)"
+                          >
+                            {{ t('table_date_clear') }}
+                          </button>
+                          <button
+                            type="button"
+                            class="btn-popover-confirm"
+                            @click="activeDateFilterCol = null"
+                          >
+                            {{ t('apply') }}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </template>
+                <template v-else>
+                  <input
+                    type="text"
+                    v-model="columnFilters[col.key].text"
+                    :placeholder="t('table_filter_placeholder')"
+                    class="filter-inp"
+                  />
+                </template>
+              </div>
+            </th>
+          </tr>
+        </thead>
+        <tbody>
         <tr
           v-for="person in paginatedPersons"
           :key="person.id"
@@ -569,7 +678,7 @@ watch(
                         :disabled="!popoverCandidateId"
                         @click="confirmAddSpouse(person.id)"
                       >
-                        {{ t('select_spouse_btn') }}
+                        {{ t('btn_add_spouse') }}
                       </button>
                     </div>
                   </div>
@@ -639,7 +748,7 @@ watch(
                         :disabled="!popoverCandidateId"
                         @click="confirmAddChild(person.id)"
                       >
-                        {{ t('select_child_btn') }}
+                        {{ t('btn_add_child') }}
                       </button>
                     </div>
                   </div>
@@ -710,6 +819,7 @@ watch(
         </tr>
       </tbody>
     </table>
+    </div>
 
     <!-- Paginierungs-Leiste -->
     <div class="pagination-bar" v-if="displayPersons.length > 0">
@@ -728,7 +838,7 @@ watch(
           class="btn-page"
           :disabled="currentPage <= 1"
           @click="currentPage = 1"
-          title="Erste Seite"
+          title="««"
         >
           ««
         </button>
@@ -737,7 +847,7 @@ watch(
           class="btn-page"
           :disabled="currentPage <= 1"
           @click="currentPage--"
-          title="Vorherige Seite"
+          title="‹"
         >
           ‹
         </button>
@@ -749,7 +859,7 @@ watch(
           class="btn-page"
           :disabled="currentPage >= totalPages"
           @click="currentPage++"
-          title="Nächste Seite"
+          title="›"
         >
           ›
         </button>
@@ -758,7 +868,7 @@ watch(
           class="btn-page"
           :disabled="currentPage >= totalPages"
           @click="currentPage = totalPages"
-          title="Letzte Seite"
+          title="»»"
         >
           »»
         </button>
@@ -778,77 +888,271 @@ watch(
 </template>
 
 <style scoped>
-.table-container {
-  overflow-x: auto;
-  overflow-y: auto;
-  max-height: 70vh;
-  border: 1px solid #dcdde1;
-  border-radius: 4px;
-  background: white;
+.table-view-wrapper {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  overflow: hidden;
 }
+
+.table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 1rem;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.quick-search-box {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 520px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 0.65rem;
+  font-size: 0.85rem;
+  color: #64748b;
+  pointer-events: none;
+}
+
+.quick-search-input {
+  width: 100%;
+  padding: 0.4rem 2rem 0.4rem 2.1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  font-size: 0.83rem;
+  background: #ffffff;
+  color: #0f172a;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.quick-search-input:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.btn-clear-search {
+  position: absolute;
+  right: 0.4rem;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+
+.btn-clear-search:hover {
+  color: #334155;
+  background: #f1f5f9;
+}
+
+.btn-clear-all-filters {
+  background: #fee2e2;
+  color: #b91c1c;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 0.35rem 0.75rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.btn-clear-all-filters:hover {
+  background: #fecaca;
+}
+
+.table-scroll-area {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
 table {
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   text-align: left;
 }
+
 th,
 td {
-  padding: 0.6rem 0.8rem;
-  border-bottom: 1px solid #dcdde1;
-  font-size: 0.9rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 0.84rem;
+  color: #1e293b;
 }
+
 th {
-  background-color: #f5f6fa;
-  font-weight: bold;
-  color: #2f3640;
+  background-color: #f8fafc;
+  font-weight: 700;
+  color: #334155;
   position: sticky;
   top: 0;
-  z-index: 2;
+  z-index: 5;
   vertical-align: top;
+  border-bottom: 2px solid #cbd5e1;
 }
+
 .th-header {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 0.35rem;
   cursor: pointer;
-  padding-bottom: 5px;
-  border-bottom: 1px solid #dcdde1;
-  margin-bottom: 5px;
-}
-.sort-icon {
-  color: #7f8c8d;
+  padding-bottom: 4px;
+  margin-bottom: 4px;
   font-size: 0.8rem;
+  white-space: nowrap;
+  user-select: none;
 }
+
+.th-header:hover {
+  color: #0f172a;
+}
+
+.sort-icon {
+  color: #94a3b8;
+  font-size: 0.74rem;
+}
+
+.sort-icon.active {
+  color: #2563eb;
+}
+
 .filter-controls {
   font-weight: normal;
 }
+
 .filter-inp,
 .filter-sel {
   width: 100%;
   box-sizing: border-box;
-  font-size: 0.8rem;
-  padding: 4px;
-  border: 1px solid #bdc3c7;
-  border-radius: 3px;
+  font-size: 0.76rem;
+  padding: 0.26rem 0.45rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  background: #ffffff;
+  color: #0f172a;
 }
-.mt-1 {
-  margin-top: 1rem;
-  display: inline-block;
+
+.filter-inp:focus,
+.filter-sel:focus {
+  outline: none;
+  border-color: #2563eb;
 }
-.w-100 {
+
+.date-filter-wrapper {
+  position: relative;
+}
+
+.btn-date-filter-trigger {
   width: 100%;
-  padding: 0.4rem;
-  border: 1px solid #bdc3c7;
-  border-radius: 3px;
-  box-sizing: border-box;
+  text-align: left;
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-tr {
+
+.btn-date-filter-trigger:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+}
+
+.btn-date-filter-trigger.active {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+}
+
+.date-filter-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 120;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+  padding: 0.65rem;
+  min-width: 220px;
+}
+
+.date-popover-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.date-popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+.btn-date-clear {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  padding: 0.28rem 0.55rem;
+  font-size: 0.75rem;
+  font-weight: 600;
   cursor: pointer;
 }
-tr:hover {
-  background-color: #f1f2f6;
+
+.w-100 {
+  width: 100%;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  box-sizing: border-box;
 }
-tr.active {
-  background-color: #e3f2fd !important;
+
+tr {
+  cursor: pointer;
+  transition: background-color 0.1s;
+}
+
+tbody tr:hover {
+  background-color: #f8fafc;
+}
+
+tbody tr.active {
+  background-color: #eff6ff !important;
+}
+
+tbody tr.active td:first-child {
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
+.empty {
+  text-align: center;
+  padding: 2.5rem 1rem;
+  color: #64748b;
+  font-size: 0.9rem;
 }
 .save-error-banner {
   background: #ffcdd2;
@@ -1133,17 +1437,19 @@ tr.active {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 14px;
-  background-color: #f8f9fa;
-  border-top: 1px solid #dcdde1;
-  font-size: 0.85rem;
-  color: #2c3e50;
+  padding: 0.5rem 1rem;
+  background-color: #f8fafc;
+  border-top: 1px solid #e2e8f0;
+  font-size: 0.82rem;
+  color: #334155;
   flex-wrap: wrap;
   gap: 8px;
+  flex-shrink: 0;
 }
 .pagination-info {
-  font-size: 0.82rem;
-  color: #7f8c8d;
+  font-size: 0.8rem;
+  color: #64748b;
+  font-weight: 500;
 }
 .pagination-controls {
   display: flex;
@@ -1151,40 +1457,44 @@ tr.active {
   gap: 6px;
 }
 .btn-page {
-  padding: 3px 8px;
-  background-color: white;
-  border: 1px solid #bdc3c7;
-  border-radius: 3px;
-  color: #2c3e50;
+  padding: 0.25rem 0.55rem;
+  background-color: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  color: #334155;
   cursor: pointer;
-  font-size: 0.8rem;
-  font-weight: bold;
+  font-size: 0.78rem;
+  font-weight: 700;
+  transition: all 0.15s;
 }
 .btn-page:hover:not(:disabled) {
-  background-color: #3498db;
-  color: white;
-  border-color: #2980b9;
+  background-color: #2563eb;
+  color: #ffffff;
+  border-color: #1d4ed8;
 }
 .btn-page:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 .page-indicator {
-  font-size: 0.82rem;
-  font-weight: bold;
+  font-size: 0.8rem;
+  font-weight: 700;
   padding: 0 4px;
+  color: #0f172a;
 }
 .pagination-size {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.82rem;
+  font-size: 0.8rem;
+  color: #475569;
 }
 .page-size-select {
-  padding: 3px 6px;
-  border: 1px solid #bdc3c7;
-  border-radius: 3px;
-  background-color: white;
-  font-size: 0.82rem;
+  padding: 0.22rem 0.45rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  background-color: #ffffff;
+  color: #0f172a;
+  font-size: 0.8rem;
 }
 </style>

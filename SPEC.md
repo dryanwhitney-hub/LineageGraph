@@ -157,7 +157,7 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
   - Vue Komponente: [`src/components/details/PersonDetailsDrawer.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/details/PersonDetailsDrawer.vue)
   - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs#L380-L435) (`get_person_details`)
 - **Technische Umsetzung:**
-  `get_person_details` liest für eine Person alle Eltern, Geschwister, Partner, Kinder, Notizen und das ungeparste `json_data` aus. Der Drawer rendert diese in einem Slide-Over-Panel mit Schnellschaltflächen zum direkten Wechseln der selektierten Person (`jump-to`). Im Editiermodus werden Dropdown-Selektoren für Vater und Mutter sowie Steuerelemente für Ehedaten eingeblendet.
+  `get_person_details` liest für eine Person alle Eltern, Geschwister, Partner, Kinder, Notizen und das ungeparste `json_data` aus. Der Drawer (`PersonDetailsDrawer.vue`) wird exklusiv in `table`- und `tree`-Ansichten gemountet und nimmt im eingeklappten Zustand `0px` Breite ein. Im Lesemodus erlauben klickbare Karten für Eltern, Partner und Kinder den direkten Wechsel der selektierten Person (`@jump-to`). Im Editiermodus stehen durchsuchbare Auswahl-Picker (`.searchable-picker`) für Eltern, Partner und Kinder sowie ein einziger zentraler Speichern-Button (`saveChanges`) bereit, der Lebensdaten, Elternzuweisungen und Ehen atomar speichert.
 
 #### SPEC-UI-004 -> REQ-UI-004
 - **Fachliche Anforderung:** Freie Schnellabfrage (Free Query Modal) ([REQ-UI-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-ui-004-freie-schnellabfrage-free-query-modal))
@@ -201,12 +201,12 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
      - **Rendering:** Jedem Track `T` wird `jogY = levelMaxBottom + CORRIDOR_PAD_TOP + T * gap` zugewiesen. An verbleibenden Schnittpunkten wird ein SVG-Bogenbefehl (`A radius radius ...`) eingefügt.
 
 #### SPEC-DSG-003 -> REQ-DSG-003
-- **Fachliche Anforderung:** Voll konfigurierbare Personenkarten ([REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten))
+- **Fachliche Anforderung:** Voll konfigurierbare Personenkarten mit Live-Preview-Popover ([REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten-mit-live-preview-popover))
 - **Architektonische Schicht & Komponenten-Mapping:**
   - Typ-Definitionen: [`src/types/design.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/design.ts)
-  - Vue Komponente: [`src/components/design/DesignPersonCard.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignPersonCard.vue)
+  - Vue Komponenten: [`src/components/design/DesignPersonCard.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignPersonCard.vue), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue)
 - **Technische Umsetzung:**
-  `DesignPersonCard.vue` kapselt die visuelle Repräsentation einer Person. Über das Interface `DesignCardConfig` werden Breiten, Schriftgrößen, Eckenrundungen, Randstärken, Schlagschatten und Farbschemata (für `M`, `F`, `U`) reaktiv injiziert.
+  `DesignPersonCard.vue` kapselt die visuelle Repräsentation einer Person ohne überlagernde Mini-Buttons in der Kopfzeile. Über das Popover `.layout-options-popover` in `DesignSidebar.vue` werden Kachel-Zeilen (`#1`–`#5`) und Linien-/Brückenparameter mit unmittelbarer Live-Vorschau auf der Canvas konfiguriert. Alle kontextabhängigen Einzel- und Gruppenaktionen sind im schwebenden HUD `.group-floating-controls` in `DesignCanvas.vue` konsolidiert.
 
 #### SPEC-DSG-004 -> REQ-DSG-004
 - **Fachliche Anforderung:** Hintergrundgestaltung & Bild-Persistierung ([REQ-DSG-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-dsg-004-hintergrundgestaltung--bild-persistierung))
@@ -287,15 +287,19 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
   - Rust Backend: [`src-tauri/src/csv_export.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/csv_export.rs) (`generate_csv`), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs#L2530-L2580) (`preview_csv_export`, `export_csv_to_file`)
   - UI-Komponente: [`src/components/export/CsvExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/CsvExportPane.vue)
 - **Technische Umsetzung:**
-  `generate_csv` filtert Personen nach Scope, löst Vater- und Mütternamen über eine In-Memory-Lookup-Map auf und schreibt CSV-Zeilen mit Anführungszeichen-Maskierung (`escape_csv_field`). Bei aktivierter Option `include_bom` wird das UTF-8 Byte-Order-Mark `\u{FEFF}` vorangestellt.
+  `generate_csv` filtert Personen nach Scope, löst Vater- und Mütternamen über eine In-Memory-Lookup-Map auf und schreibt CSV-Zeilen mit Anführungszeichen-Maskierung (`escape_csv_field`). Bei aktivierter Option `include_bom` wird das UTF-8 Byte-Order-Mark `\u{FEFF}` vorangestellt. In `CsvExportPane.vue` kann die Vorschau zwischen einer formatierten HTML-Tabelle (`parsedCsvTable`) und dem `.csv`-Rohtext umgeschaltet werden.
 
 #### SPEC-EXP-003 -> REQ-EXP-003
 - **Fachliche Anforderung:** Autarke interaktive HTML-Chronik ([REQ-EXP-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-exp-003-autarke-interaktive-html-chronik))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Frontend Utility: [`src/utils/htmlExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/htmlExport.ts) (`generateHtmlChronik`)
+  - Frontend Utility: [`src/utils/htmlExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/htmlExport.ts) (`buildInteractiveExportTree`, `generateInteractiveTreeHtml`)
+  - Vendor Assets: [`src/assets/vendor/d3.v7.min.ts`](file:///c:/dev/Froning/app/LineageGraph/src/assets/vendor/d3.v7.min.ts)
   - UI-Komponente: [`src/components/export/HtmlExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/HtmlExportPane.vue)
 - **Technische Umsetzung:**
-  `htmlExport.ts` kompiliert alle Personendaten, Verwandtschaftsbeziehungen und Stammbaumäste in einen einzigen, autarken HTML5-String. Das Dokument enthält eingebettete CSS-Stile, SVG-Icons und vanilla JavaScript für interaktive Suche, Personenauswahl und Ahnenpfad-Anzeige ohne externe Netzwerkabhängigkeiten.
+  `htmlExport.ts` kompiliert alle Personendaten, Verwandtschaftsbeziehungen und Stammbaumäste in einen einzigen, autarken HTML5-String. Das Dokument enthält eingebettete CSS-Stile, SVG-Icons und vanilla JavaScript für interaktive Suche, Personenauswahl, einen auf Desktop und Mobilgeräten einklappbaren Detail-Drawer (`#sidebar`) sowie klickbare Sprunglinks (`jumpToHenry`) für Eltern, Implex-Verweise und Kinder ohne externe Netzwerkabhängigkeiten:
+  - **Single-File Bundle:** D3.js v7.9.2 ist direkt über `d3.v7.min.ts` als Minified String im Skriptblock vor dem schließenden `</body>` eingebunden; Personendaten werden als strukturiertes `<script type="application/json" id="tree-data-json">` injectet und mit `</script`-Maskierung geschützt.
+  - **Mobil- & Touch-Härtung (iOS & Android):** Viewport mit `viewport-fit=cover`, Mindest-Touch-Ziele von 44x44px für alle Schaltflächen und transparente SVG-Knoten-Hitboxen (`circle.touch-hitbox` mit `r=22`), `touch-action: none` zur Entkopplung des SVG-Pinch/Pans von Browser-Gesten sowie Safe-Area-Insets (`env(safe-area-inset-*)`) und Dynamic Viewport Height (`100dvh`). Auf Viewports `<= 900px` wird die Menüleiste auf `overflow: visible` umgestellt, das Suchfeld flexibel über die Leiste gestreckt (Vorschlags-Dropdown schwebt unbeschnitten frei über der Leinwand) und Werkzeugschaltflächen werden kompakt in einem Dropdown-Kontextmenü (`.menu-dropdown-wrapper` / `#btn-mobile-menu`) gebündelt.
+  - **Sandbox- & Storage-Schutz:** Persistierung von Sprachauswahl und Ehepartner-Anzeige über einen `safeStorage`-Wrapper mit In-Memory-Fallback zur Vermeidung von `SecurityError`-Abbrüchen in iOS Quick Look oder isolierten `file://`-Kontexten.
 
 #### SPEC-EXP-004 -> REQ-EXP-004
 - **Fachliche Anforderung:** Hochauflösender Bild- & Vektorexport des Stammbaums ([REQ-EXP-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-exp-004-hochaufl%C3%B6sender-bild---vektorexport-des-stammbaums))

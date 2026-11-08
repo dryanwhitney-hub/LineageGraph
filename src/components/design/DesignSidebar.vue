@@ -1,7 +1,12 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { DesignBackgroundConfig, DesignLayoutType } from '../../types/design';
+import {
+  DEFAULT_CARD_CONFIG,
+  type DesignCardConfig,
+  type DesignBackgroundConfig,
+  type DesignLayoutType,
+} from '../../types/design';
 import type { DesignLayoutEntry } from '../../composables/useDesignHistory';
 import {
   LEVEL_SIDEBAR_W,
@@ -27,7 +32,12 @@ const props = defineProps<{
   hasSelectedDescendants: boolean;
   canDetachSelectedPerson: boolean;
   bridgesCount: number;
+  cardConfig?: DesignCardConfig;
+  horizontalLaneGap?: number;
+  autoSubLanes?: boolean;
   enableLineBridges?: boolean;
+  bridgeRadius?: number;
+  minimizeBridges?: boolean;
   canvasWidth: number;
   canvasHeight: number;
   // Save & Load Modal props
@@ -76,6 +86,18 @@ const emit = defineEmits<{
   (e: 'select-proband', personId: string): void;
   (e: 'open-settings'): void;
   (e: 'undo'): void;
+  (e: 'create-new-design'): void;
+  (e: 'open-load-modal'): void;
+  (e: 'open-save-modal'): void;
+  (e: 'update-card-config', config: DesignCardConfig): void;
+  (e: 'update-design-config', config: {
+    cardConfig?: DesignCardConfig;
+    horizontalLaneGap?: number;
+    autoSubLanes?: boolean;
+    enableLineBridges?: boolean;
+    bridgeRadius?: number;
+    minimizeBridges?: boolean;
+  }): void;
   (e: 'expand-all'): void;
   (e: 'collapse-all'): void;
   (e: 'reset-layout'): void;
@@ -116,6 +138,35 @@ const emit = defineEmits<{
 }>();
 
 const bgFileInputRef = ref<HTMLInputElement | null>(null);
+const isLayoutPopoverOpen = ref<boolean>(false);
+const layoutPopoverTab = ref<'tiles' | 'lines'>('tiles');
+
+const currentCardCfg = computed<DesignCardConfig>(() => props.cardConfig || DEFAULT_CARD_CONFIG);
+
+function updateCardField<K extends keyof DesignCardConfig>(key: K, value: DesignCardConfig[K]) {
+  const next: DesignCardConfig = {
+    ...currentCardCfg.value,
+    [key]: value,
+  };
+  emit('update-card-config', next);
+}
+
+function updateLineRoutingConfig(partial: {
+  horizontalLaneGap?: number;
+  autoSubLanes?: boolean;
+  enableLineBridges?: boolean;
+  bridgeRadius?: number;
+  minimizeBridges?: boolean;
+}) {
+  emit('update-design-config', {
+    cardConfig: currentCardCfg.value,
+    horizontalLaneGap: partial.horizontalLaneGap !== undefined ? partial.horizontalLaneGap : (props.horizontalLaneGap ?? 16),
+    autoSubLanes: partial.autoSubLanes !== undefined ? partial.autoSubLanes : (props.autoSubLanes ?? true),
+    enableLineBridges: partial.enableLineBridges !== undefined ? partial.enableLineBridges : (props.enableLineBridges ?? true),
+    bridgeRadius: partial.bridgeRadius !== undefined ? partial.bridgeRadius : (props.bridgeRadius ?? 8),
+    minimizeBridges: partial.minimizeBridges !== undefined ? partial.minimizeBridges : (props.minimizeBridges ?? true),
+  });
+}
 
 const bgDisplayWidth = computed<number>(() => {
   const base = props.bgConfig.naturalWidth || 1200;
@@ -275,7 +326,7 @@ defineExpose({
 
     <div class="design-toolbar" @mousedown.stop>
       <div class="design-toolbar-left">
-        <!-- Subtree-Modus Banner mit Rückkehr-Button -->
+        <!-- Subtree-Modus Banner mit Rückkehr-Button ODER Kompakter Stammahn-Umschalter -->
         <div v-if="currentLayoutType === 'subtree'" class="subtree-banner-badge">
           <span class="badge-icon">🌿</span>
           <span class="badge-title">{{ t('design_subtree_mode_title') }}: <strong>{{ currentLayoutName }}</strong></span>
@@ -283,6 +334,47 @@ defineExpose({
             ⬅️ {{ t('design_return_to_master_btn') }}
           </button>
         </div>
+        <div v-else-if="rootAncestors.length > 0" class="design-proband-switcher">
+          <label class="proband-select-label">{{ t('proband_label') }}</label>
+          <select
+            class="proband-compact-select"
+            :value="activeProbandId || ''"
+            @change="emit('select-proband', ($event.target as HTMLSelectElement).value)"
+          >
+            <option
+              v-for="r in rootAncestors"
+              :key="'tb-root-' + r.person_id"
+              :value="r.person_id"
+            >
+              [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }}
+            </option>
+          </select>
+        </div>
+
+        <span class="toolbar-divider"></span>
+
+        <!-- Integrierte Datei- & Verlaufsaktionen (zuvor unten rechts schwebend) -->
+        <button
+          class="btn-design-tool btn-file-action"
+          :title="t('design_new_file_tooltip')"
+          @click="emit('create-new-design')"
+        >
+          📄 {{ t('design_toolbar_new') }}
+        </button>
+        <button
+          class="btn-design-tool btn-file-action"
+          :title="t('design_load_tooltip')"
+          @click="emit('open-load-modal')"
+        >
+          📂 {{ t('design_toolbar_load') }}
+        </button>
+        <button
+          class="btn-design-tool btn-file-save"
+          :title="t('design_save_tooltip')"
+          @click="emit('open-save-modal')"
+        >
+          💾 {{ t('design_toolbar_save') }}
+        </button>
 
         <!-- Undo-Button zum Zurücksetzen der letzten Aktionen -->
         <button
@@ -293,6 +385,9 @@ defineExpose({
         >
           ↩️ {{ t('design_undo_btn') }} <span v-if="historyLength > 0">({{ historyLength }})</span>
         </button>
+
+        <span class="toolbar-divider"></span>
+
         <button class="btn-design-tool" @click="emit('expand-all')">
           {{ t('design_expand_all') }}
         </button>
@@ -303,21 +398,9 @@ defineExpose({
           {{ t('design_reset_layout') }}
         </button>
 
-        <!-- Button & Popover für Hintergrundbild -->
-        <div class="bg-tool-wrapper">
-          <button
-            class="btn-design-tool btn-bg-image"
-            :class="{ 'has-image': !!bgImageData, 'active': isBgPopoverOpen }"
-            :title="t('design_bg_image_tooltip')"
-            @click.stop="emit('update:isBgPopoverOpen', !isBgPopoverOpen)"
-          >
-            🖼️ {{ t('design_bg_image_btn') }}
-            <span v-if="bgImageData" class="bg-indicator-dot" :class="{ 'is-hidden': !bgConfig.visible }"></span>
-          </button>
-        </div>
-
         <!-- Hierarchisches Zweig-Design verknüpfen / bearbeiten / lösen -->
         <template v-if="selectedDesignPerson && hasSelectedDescendants">
+          <span class="toolbar-divider"></span>
           <button
             v-if="isCurrentPersonSubtreeLinked && linkedSubtreeLayoutId"
             class="btn-design-tool btn-edit-subtree"
@@ -343,41 +426,251 @@ defineExpose({
             🌿 {{ t('design_link_subtree_btn') }}
           </button>
         </template>
-
-        <!-- Button zum Gruppieren aller Nachkommeneinträge des gewählten Eintrags je Ebene -->
-        <button
-          v-if="selectedDesignPerson && hasSelectedDescendants"
-          class="btn-design-tool btn-group-descendants"
-          :title="t('design_group_descendants_tooltip')"
-          @click="emit('group-descendants', selectedDesignPerson.id)"
-        >
-          👥 {{ t('design_group_descendants_btn') }} ({{ selectedDesignPerson.given_name || 'N.N.' }} {{ selectedDesignPerson.surname || '' }})
-        </button>
-
-        <!-- Button zum Herauslösen des aktuell ausgewählten Eintrags aus der Gruppe / angedockten Gruppe -->
-        <button
-          v-if="canDetachSelectedPerson && selectedDesignPerson"
-          class="btn-design-tool btn-detach-person"
-          :title="t('design_detach_person_tooltip')"
-          @click="emit('detach-selected')"
-        >
-          ⏏️ {{ t('design_detach_person_btn') }} ({{ selectedDesignPerson.given_name || 'N.N.' }} {{ selectedDesignPerson.surname || '' }})
-        </button>
       </div>
 
       <div class="design-toolbar-right">
+        <!-- Button & Popover für Hintergrundbild -->
+        <div class="bg-tool-wrapper">
+          <button
+            class="btn-design-tool btn-bg-image"
+            :class="{ 'has-image': !!bgImageData, 'active': isBgPopoverOpen }"
+            :title="t('design_bg_image_tooltip')"
+            @click.stop="isLayoutPopoverOpen = false; emit('update:isBgPopoverOpen', !isBgPopoverOpen)"
+          >
+            🖼️ {{ t('design_bg_image_btn') }}
+            <span v-if="bgImageData" class="bg-indicator-dot" :class="{ 'is-hidden': !bgConfig.visible }"></span>
+          </button>
+        </div>
+
+        <!-- Button & Live-Preview-Popover für Kachel- & Layout-Optionen -->
+        <div class="bg-tool-wrapper">
+          <button
+            class="btn-design-tool btn-layout-options"
+            :class="{ active: isLayoutPopoverOpen }"
+            @click.stop="emit('update:isBgPopoverOpen', false); isLayoutPopoverOpen = !isLayoutPopoverOpen"
+          >
+            ⚙️ {{ t('design_layout_options_btn') }}
+          </button>
+        </div>
+
         <span
           class="bridges-badge"
           :class="{
             'has-bridges': bridgesCount > 0,
             'is-disabled': enableLineBridges === false
           }"
+          :title="t('design_hint')"
         >
           🌉 {{ t('design_bridges_count') }}:
           <strong v-if="enableLineBridges !== false">{{ bridgesCount }}</strong>
           <small v-else style="font-weight: normal; margin-left: 2px;">({{ t('design_bridges_disabled') || 'deaktiviert' }})</small>
         </span>
-        <span class="design-hint-text">{{ t('design_hint') }}</span>
+      </div>
+    </div>
+
+    <!-- Live-Preview-Popover für Kachel-Zeilen (#1-#5) & Linienführung -->
+    <div
+      v-if="isLayoutPopoverOpen"
+      class="layout-options-popover"
+      @click.stop
+      @mousedown.stop
+      @wheel.stop
+    >
+      <div class="bg-popover-header">
+        <span class="bg-popover-title">⚙️ {{ t('design_layout_options_title') }}</span>
+        <button type="button" class="bg-popover-close" @click="isLayoutPopoverOpen = false">✕</button>
+      </div>
+
+      <div class="layout-popover-tabs">
+        <button
+          type="button"
+          class="layout-tab-btn"
+          :class="{ active: layoutPopoverTab === 'tiles' }"
+          @click="layoutPopoverTab = 'tiles'"
+        >
+          {{ t('design_layout_tab_tiles') }}
+        </button>
+        <button
+          type="button"
+          class="layout-tab-btn"
+          :class="{ active: layoutPopoverTab === 'lines' }"
+          @click="layoutPopoverTab = 'lines'"
+        >
+          {{ t('design_layout_tab_lines') }}
+        </button>
+      </div>
+
+      <!-- Tab 1: Kachel-Zeilen (#1-#5) -->
+      <div v-if="layoutPopoverTab === 'tiles'" class="layout-popover-body">
+        <div class="tile-line-group">
+          <div class="tile-line-header">
+            <span>#1 {{ t('settings_card_line1') }}</span>
+            <div class="font-style-pills">
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line1Bold }"
+                @click="updateCardField('line1Bold', !currentCardCfg.line1Bold)"
+              ><b>B</b></button>
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line1Italic }"
+                @click="updateCardField('line1Italic', !currentCardCfg.line1Italic)"
+              ><i>I</i></button>
+            </div>
+          </div>
+          <div class="tile-check-grid">
+            <label><input type="checkbox" :checked="currentCardCfg.showHenryId" @change="updateCardField('showHenryId', ($event.target as HTMLInputElement).checked)" /> {{ t('settings_card_show_henry') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showGeneration" @change="updateCardField('showGeneration', ($event.target as HTMLInputElement).checked)" /> {{ t('settings_card_show_gen') }}</label>
+          </div>
+        </div>
+
+        <div class="tile-line-group">
+          <div class="tile-line-header">
+            <span>#2 {{ t('settings_card_line2') }}</span>
+            <div class="font-style-pills">
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line2Bold }"
+                @click="updateCardField('line2Bold', !currentCardCfg.line2Bold)"
+              ><b>B</b></button>
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line2Italic }"
+                @click="updateCardField('line2Italic', !currentCardCfg.line2Italic)"
+              ><i>I</i></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tile-line-group">
+          <div class="tile-line-header">
+            <span>#3 {{ t('settings_card_line3') }}</span>
+            <div class="font-style-pills">
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line3Bold }"
+                @click="updateCardField('line3Bold', !currentCardCfg.line3Bold)"
+              ><b>B</b></button>
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line3Italic }"
+                @click="updateCardField('line3Italic', !currentCardCfg.line3Italic)"
+              ><i>I</i></button>
+            </div>
+          </div>
+          <div class="tile-check-grid">
+            <label><input type="checkbox" :checked="currentCardCfg.showBirthDate" @change="updateCardField('showBirthDate', ($event.target as HTMLInputElement).checked)" /> {{ t('birth_date') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showBirthPlace" @change="updateCardField('showBirthPlace', ($event.target as HTMLInputElement).checked)" /> {{ t('birth_place') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showDeathDate" @change="updateCardField('showDeathDate', ($event.target as HTMLInputElement).checked)" /> {{ t('death_date') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showDeathPlace" @change="updateCardField('showDeathPlace', ($event.target as HTMLInputElement).checked)" /> {{ t('death_place') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showChrDate" @change="updateCardField('showChrDate', ($event.target as HTMLInputElement).checked)" /> {{ t('chr_date') }}</label>
+            <label><input type="checkbox" :checked="Boolean(currentCardCfg.showOnlyYears)" @change="updateCardField('showOnlyYears', ($event.target as HTMLInputElement).checked)" /> {{ t('settings_card_only_years') }}</label>
+          </div>
+          <div class="tile-radio-row">
+            <label><input type="radio" name="life-layout" value="single" :checked="currentCardCfg.lifeDatesLayout === 'single'" @change="updateCardField('lifeDatesLayout', 'single')" /> {{ t('settings_card_layout_single') }}</label>
+            <label><input type="radio" name="life-layout" value="multi" :checked="currentCardCfg.lifeDatesLayout === 'multi'" @change="updateCardField('lifeDatesLayout', 'multi')" /> {{ t('settings_card_layout_multi') }}</label>
+          </div>
+        </div>
+
+        <div class="tile-line-group">
+          <div class="tile-line-header">
+            <span>#4 & #5 {{ t('settings_card_line4') }}</span>
+            <div class="font-style-pills">
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line4Bold }"
+                @click="updateCardField('line4Bold', !currentCardCfg.line4Bold)"
+              ><b>B</b></button>
+              <button
+                type="button"
+                class="style-pill"
+                :class="{ active: currentCardCfg.line4Italic }"
+                @click="updateCardField('line4Italic', !currentCardCfg.line4Italic)"
+              ><i>I</i></button>
+            </div>
+          </div>
+          <div class="tile-check-grid">
+            <label><input type="checkbox" :checked="currentCardCfg.showSpouseName" @change="updateCardField('showSpouseName', ($event.target as HTMLInputElement).checked)" /> {{ t('spouse') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showMarriageCounter" @change="updateCardField('showMarriageCounter', ($event.target as HTMLInputElement).checked)" /> (1), (2)…</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showMarriageDate" @change="updateCardField('showMarriageDate', ($event.target as HTMLInputElement).checked)" /> {{ t('marr_date') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showDivorce" @change="updateCardField('showDivorce', ($event.target as HTMLInputElement).checked)" /> {{ t('divorced') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showSpouseBirthDate" @change="updateCardField('showSpouseBirthDate', ($event.target as HTMLInputElement).checked)" /> * {{ t('birth_date') }}</label>
+            <label><input type="checkbox" :checked="currentCardCfg.showSpouseDeathDate" @change="updateCardField('showSpouseDeathDate', ($event.target as HTMLInputElement).checked)" /> † {{ t('death_date') }}</label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab 2: Linienführung & Brücken -->
+      <div v-else class="layout-popover-body">
+        <div class="bg-control-section">
+          <div class="bg-section-label-row">
+            <label>{{ t('settings_lane_gap_label') }}</label>
+            <span class="bg-val-badge">{{ horizontalLaneGap ?? 16 }} px</span>
+          </div>
+          <input
+            type="range"
+            min="6"
+            max="40"
+            step="2"
+            :value="horizontalLaneGap ?? 16"
+            class="bg-slider"
+            @input="updateLineRoutingConfig({ horizontalLaneGap: Number(($event.target as HTMLInputElement).value) })"
+          />
+        </div>
+
+        <div class="tile-check-list">
+          <label>
+            <input
+              type="checkbox"
+              :checked="autoSubLanes !== false"
+              @change="updateLineRoutingConfig({ autoSubLanes: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>{{ t('settings_auto_sublanes_label') }}</span>
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              :checked="enableLineBridges !== false"
+              @change="updateLineRoutingConfig({ enableLineBridges: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>{{ t('settings_enable_bridges_label') }}</span>
+          </label>
+          <label v-if="enableLineBridges !== false">
+            <input
+              type="checkbox"
+              :checked="minimizeBridges !== false"
+              @change="updateLineRoutingConfig({ minimizeBridges: ($event.target as HTMLInputElement).checked })"
+            />
+            <span>{{ t('settings_minimize_bridges_label') }}</span>
+          </label>
+        </div>
+
+        <div v-if="enableLineBridges !== false" class="bg-control-section">
+          <div class="bg-section-label-row">
+            <label>{{ t('settings_bridge_radius_label') }}</label>
+            <span class="bg-val-badge">{{ bridgeRadius ?? 8 }} px</span>
+          </div>
+          <input
+            type="range"
+            min="4"
+            max="18"
+            step="1"
+            :value="bridgeRadius ?? 8"
+            class="bg-slider"
+            @input="updateLineRoutingConfig({ bridgeRadius: Number(($event.target as HTMLInputElement).value) })"
+          />
+        </div>
+      </div>
+
+      <div class="layout-popover-footer">
+        <span class="live-preview-hint">✨ {{ t('design_live_preview_hint') }}</span>
       </div>
     </div>
 
@@ -1130,17 +1423,191 @@ defineExpose({
   flex-wrap: wrap;
 }
 .btn-design-tool {
-  background: #34495e;
-  color: white;
-  border: none;
-  padding: 0.4rem 0.75rem;
-  border-radius: 4px;
+  background: #f8fafc;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  padding: 0.35rem 0.68rem;
+  border-radius: 6px;
   font-size: 0.78rem;
-  font-weight: bold;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.14s ease;
+}
+.btn-design-tool:hover:not(:disabled) {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+.btn-file-save {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+.btn-file-save:hover:not(:disabled) {
+  background: #1d4ed8;
+  border-color: #1e40af;
+  color: #ffffff;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 22px;
+  background: #e2e8f0;
+  margin: 0 2px;
+}
+.design-proband-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.proband-select-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #475569;
+}
+.proband-compact-select {
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  font-size: 0.8rem;
+  font-weight: 600;
+  outline: none;
   cursor: pointer;
 }
-.btn-design-tool:hover {
-  background: #2c3e50;
+.proband-compact-select:focus {
+  border-color: #2563eb;
+}
+.btn-layout-options.active {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #1d4ed8;
+}
+.layout-options-popover {
+  position: absolute;
+  top: 54px;
+  right: 14px;
+  width: 370px;
+  max-width: calc(100% - 28px);
+  max-height: calc(100% - 68px);
+  overflow-y: auto;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.2);
+  z-index: 65;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-sizing: border-box;
+}
+.layout-popover-tabs {
+  display: flex;
+  gap: 4px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 7px;
+}
+.layout-tab-btn {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: #475569;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.layout-tab-btn.active {
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1);
+}
+.layout-popover-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tile-line-group {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 7px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.tile-line-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #1e293b;
+}
+.font-style-pills {
+  display: flex;
+  gap: 4px;
+}
+.style-pill {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.72rem;
+  color: #475569;
+  cursor: pointer;
+}
+.style-pill.active {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+.tile-check-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px 8px;
+  font-size: 0.76rem;
+  color: #334155;
+}
+.tile-check-grid label,
+.tile-radio-row label,
+.tile-check-list label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  cursor: pointer;
+}
+.tile-radio-row {
+  display: flex;
+  gap: 12px;
+  font-size: 0.75rem;
+  color: #475569;
+  padding-top: 4px;
+  border-top: 1px dashed #e2e8f0;
+}
+.tile-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #334155;
+  background: #f8fafc;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid #e2e8f0;
+}
+.layout-popover-footer {
+  border-top: 1px solid #f1f5f9;
+  padding-top: 6px;
+  text-align: center;
+}
+.live-preview-hint {
+  font-size: 0.72rem;
+  color: #64748b;
+  font-style: italic;
 }
 .btn-undo {
   background: #f1f5f9;

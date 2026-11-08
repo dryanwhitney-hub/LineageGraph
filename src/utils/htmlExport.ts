@@ -1,3 +1,5 @@
+import { d3RawJs } from '../assets/vendor/d3.v7.min';
+
 export interface ExportSpouseConnection {
   id: string;
   date: string | null;
@@ -476,16 +478,19 @@ export function generateInteractiveTreeHtml(
   const titleEn = (options?.customTitleEn || '').trim() || `${familyLabel} Family Tree`;
   const initialLang = options?.defaultLang === 'en' ? 'en' : 'de';
 
-  // Safely serialize JSON so "</script>" inside notes cannot break the script tag
-  const jsonStr = JSON.stringify(rootNode).replace(/<\//g, '<\\/');
+  // Safely serialize D3 library and JSON data so "</script" cannot break the HTML parser
+  const safeD3Js = d3RawJs.replace(/<\/script/gi, '<\\/script');
+  const jsonStr = JSON.stringify(rootNode).replace(/<\/script/gi, '<\\/script');
 
   return `<!DOCTYPE html>
 <html lang="${initialLang}">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="format-detection" content="telephone=no">
     <title>${escapeHtmlAttr(initialLang === 'en' ? titleEn : titleDe)}</title>
-    <script src="https://d3js.org/d3.v7.min.js"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -496,22 +501,24 @@ export function generateInteractiveTreeHtml(
         html, body {
             width: 100vw;
             height: 100vh;
+            height: 100dvh;
             overflow: hidden;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             background-color: #f8fafc;
             color: #1e293b;
             margin: 0;
             padding: 0;
             position: relative;
+            -webkit-text-size-adjust: 100%;
         }
 
         #toolbar {
             position: fixed;
-            top: 16px;
-            left: 16px;
+            top: calc(16px + env(safe-area-inset-top, 0px));
+            left: calc(16px + env(safe-area-inset-left, 0px));
             z-index: 100;
             background: #ffffff;
-            padding: 10px 16px;
+            padding: 8px 14px;
             border-radius: 8px;
             box-shadow: 0 4px 14px rgba(0,0,0,0.08);
             display: flex;
@@ -521,12 +528,12 @@ export function generateInteractiveTreeHtml(
             max-width: calc(100vw - 430px);
         }
 
-            #toolbar h1 {
-                font-size: 15px;
-                font-weight: 600;
-                margin-right: 6px;
-                color: #0f172a;
-            }
+        #toolbar h1 {
+            font-size: 15px;
+            font-weight: 600;
+            margin-right: 6px;
+            color: #0f172a;
+        }
 
         .lang-switch {
             display: flex;
@@ -539,17 +546,24 @@ export function generateInteractiveTreeHtml(
         .lang-btn {
             background: #f8fafc;
             border: none;
-            padding: 5px 10px;
-            font-size: 12px;
+            min-height: 44px;
+            min-width: 44px;
+            padding: 8px 12px;
+            font-size: 13px;
             font-weight: 600;
             cursor: pointer;
             color: #64748b;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
 
-            .lang-btn.active {
-                background: #2563eb;
-                color: #ffffff;
-            }
+        .lang-btn.active {
+            background: #2563eb;
+            color: #ffffff;
+        }
 
         .search-wrapper {
             position: relative;
@@ -558,26 +572,30 @@ export function generateInteractiveTreeHtml(
 
         #search-input {
             width: 100%;
-            padding: 6px 12px;
+            min-height: 44px;
+            padding: 8px 12px;
             border: 1px solid #cbd5e1;
             border-radius: 6px;
             font-size: 13px;
             outline: none;
             background: #ffffff;
+            box-sizing: border-box;
+            -webkit-appearance: none;
         }
 
-            #search-input:focus {
-                border-color: #2563eb;
-                box-shadow: 0 0 0 2px rgba(37,99,235,0.15);
-            }
+        #search-input:focus {
+            border-color: #2563eb;
+            box-shadow: 0 0 0 2px rgba(37,99,235,0.15);
+        }
 
         #search-results {
             position: absolute;
-            top: 36px;
+            top: 48px;
             left: 0;
             width: 300px;
             max-height: 280px;
             overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
             background: #ffffff;
             border: 1px solid #cbd5e1;
             border-radius: 6px;
@@ -587,52 +605,144 @@ export function generateInteractiveTreeHtml(
         }
 
         .search-item {
-            padding: 8px 12px;
+            min-height: 44px;
+            padding: 10px 14px;
             border-bottom: 1px solid #f1f5f9;
             cursor: pointer;
-            font-size: 12.5px;
+            font-size: 13px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            touch-action: manipulation;
         }
 
-            .search-item:hover {
-                background-color: #eff6ff;
-            }
+        .search-item:hover {
+            background-color: #eff6ff;
+        }
 
-            .search-item .code {
-                font-weight: 700;
-                color: #2563eb;
-                margin-right: 6px;
-            }
+        .search-item .code {
+            font-weight: 700;
+            color: #2563eb;
+            margin-right: 6px;
+        }
 
-            .search-item .meta {
-                display: block;
-                font-size: 11px;
-                color: #64748b;
-                margin-top: 2px;
-            }
+        .search-item .meta {
+            display: block;
+            font-size: 11.5px;
+            color: #64748b;
+            margin-top: 2px;
+        }
 
         button.btn {
-            padding: 6px 10px;
+            min-height: 44px;
+            min-width: 44px;
+            padding: 8px 14px;
             background: #f8fafc;
             border: 1px solid #cbd5e1;
             border-radius: 6px;
-            font-size: 12px;
+            font-size: 13px;
             color: #334155;
             cursor: pointer;
             transition: all 0.15s ease;
             white-space: nowrap;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
 
-            button.btn:hover {
-                background: #e2e8f0;
-                color: #0f172a;
-            }
+        button.btn:hover {
+            background: #e2e8f0;
+            color: #0f172a;
+        }
 
-            button.btn.active-toggle {
-                background: #eff6ff;
-                border-color: #2563eb;
-                color: #1d4ed8;
-                font-weight: 600;
-            }
+        button.btn.active-toggle {
+            background: #eff6ff;
+            border-color: #2563eb;
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+
+        .toolbar-btn-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .menu-dropdown-wrapper {
+            display: none;
+            position: relative;
+        }
+
+        .btn-menu-trigger {
+            gap: 6px;
+            font-weight: 600;
+        }
+
+        .btn-menu-trigger .menu-icon {
+            font-size: 16px;
+            line-height: 1;
+        }
+
+        .dropdown-menu-panel {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            min-width: 220px;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
+            display: none;
+            flex-direction: column;
+            padding: 6px;
+            z-index: 300;
+        }
+
+        .dropdown-menu-panel.open {
+            display: flex;
+        }
+
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            min-height: 44px;
+            padding: 10px 14px;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            font-size: 13.5px;
+            color: #1e293b;
+            cursor: pointer;
+            text-align: left;
+            transition: background 0.15s ease;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+            box-sizing: border-box;
+            white-space: nowrap;
+        }
+
+        .dropdown-item:hover, .dropdown-item:active {
+            background: #eff6ff;
+            color: #1d4ed8;
+        }
+
+        .dropdown-item.active-toggle {
+            background: #eff6ff;
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+
+        .dropdown-item .item-icon {
+            font-size: 16px;
+            width: 20px;
+            text-align: center;
+            flex-shrink: 0;
+        }
 
         #tree-container {
             position: absolute;
@@ -640,21 +750,26 @@ export function generateInteractiveTreeHtml(
             left: 0;
             width: 100vw;
             height: 100vh;
+            height: 100dvh;
             cursor: grab;
             overflow: hidden;
-            touch-action: pan-x pan-y pinch-zoom;
+            touch-action: none;
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
             z-index: 1;
         }
 
-            #tree-container svg {
-                width: 100%;
-                height: 100%;
-                display: block;
-            }
+        #tree-container svg {
+            width: 100%;
+            height: 100%;
+            display: block;
+            touch-action: none;
+        }
 
-            #tree-container:active {
-                cursor: grabbing;
-            }
+        #tree-container:active {
+            cursor: grabbing;
+        }
 
         .node circle.in-circle {
             stroke-width: 2.2px;
@@ -666,6 +781,11 @@ export function generateInteractiveTreeHtml(
             r: 7.5px;
         }
 
+        .node circle.touch-hitbox {
+            cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
+        }
+
         .node circle.out-pin {
             fill: #94a3b8;
             stroke: #64748b;
@@ -675,10 +795,11 @@ export function generateInteractiveTreeHtml(
 
         .node .text-group {
             cursor: pointer;
+            -webkit-tap-highlight-color: transparent;
         }
 
         .node text {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             user-select: none;
         }
 
@@ -710,9 +831,9 @@ export function generateInteractiveTreeHtml(
             fill: #dc2626 !important;
         }
 
-            .node.selected .text-name .henry-badge {
-                fill: #dc2626 !important;
-            }
+        .node.selected .text-name .henry-badge {
+            fill: #dc2626 !important;
+        }
 
         .node.selected circle.in-circle {
             stroke: #dc2626 !important;
@@ -732,35 +853,119 @@ export function generateInteractiveTreeHtml(
             right: 0;
             width: 400px;
             height: 100vh;
+            height: 100dvh;
             background: #ffffff;
             border-left: 1px solid #e2e8f0;
             box-shadow: -4px 0 16px rgba(0,0,0,0.05);
-            padding: 22px;
+            padding: calc(22px + env(safe-area-inset-top, 0px)) calc(22px + env(safe-area-inset-right, 0px)) calc(22px + env(safe-area-inset-bottom, 0px)) 22px;
             overflow-y: auto;
+            -webkit-overflow-scrolling: touch;
             z-index: 90;
             transition: transform 0.3s ease;
+            box-sizing: border-box;
         }
 
-            #sidebar h2 {
-                font-size: 17px;
-                color: #0f172a;
-                margin-bottom: 4px;
-            }
+        #sidebar.collapsed-desktop {
+            transform: translateX(100%);
+        }
+
+        #sidebar h2 {
+            font-size: 17px;
+            color: #0f172a;
+            margin-bottom: 4px;
+            padding-right: 48px;
+        }
 
         .sidebar-close-btn {
-            display: none;
+            display: flex;
             position: absolute;
-            top: 16px;
-            right: 16px;
+            top: calc(16px + env(safe-area-inset-top, 0px));
+            right: calc(16px + env(safe-area-inset-right, 0px));
             background: #f1f5f9;
-            border: none;
+            color: #475569;
+            border: 1px solid #e2e8f0;
             font-size: 16px;
-            width: 32px;
-            height: 32px;
+            width: 44px;
+            height: 44px;
+            min-width: 44px;
+            min-height: 44px;
             border-radius: 50%;
             cursor: pointer;
             align-items: center;
             justify-content: center;
+            transition: all 0.15s ease;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .sidebar-close-btn:hover {
+            background: #e2e8f0;
+            color: #0f172a;
+        }
+
+        #desktop-reopen-sidebar-btn {
+            display: none;
+            position: fixed;
+            top: calc(16px + env(safe-area-inset-top, 0px));
+            right: calc(16px + env(safe-area-inset-right, 0px));
+            z-index: 95;
+            background: #ffffff;
+            color: #1e293b;
+            border: 1px solid #cbd5e1;
+            box-shadow: 0 4px 12px rgba(15,23,42,0.1);
+            min-height: 44px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            align-items: center;
+            gap: 6px;
+            touch-action: manipulation;
+        }
+
+        #desktop-reopen-sidebar-btn:hover {
+            background: #eff6ff;
+            border-color: #93c5fd;
+            color: #1d4ed8;
+        }
+
+        .child-jump-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .child-jump-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            min-height: 44px;
+            padding: 10px 12px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.14s ease;
+            touch-action: manipulation;
+        }
+
+        .child-jump-item:hover {
+            background: #eff6ff;
+            border-color: #93c5fd;
+        }
+
+        .child-jump-name {
+            color: #1d4ed8;
+            font-weight: 600;
+        }
+
+        .child-jump-dates {
+            color: #64748b;
+            font-size: 11.5px;
+            white-space: nowrap;
         }
 
         .badge-line {
@@ -817,29 +1022,32 @@ export function generateInteractiveTreeHtml(
             font-size: 12.5px;
         }
 
-            .spouse-card .sp-title {
-                font-weight: 600;
-                color: #0f172a;
-                margin-bottom: 6px;
-            }
+        .spouse-card .sp-title {
+            font-weight: 600;
+            color: #0f172a;
+            margin-bottom: 6px;
+        }
 
         .implex-link {
-            display: inline-block;
+            display: inline-flex;
+            align-items: center;
             margin-top: 6px;
+            min-height: 36px;
             color: #2563eb;
             text-decoration: underline;
             cursor: pointer;
             font-weight: 600;
+            touch-action: manipulation;
         }
 
-            .implex-link:hover {
-                color: #1d4ed8;
-            }
+        .implex-link:hover {
+            color: #1d4ed8;
+        }
 
         .legend {
             position: fixed;
-            bottom: 14px;
-            left: 16px;
+            bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+            left: calc(16px + env(safe-area-inset-left, 0px));
             background: rgba(255,255,255,0.94);
             padding: 8px 14px;
             border-radius: 6px;
@@ -868,39 +1076,84 @@ export function generateInteractiveTreeHtml(
         #mobile-details-btn {
             display: none;
             position: fixed;
-            bottom: 20px;
-            right: 20px;
+            bottom: calc(20px + env(safe-area-inset-bottom, 0px));
+            right: calc(20px + env(safe-area-inset-right, 0px));
             z-index: 150;
             background: #2563eb;
             color: #ffffff;
             border: none;
-            padding: 12px 18px;
+            padding: 12px 20px;
+            min-height: 48px;
+            min-width: 48px;
             border-radius: 30px;
             font-size: 14px;
             font-weight: 600;
             box-shadow: 0 4px 16px rgba(37,99,235,0.35);
             cursor: pointer;
             align-items: center;
-            gap: 6px;
+            gap: 8px;
+            touch-action: manipulation;
+            -webkit-tap-highlight-color: transparent;
         }
 
-            #mobile-details-btn:active {
-                background: #1d4ed8;
-            }
+        #mobile-details-btn:active {
+            background: #1d4ed8;
+        }
 
         /* Responsive Breakpoints for Mobile UX */
         @media (max-width: 900px) {
             #toolbar {
-                top: 10px;
-                left: 10px;
-                right: 10px;
+                top: calc(8px + env(safe-area-inset-top, 0px));
+                left: calc(8px + env(safe-area-inset-left, 0px));
+                right: calc(8px + env(safe-area-inset-right, 0px));
                 max-width: none;
-                padding: 8px 12px;
+                padding: 6px 10px;
+                gap: 8px;
+                display: flex;
+                align-items: center;
+                flex-wrap: nowrap;
+                overflow: visible;
             }
 
-                #toolbar h1 {
-                    display: none;
-                }
+            #toolbar h1 {
+                display: none;
+            }
+
+            .lang-switch {
+                flex-shrink: 0;
+                margin-right: 0;
+            }
+
+            .search-wrapper {
+                flex: 1;
+                min-width: 0;
+                width: auto;
+                position: relative;
+            }
+
+            #search-input {
+                width: 100%;
+                font-size: 16px; /* Prevents auto-zoom in iOS Safari */
+            }
+
+            #search-results {
+                position: absolute;
+                top: calc(100% + 6px);
+                left: 0;
+                width: 100%;
+                min-width: 250px;
+                max-width: calc(100vw - 28px);
+                z-index: 300;
+            }
+
+            .toolbar-btn-group {
+                display: none !important;
+            }
+
+            .menu-dropdown-wrapper {
+                display: block;
+                flex-shrink: 0;
+            }
 
             .legend {
                 display: none;
@@ -913,20 +1166,22 @@ export function generateInteractiveTreeHtml(
                 width: 100%;
                 max-width: 420px;
                 height: 100vh;
+                height: 100dvh;
                 transform: translateX(100%);
                 z-index: 250;
+                box-shadow: -8px 0 24px rgba(0,0,0,0.15);
             }
 
-                #sidebar.open {
-                    transform: translateX(0);
-                }
+            #sidebar.open {
+                transform: translateX(0);
+            }
 
             .sidebar-close-btn {
                 display: flex;
             }
 
             #mobile-details-btn {
-                display: flex;
+                display: inline-flex;
             }
         }
     </style>
@@ -943,11 +1198,43 @@ export function generateInteractiveTreeHtml(
             <input type="text" id="search-input" placeholder="Suche nach Name, Henry-Code, Ort...">
             <div id="search-results"></div>
         </div>
-        <button class="btn" id="btn-reset" title="Ansicht auf den aktuell selektierten Eintrag zentrieren">Zentrieren</button>
-        <button class="btn" id="btn-isolate" title="Nur den ausgewählten Ast und dessen Vorfahren anzeigen">Äste isolieren</button>
-        <button class="btn" id="btn-collapse" title="Alle Knoten im Stammbaum einklappen">Einklappen</button>
-        <button class="btn" id="btn-expand-step" title="Eine Generation weiter ausklappen">+1 Generation</button>
-        <button class="btn" id="btn-toggle-spouses" title="Anzeige der Ehepartner in den Knoten ein- oder ausschalten">Ehepartner: Aus</button>
+
+        <div class="toolbar-btn-group" id="toolbar-desktop-actions">
+            <button class="btn" id="btn-reset" title="Ansicht auf den aktuell selektierten Eintrag zentrieren">Zentrieren</button>
+            <button class="btn" id="btn-isolate" title="Nur den ausgewählten Ast und dessen Vorfahren anzeigen">Äste isolieren</button>
+            <button class="btn" id="btn-collapse" title="Alle Knoten im Stammbaum einklappen">Einklappen</button>
+            <button class="btn" id="btn-expand-step" title="Eine Generation weiter ausklappen">+1 Generation</button>
+            <button class="btn" id="btn-toggle-spouses" title="Anzeige der Ehepartner in den Knoten ein- oder ausschalten">Ehepartner: Aus</button>
+        </div>
+
+        <div class="menu-dropdown-wrapper" id="menu-dropdown-wrapper">
+            <button class="btn btn-menu-trigger" id="btn-mobile-menu" aria-haspopup="true" aria-expanded="false" title="Menü & Aktionen">
+                <span class="menu-icon">☰</span>
+                <span class="menu-label-text" id="ui-menu-label">Menü</span>
+            </button>
+            <div class="dropdown-menu-panel" id="toolbar-dropdown-menu">
+                <button class="dropdown-item" id="m-btn-reset">
+                    <span class="item-icon">🎯</span>
+                    <span id="ui-m-reset">Zentrieren</span>
+                </button>
+                <button class="dropdown-item" id="m-btn-isolate">
+                    <span class="item-icon">🔍</span>
+                    <span id="ui-m-isolate">Äste isolieren</span>
+                </button>
+                <button class="dropdown-item" id="m-btn-collapse">
+                    <span class="item-icon">📁</span>
+                    <span id="ui-m-collapse">Einklappen</span>
+                </button>
+                <button class="dropdown-item" id="m-btn-expand-step">
+                    <span class="item-icon">➕</span>
+                    <span id="ui-m-expand">+1 Generation</span>
+                </button>
+                <button class="dropdown-item" id="m-btn-toggle-spouses">
+                    <span class="item-icon">👥</span>
+                    <span id="ui-m-spouses">Ehepartner: Aus</span>
+                </button>
+            </div>
+        </div>
     </div>
 
     <div id="tree-container"></div>
@@ -956,8 +1243,12 @@ export function generateInteractiveTreeHtml(
         <span>ℹ️</span> <span id="ui-mobile-details">Details</span>
     </button>
 
+    <button id="desktop-reopen-sidebar-btn" title="Personen-Details einblenden">
+        <span>◀</span> <span id="ui-desktop-details">Personen-Details</span>
+    </button>
+
     <div id="sidebar">
-        <button class="sidebar-close-btn" id="btn-close-sidebar" title="Schließen">✕</button>
+        <button class="sidebar-close-btn" id="btn-close-sidebar" title="Details ein-/ausblenden">✕</button>
         <div id="details-content">
             <h2>Personen-Details</h2>
             <p style="font-size: 13px; color: #64748b; margin-top: 8px;">
@@ -972,11 +1263,38 @@ export function generateInteractiveTreeHtml(
         <div class="legend-item"><span class="dot" style="background:#fde68a; border:2px solid #d97706;"></span> <span id="ui-leg-3">Implex-Verweis</span></div>
     </div>
 
+    <!-- Self-contained Data Island & Inlined D3.js -->
+    <script id="tree-data-json" type="application/json">
+${jsonStr}
+    </script>
     <script>
-const treeData = ${jsonStr};
+/* D3.js v7.9.2 - Fully Self-Contained Offline Bundle */
+${safeD3Js}
+    </script>
+    <script>
+const safeStorage = {
+    _mem: {},
+    getItem: function(key) {
+        try {
+            return window.localStorage ? window.localStorage.getItem(key) : (this._mem[key] || null);
+        } catch (e) {
+            return this._mem[key] || null;
+        }
+    },
+    setItem: function(key, val) {
+        try {
+            if (window.localStorage) {
+                window.localStorage.setItem(key, String(val));
+            }
+        } catch (e) {}
+        this._mem[key] = String(val);
+    }
+};
 
-let currentLang = ${JSON.stringify(initialLang)};
-let showSpouses = false;
+const treeData = JSON.parse(document.getElementById("tree-data-json").textContent || "{}");
+
+let currentLang = safeStorage.getItem("lineagegraph_export_lang") || ${JSON.stringify(initialLang)};
+let showSpouses = safeStorage.getItem("lineagegraph_export_spouses") === "1";
 
 const i18n = {
                     de: {
@@ -1008,6 +1326,7 @@ const i18n = {
                         secBio: "Lebensdaten & Attribute",
                         secNotes: "Notizen",
                         secMarriages: "Ehen",
+                        secChildren: "Kinder",
                         birth: "Geburt",
                         baptism: "Taufe",
                         death: "Tod",
@@ -1024,7 +1343,8 @@ const i18n = {
                         marriedWith: "verh. mit ",
                         divorcedShort: "gesch. ",
                         unknown: "Unbekannt",
-                        mobileDetailsBtn: "Details"
+                        mobileDetailsBtn: "Details",
+                        menuBtn: "Menü"
                     },
                     en: {
                         title: ${JSON.stringify(titleEn)},
@@ -1055,6 +1375,7 @@ const i18n = {
                         secBio: "Vital Dates & Attributes",
                         secNotes: "Notes",
                         secMarriages: "Marriages",
+                        secChildren: "Children",
                         birth: "Birth",
                         baptism: "Baptism",
                         death: "Death",
@@ -1071,7 +1392,8 @@ const i18n = {
                         marriedWith: "m. ",
                         divorcedShort: "div. ",
                         unknown: "Unknown",
-                        mobileDetailsBtn: "Details"
+                        mobileDetailsBtn: "Details",
+                        menuBtn: "Menu"
                     }
 };
 
@@ -1111,10 +1433,27 @@ function updateStaticUI() {
                     toggleBtn.innerText = showSpouses ? t("btnSpousesOn") : t("btnSpousesOff");
                     toggleBtn.title = t("btnSpousesTip");
 
+                    const mLabel = document.getElementById("ui-menu-label");
+                    if (mLabel) mLabel.innerText = t("menuBtn");
+                    const mReset = document.getElementById("ui-m-reset");
+                    if (mReset) mReset.innerText = t("btnReset");
+                    const mIso = document.getElementById("ui-m-isolate");
+                    if (mIso) mIso.innerText = t("btnIsolate");
+                    const mCol = document.getElementById("ui-m-collapse");
+                    if (mCol) mCol.innerText = t("btnCollapse");
+                    const mExp = document.getElementById("ui-m-expand");
+                    if (mExp) mExp.innerText = t("btnExpand");
+                    const mSp = document.getElementById("ui-m-spouses");
+                    if (mSp) mSp.innerText = showSpouses ? t("btnSpousesOn") : t("btnSpousesOff");
+                    const mSpBtn = document.getElementById("m-btn-toggle-spouses");
+                    if (mSpBtn) mSpBtn.classList.toggle("active-toggle", showSpouses);
+
                     document.getElementById("ui-leg-1").innerText = t("leg1");
                     document.getElementById("ui-leg-2").innerText = t("leg2");
                     document.getElementById("ui-leg-3").innerText = t("leg3");
                     document.getElementById("ui-mobile-details").innerText = t("mobileDetailsBtn");
+                    const dReopen = document.getElementById("ui-desktop-details");
+                    if (dReopen) dReopen.innerText = t("detailsHead");
 
                     if (selectedNode && selectedNode.data) {
                         renderDetails(selectedNode.data);
@@ -1129,6 +1468,7 @@ function updateStaticUI() {
 
 document.getElementById("btn-lang-de").addEventListener("click", () => {
                     currentLang = "de";
+                    safeStorage.setItem("lineagegraph_export_lang", "de");
                     document.getElementById("btn-lang-de").classList.add("active");
                     document.getElementById("btn-lang-en").classList.remove("active");
                     updateStaticUI();
@@ -1136,14 +1476,19 @@ document.getElementById("btn-lang-de").addEventListener("click", () => {
 
 document.getElementById("btn-lang-en").addEventListener("click", () => {
                     currentLang = "en";
+                    safeStorage.setItem("lineagegraph_export_lang", "en");
                     document.getElementById("btn-lang-en").classList.add("active");
                     document.getElementById("btn-lang-de").classList.remove("active");
                     updateStaticUI();
 });
 
 const toggleSpousesBtn = document.getElementById("btn-toggle-spouses");
+if (showSpouses) {
+                    toggleSpousesBtn.classList.add("active-toggle");
+}
 toggleSpousesBtn.addEventListener("click", () => {
                     showSpouses = !showSpouses;
+                    safeStorage.setItem("lineagegraph_export_spouses", showSpouses ? "1" : "0");
                     toggleSpousesBtn.innerText = showSpouses ? t("btnSpousesOn") : t("btnSpousesOff");
                     toggleSpousesBtn.classList.toggle("active-toggle", showSpouses);
                     update(selectedNode || root);
@@ -1401,17 +1746,32 @@ function update(source) {
                         .on("click", (event, d) => {
                             event.stopPropagation();
                             if (isPanningOrDragging) return;
-                            if (window.innerWidth <= 900) {
-                                selectedNode = d;
-                                refreshSelectionClasses();
-                                if (d.children) { d._children = d.children; d.children = null; }
-                                else if (d._children) { d.children = d._children; d._children = null; }
-                                update(d);
-                            } else {
-                                if (d.children) { d._children = d.children; d.children = null; }
-                                else if (d._children) { d.children = d._children; d._children = null; }
-                                update(d);
-                            }
+                            selectedNode = d;
+                            refreshSelectionClasses();
+                            if (d.children) { d._children = d.children; d.children = null; }
+                            else if (d._children) { d.children = d._children; d._children = null; }
+                            update(d);
+                            renderDetails(d.data);
+                        });
+
+                    // Invisible touch target (diameter 44px) for iOS/Android finger touch
+                    nodeEnter.append("circle")
+                        .attr("class", "touch-hitbox")
+                        .attr("r", 22)
+                        .attr("cx", 0)
+                        .attr("cy", 0)
+                        .style("fill", "transparent")
+                        .style("stroke", "transparent")
+                        .style("cursor", "pointer")
+                        .on("click", (event, d) => {
+                            event.stopPropagation();
+                            if (isPanningOrDragging) return;
+                            selectedNode = d;
+                            refreshSelectionClasses();
+                            if (d.children) { d._children = d.children; d.children = null; }
+                            else if (d._children) { d.children = d._children; d._children = null; }
+                            update(d);
+                            renderDetails(d.data);
                         });
 
                     const textGroup = nodeEnter.append("g")
@@ -1419,28 +1779,18 @@ function update(source) {
                         .on("click", (event, d) => {
                             event.stopPropagation();
                             if (isPanningOrDragging) return;
-                            if (window.innerWidth <= 900) {
-                                selectedNode = d;
-                                refreshSelectionClasses();
-                                if (d._children) {
-                                    d.children = d._children;
-                                    d._children = null;
-                                    update(d);
-                                }
-                            } else {
-                                selectedNode = d;
-                                refreshSelectionClasses();
-                                renderDetails(d.data);
-                                if (d._children) {
-                                    d.children = d._children;
-                                    d._children = null;
-                                    update(d);
-                                }
+                            selectedNode = d;
+                            refreshSelectionClasses();
+                            renderDetails(d.data);
+                            if (d._children) {
+                                d.children = d._children;
+                                d._children = null;
+                                update(d);
                             }
                         });
 
                     const textName = textGroup.append("text").attr("class", "text-name").attr("x", 12).attr("y", -6);
-                    textName.append("tspan").attr("class", "henry-badge").text(d => \`\${d.data.henry_code}. \`);
+                    textName.append("tspan").attr("class", "henry-badge").text(d => d.data.henry_code ? (d.data.henry_code + ". ") : "");
                     textName.append("tspan").attr("class", "name-part").text(d => d.data.name);
                     textName.append("tspan").attr("fill", "#f59e0b").text(d => d.data.path_stopped ? " ↪" : "");
 
@@ -1452,10 +1802,43 @@ function update(source) {
 
                     nodeUpdate.each(function(d) {
                         const group = d3.select(this);
-                        let badgeWidth = 24;
-                        try {
-                            badgeWidth = group.select(".henry-badge").node().getBBox().width;
-                        } catch (e) {}
+                        let badgeWidth = 0;
+                        const badgeText = d.data.henry_code ? (d.data.henry_code + ". ") : "";
+                        if (badgeText.length > 0) {
+                            const henryNode = group.select(".henry-badge").node();
+                            const nameTextNode = group.select(".text-name").node();
+
+                            // 1. Try getComputedTextLength on the tspan (standard SVG API, supported across all browsers)
+                            if (henryNode && typeof henryNode.getComputedTextLength === "function") {
+                                try {
+                                    const len = henryNode.getComputedTextLength();
+                                    if (len > 0 && len <= badgeText.length * 12) {
+                                        badgeWidth = Math.ceil(len);
+                                    }
+                                } catch (e) {}
+                            }
+
+                            // 2. Try getSubStringLength on parent text element if tspan measurement is unavailable
+                            if (badgeWidth === 0 && nameTextNode && typeof nameTextNode.getSubStringLength === "function") {
+                                try {
+                                    const len = nameTextNode.getSubStringLength(0, badgeText.length);
+                                    if (len > 0 && len <= badgeText.length * 12) {
+                                        badgeWidth = Math.ceil(len);
+                                    }
+                                } catch (e) {}
+                            }
+
+                            // 3. Fallback: Proportional character width estimation for Henry code (prevents WebKit parent getBBox bug)
+                            if (badgeWidth === 0) {
+                                let approx = 0;
+                                for (let i = 0; i < badgeText.length; i++) {
+                                    const ch = badgeText[i];
+                                    if (ch === '.' || ch === ' ') approx += 3.8;
+                                    else approx += 7.8;
+                                }
+                                badgeWidth = Math.ceil(approx);
+                            }
+                        }
 
                         const datesStr = extractDatesLine(d.data);
                         group.select(".text-dates")
@@ -1520,7 +1903,9 @@ function centerNode(d3Node) {
                     const target = d3Node || selectedNode || root;
                     const scale = 0.85;
                     const isMobile = window.innerWidth <= 900;
-                    const sidebarOffset = isMobile ? 0 : 200;
+                    const sidebarEl = document.getElementById("sidebar");
+                    const isDesktopCollapsed = sidebarEl && sidebarEl.classList.contains("collapsed-desktop");
+                    const sidebarOffset = (isMobile || isDesktopCollapsed) ? 0 : 200;
                     const currentWidth = container.clientWidth || window.innerWidth;
                     const currentHeight = container.clientHeight || window.innerHeight;
 
@@ -1542,9 +1927,25 @@ function addInfoRow(label, val) {
                     return \`<div class="info-label">\${escapeHtml(label)}:</div><div class="info-val">\${escapeHtml(val)}</div>\`;
 }
 
+function addPersonLinkRow(label, personName, fallbackNode) {
+                    if (!personName) return "";
+                    let matchedNode = allNodesFlat.find(n => n.data && n.data.name === personName);
+                    if (!matchedNode && fallbackNode && fallbackNode.data && personName.includes(fallbackNode.data.name)) {
+                        matchedNode = fallbackNode;
+                    }
+                    if (matchedNode && matchedNode.data && matchedNode.data.henry_code) {
+                        const code = escapeHtml(matchedNode.data.henry_code);
+                        return \`<div class="info-label">\${escapeHtml(label)}:</div><div class="info-val"><span class="implex-link" style="margin-top:0;" onclick="jumpToHenry('\${code}')">[\${code}] \${escapeHtml(personName)} ↗</span></div>\`;
+                    }
+                    return addInfoRow(label, personName);
+}
+
 function renderDetails(p) {
                     const sidebarContainer = document.getElementById("details-content");
                     if (!sidebarContainer) return;
+                    const d3Node = (p && p.henry_code && nodeByHenry[p.henry_code]) ? nodeByHenry[p.henry_code] : selectedNode;
+                    const parentNode = d3Node ? d3Node.parent : null;
+
                     let html = \`<h2>\${escapeHtml(p.name)}</h2>\`;
                     html += \`<div class="badge-line">
                         <span class="badge">\${t("badgeHenry")}: \${escapeHtml(p.henry_code)}</span>
@@ -1574,8 +1975,8 @@ function renderDetails(p) {
                     html += addInfoRow(t("occupation"), p.occupation);
                     html += addInfoRow(t("religion"), p.religion);
                     html += addInfoRow(t("residence"), p.residence);
-                    html += addInfoRow(t("father"), p.father);
-                    html += addInfoRow(t("mother"), p.mother);
+                    html += addPersonLinkRow(t("father"), p.father, parentNode);
+                    html += addPersonLinkRow(t("mother"), p.mother, parentNode);
                     html += \`</div>\`;
 
                     if (p.notes) {
@@ -1604,8 +2005,8 @@ function renderDetails(p) {
                                     \${addInfoRow(t("divorce"), divStr)}
                                     \${addInfoRow(t("birth"), spB)}
                                     \${addInfoRow(t("death"), spD)}
-                                    \${addInfoRow(t("father"), sp.father)}
-                                    \${addInfoRow(t("mother"), sp.mother)}
+                                    \${addPersonLinkRow(t("father"), sp.father, null)}
+                                    \${addPersonLinkRow(t("mother"), sp.mother, null)}
                                 </div>\`;
                             if (sp.implex_code) {
                                 const spLinkText = \`\${t("seeLabel")} \${escapeHtml(sp.implex_code)} \${escapeHtml(sp.implex_name)}\`;
@@ -1616,6 +2017,23 @@ function renderDetails(p) {
                             html += \`</div>\`;
                         });
                     }
+
+                    // Kinder-Sektion mit klickbaren Sprunglinks
+                    const childNodes = d3Node ? (d3Node.children || d3Node._children || []) : [];
+                    if (childNodes.length > 0) {
+                        html += \`<div class="section-title">\${t("secChildren")} (\${childNodes.length})</div><div class="child-jump-list">\`;
+                        childNodes.forEach(cNode => {
+                            const cd = cNode.data;
+                            const cCode = escapeHtml(cd.henry_code || "");
+                            const cDates = extractDatesLine(cd);
+                            html += \`<div class="child-jump-item" onclick="jumpToHenry('\${cCode}')">
+                                <span class="child-jump-name">[\${cCode}] \${escapeHtml(cd.name)} ↗</span>
+                                <span class="child-jump-dates">\${escapeHtml(cDates)}</span>
+                            </div>\`;
+                        });
+                        html += \`</div>\`;
+                    }
+
                     sidebarContainer.innerHTML = html;
 }
 
@@ -1638,6 +2056,7 @@ function jumpToHenry(code) {
                     centerNode(target);
                     renderDetails(target.data);
 }
+window.jumpToHenry = jumpToHenry;
 
 document.getElementById("btn-reset").addEventListener("click", () => centerNode(selectedNode || root));
 document.getElementById("btn-isolate").addEventListener("click", () => {
@@ -1681,7 +2100,58 @@ document.getElementById("mobile-details-btn").addEventListener("click", () => {
 const searchInput = document.getElementById("search-input");
 const searchResults = document.getElementById("search-results");
 
+const mobileMenuBtn = document.getElementById("btn-mobile-menu");
+const dropdownMenu = document.getElementById("toolbar-dropdown-menu");
+
+function closeMobileMenu() {
+                    if (dropdownMenu) dropdownMenu.classList.remove("open");
+                    if (mobileMenuBtn) mobileMenuBtn.setAttribute("aria-expanded", "false");
+}
+
+function toggleMobileMenu(e) {
+                    if (e) e.stopPropagation();
+                    if (!dropdownMenu) return;
+                    const willOpen = !dropdownMenu.classList.contains("open");
+                    if (willOpen) {
+                        dropdownMenu.classList.add("open");
+                        if (mobileMenuBtn) mobileMenuBtn.setAttribute("aria-expanded", "true");
+                        if (searchResults) searchResults.style.display = "none";
+                    } else {
+                        closeMobileMenu();
+                    }
+}
+
+if (mobileMenuBtn) {
+                    mobileMenuBtn.addEventListener("click", toggleMobileMenu);
+}
+
+document.getElementById("m-btn-reset")?.addEventListener("click", () => {
+                    closeMobileMenu();
+                    document.getElementById("btn-reset")?.click();
+});
+document.getElementById("m-btn-isolate")?.addEventListener("click", () => {
+                    closeMobileMenu();
+                    document.getElementById("btn-isolate")?.click();
+});
+document.getElementById("m-btn-collapse")?.addEventListener("click", () => {
+                    closeMobileMenu();
+                    document.getElementById("btn-collapse")?.click();
+});
+document.getElementById("m-btn-expand-step")?.addEventListener("click", () => {
+                    closeMobileMenu();
+                    document.getElementById("btn-expand-step")?.click();
+});
+document.getElementById("m-btn-toggle-spouses")?.addEventListener("click", () => {
+                    closeMobileMenu();
+                    document.getElementById("btn-toggle-spouses")?.click();
+});
+
+searchInput.addEventListener("focus", () => {
+                    closeMobileMenu();
+});
+
 searchInput.addEventListener("input", () => {
+                    closeMobileMenu();
                     const q = searchInput.value.trim().toLowerCase();
                     if (q.length < 2) { searchResults.style.display = "none"; return; }
                     const matches = allNodesFlat.filter(n => {
@@ -1712,18 +2182,43 @@ searchResults.addEventListener("click", (e) => {
 });
 
 document.addEventListener("click", (e) => {
-                    if (!e.target.closest(".search-wrapper")) searchResults.style.display = "none";
+                    if (!e.target.closest("#menu-dropdown-wrapper")) {
+                        closeMobileMenu();
+                    }
+                    if (!e.target.closest(".search-wrapper")) {
+                        searchResults.style.display = "none";
+                    }
 });
 
 document.getElementById("btn-close-sidebar").addEventListener("click", () => {
-                    document.getElementById("sidebar").classList.remove("open");
+                    const sb = document.getElementById("sidebar");
+                    if (window.innerWidth <= 900) {
+                        sb.classList.remove("open");
+                    } else {
+                        sb.classList.add("collapsed-desktop");
+                        document.getElementById("desktop-reopen-sidebar-btn").style.display = "flex";
+                    }
 });
 
-setTimeout(() => {
+document.getElementById("desktop-reopen-sidebar-btn").addEventListener("click", () => {
+                    const sb = document.getElementById("sidebar");
+                    sb.classList.remove("collapsed-desktop");
+                    document.getElementById("desktop-reopen-sidebar-btn").style.display = "none";
+});
+
+function initInteractiveTree() {
                     updateStaticUI();
                     centerNode(root);
                     renderDetails(root.data);
-}, 150);
+}
+
+if (document.readyState === "loading") {
+                    document.addEventListener("DOMContentLoaded", () => {
+                        setTimeout(initInteractiveTree, 50);
+                    });
+} else {
+                    setTimeout(initInteractiveTree, 50);
+}
     </script>
 </body>
 </html>`;

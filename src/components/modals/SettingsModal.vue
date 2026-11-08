@@ -92,8 +92,6 @@ async function openUserGuide() {
   }
 }
 
-const showColDropdown = ref<boolean>(false);
-const showDetailAttrDropdown = ref<boolean>(false);
 const isCardConfigExpanded = ref<boolean>(true);
 const isDesignSectionExpanded = ref<boolean>(false);
 
@@ -237,68 +235,69 @@ function onTreeSelectChange(event: Event) {
               >
                 {{ t('calc_codes_btn') }}
               </button>
+              <small class="auto-calc-hint">✨ {{ t('settings_auto_calc_hint') }}</small>
             </div>
           </div>
 
-          <!-- 2. Tabellarische Ansicht -->
+          <!-- 2. Tabellarische Ansicht (Direkt sichtbare 2-Spalten-Matrix) -->
           <div v-if="activeTab === 'table_view'" class="settings-tab-pane">
-            <div class="settings-section">
-              <h3>{{ t('table_col_config') }}</h3>
-              <div class="custom-multi-select">
-                <div class="select-header" @click="showColDropdown = !showColDropdown">
-                  {{ t('select_table_cols') }} ({{ columns.filter(c => c.visible).length }} /
-                  {{ columns.length }}) <span style="float: right">▼</span>
-                </div>
-                <div class="select-dropdown" v-if="showColDropdown">
-                  <div v-for="(col, index) in columns" :key="col.key" class="select-item">
-                    <label>
-                      <input type="checkbox" v-model="col.visible" />
-                      {{ getColLabel(col) }}
-                      <small v-if="!col.editable" class="readonly-hint">(schreibgeschützt)</small>
-                    </label>
-                    <div class="order-btns">
-                      <button @click.stop="moveColumn(index, 'up')" :disabled="index === 0">
-                        ▲
-                      </button>
-                      <button
-                        @click.stop="moveColumn(index, 'down')"
-                        :disabled="index === columns.length - 1"
-                      >
-                        ▼
-                      </button>
-                    </div>
-                  </div>
-                </div>
+            <div class="settings-section matrix-section">
+              <div class="matrix-header-block">
+                <h3>📋 {{ t('settings_matrix_title') }}</h3>
+                <p class="matrix-subtitle">{{ t('settings_matrix_subtitle') }}</p>
               </div>
-            </div>
 
-            <div class="settings-section">
-              <h3>{{ t('detail_attr_config') }}</h3>
-              <div class="custom-multi-select">
-                <div class="select-header" @click="showDetailAttrDropdown = !showDetailAttrDropdown">
-                  {{ t('select_detail_attrs') }} ({{ columns.filter(c => c.detailVisible).length }} /
-                  {{ columns.length }}) <span style="float: right">▼</span>
-                </div>
-                <div class="select-dropdown" v-if="showDetailAttrDropdown">
-                  <div v-for="(col, index) in columns" :key="'det-cfg-' + col.key" class="select-item">
-                    <label>
-                      <input type="checkbox" v-model="col.detailVisible" />
-                      {{ getColLabel(col) }}
-                      <small v-if="!col.editable" class="readonly-hint">(schreibgeschützt)</small>
-                    </label>
-                    <div class="order-btns">
-                      <button @click.stop="moveColumn(index, 'up')" :disabled="index === 0">
-                        ▲
-                      </button>
-                      <button
-                        @click.stop="moveColumn(index, 'down')"
-                        :disabled="index === columns.length - 1"
-                      >
-                        ▼
-                      </button>
-                    </div>
-                  </div>
-                </div>
+              <div class="matrix-table-wrap">
+                <table class="settings-matrix-table">
+                  <thead>
+                    <tr>
+                      <th>{{ t('settings_matrix_col_attr') }}</th>
+                      <th class="center-col">
+                        {{ t('settings_matrix_col_table') }}
+                        <span class="matrix-count-pill">{{ columns.filter(c => c.visible).length }}/{{ columns.length }}</span>
+                      </th>
+                      <th class="center-col">
+                        {{ t('settings_matrix_col_details') }}
+                        <span class="matrix-count-pill">{{ columns.filter(c => c.detailVisible).length }}/{{ columns.length }}</span>
+                      </th>
+                      <th class="center-col" style="width: 90px;">{{ t('settings_matrix_col_order') }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="(col, index) in columns" :key="'mat-' + col.key">
+                      <td class="attr-name-cell">
+                        <strong>{{ getColLabel(col) }}</strong>
+                        <small v-if="!col.editable" class="readonly-hint">({{ t('readonly') || 'schreibgeschützt' }})</small>
+                      </td>
+                      <td class="center-col">
+                        <input type="checkbox" v-model="col.visible" class="matrix-checkbox" />
+                      </td>
+                      <td class="center-col">
+                        <input type="checkbox" v-model="col.detailVisible" class="matrix-checkbox" />
+                      </td>
+                      <td class="center-col">
+                        <div class="matrix-order-btns">
+                          <button
+                            type="button"
+                            class="btn-matrix-order"
+                            @click.stop="moveColumn(index, 'up')"
+                            :disabled="index === 0"
+                          >
+                            ▲
+                          </button>
+                          <button
+                            type="button"
+                            class="btn-matrix-order"
+                            @click.stop="moveColumn(index, 'down')"
+                            :disabled="index === columns.length - 1"
+                          >
+                            ▼
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
           </div>
@@ -1311,6 +1310,97 @@ button:disabled {
   border: none;
   border-radius: 3px;
   cursor: pointer;
+}
+.auto-calc-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.76rem;
+  color: #64748b;
+}
+.matrix-section {
+  padding: 14px;
+}
+.matrix-header-block h3 {
+  margin: 0 0 4px 0;
+  color: #0f172a;
+}
+.matrix-subtitle {
+  margin: 0 0 12px 0;
+  font-size: 0.82rem;
+  color: #64748b;
+}
+.matrix-table-wrap {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.settings-matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.settings-matrix-table th {
+  background: #f1f5f9;
+  color: #334155;
+  font-weight: 700;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 9px 12px;
+  border-bottom: 1px solid #cbd5e1;
+  text-align: left;
+}
+.settings-matrix-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
+}
+.settings-matrix-table tr:last-child td {
+  border-bottom: none;
+}
+.settings-matrix-table tr:hover td {
+  background: #f8fafc;
+}
+.center-col {
+  text-align: center !important;
+}
+.matrix-count-pill {
+  display: inline-block;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.7rem;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 4px;
+}
+.matrix-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+.matrix-order-btns {
+  display: inline-flex;
+  gap: 4px;
+}
+.btn-matrix-order {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+.btn-matrix-order:hover:not(:disabled) {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+.btn-matrix-order:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 
 /* Settings Modal mit linker Navigationsleiste */

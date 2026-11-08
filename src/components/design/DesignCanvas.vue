@@ -499,6 +499,27 @@ function onBgMouseUp() {
             </button>
           </template>
           <template v-else>
+            <!-- Innerhalb einer Mehrpersonen-Gruppe nach links/rechts tauschen -->
+            <template v-if="gl.cards.length > 1">
+              <button
+                class="grp-btn"
+                :disabled="gl.cards.findIndex(c => c.person.id === getSelectedOrAnchorPersonId(gl)) <= 0"
+                :title="t('design_move_person_left')"
+                @click.stop="movePersonWithinGroup(gl.group, getSelectedOrAnchorPersonId(gl), -1)"
+              >
+                ◀
+              </button>
+              <button
+                class="grp-btn"
+                :disabled="gl.cards.findIndex(c => c.person.id === getSelectedOrAnchorPersonId(gl)) >= gl.cards.length - 1"
+                :title="t('design_move_person_right')"
+                @click.stop="movePersonWithinGroup(gl.group, getSelectedOrAnchorPersonId(gl), 1)"
+              >
+                ▶
+              </button>
+              <span class="grp-hud-sep"></span>
+            </template>
+
             <button
               class="grp-btn"
               :title="t('design_dock_left')"
@@ -535,6 +556,7 @@ function onBgMouseUp() {
             >
               ➕
             </button>
+
             <!-- Geschwistergruppe nach links oder rechts auflösen -->
             <button
               v-if="gl.cards.length > 1"
@@ -554,12 +576,30 @@ function onBgMouseUp() {
             </button>
             <!-- Aufgelöste Geschwister wieder zu einer Gruppe zusammenfassen -->
             <button
-              v-else-if="gl.canRegroup"
+              v-else-if="gl.canRegroup || canRegroupPerson(getSelectedOrAnchorPersonId(gl))"
               class="grp-btn grp-btn-regroup"
               :title="t('design_regroup_tooltip')"
               @click.stop="regroupSelectedOrFirstInGroup(gl)"
             >
               {{ t('design_regroup_btn') }}
+            </button>
+
+            <!-- Nachkommen gruppieren & Eintrag aus Gruppe lösen -->
+            <button
+              v-if="hasDescendants(getSelectedOrAnchorPersonId(gl))"
+              class="grp-btn grp-btn-descendants"
+              :title="t('design_group_descendants_tooltip')"
+              @click.stop="groupDescendantsByLevel(getSelectedOrAnchorPersonId(gl))"
+            >
+              👥
+            </button>
+            <button
+              v-if="gl.cards.length > 1 || gl.isDocked"
+              class="grp-btn grp-btn-detach"
+              :title="t('design_detach_person_tooltip')"
+              @click.stop="detachPersonFromGroup(gl.group, getSelectedOrAnchorPersonId(gl))"
+            >
+              ⏏️
             </button>
           </template>
         </div>
@@ -631,44 +671,6 @@ function onBgMouseUp() {
       </button>
       <button class="btn-fit-screen" @click="fitToScreen" :title="t('design_fit_to_screen_tooltip')">
         {{ t('design_fit_to_screen') }}
-      </button>
-    </div>
-
-    <!-- Buttons mit den Speichern und Laden Funktionen liegen unten rechts als Overlay -->
-    <div class="design-persist-overlay" @mousedown.stop @wheel.stop>
-      <!-- Zurück / Undo Button: Kreis mit "Zurück" Icon -->
-      <button
-        class="persist-circle-btn persist-btn-undo"
-        :class="{ disabled: !canUndo }"
-        :disabled="!canUndo"
-        :title="t('design_undo_tooltip')"
-        @click.stop="emit('undo')"
-      >
-        ↩️
-      </button>
-      <!-- Neu / Neue Datei Button: Kreis mit "Neues Dokument" Icon -->
-      <button
-        class="persist-circle-btn persist-btn-new"
-        :title="t('design_new_file_tooltip')"
-        @click.stop="emit('create-new-design')"
-      >
-        📄
-      </button>
-      <!-- Laden Button: etwas kleinerer Kreis mit "Open File" Icon -->
-      <button
-        class="persist-circle-btn persist-btn-load"
-        :title="t('design_load_tooltip')"
-        @click.stop="emit('open-load-modal')"
-      >
-        📂
-      </button>
-      <!-- Speichern Button: etwas größerer Kreis mit "Diskette" Icon -->
-      <button
-        class="persist-circle-btn persist-btn-save"
-        :title="t('design_save_tooltip')"
-        @click.stop="emit('open-save-modal')"
-      >
-        💾
       </button>
     </div>
   </div>
@@ -1134,6 +1136,30 @@ function onBgMouseUp() {
 .grp-btn-regroup:hover:not(:disabled) {
   background: #27ae60;
   color: white;
+}
+.grp-hud-sep {
+  width: 1px;
+  height: 14px;
+  background: rgba(255, 255, 255, 0.25);
+  margin: 0 2px;
+}
+.grp-btn-descendants {
+  background: #dbeafe;
+  color: #1d4ed8;
+  border-color: #93c5fd;
+}
+.grp-btn-descendants:hover:not(:disabled) {
+  background: #2563eb;
+  color: #ffffff;
+}
+.grp-btn-detach {
+  background: #e0f2fe;
+  color: #0369a1;
+  border-color: #7dd3fc;
+}
+.grp-btn-detach:hover:not(:disabled) {
+  background: #0284c7;
+  color: #ffffff;
 }
 
 /* Geschwisterkästchen-Reihe: Kacheln oben bündig ausgerichtet */

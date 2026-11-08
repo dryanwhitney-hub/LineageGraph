@@ -454,17 +454,22 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * Semikolon dient als Trenner; Felder mit Sonderzeichen sind sauber in `""` eingefasst.
   * Spalten `Vater_Name` und `Mutter_Name` enthalten vollständige Namen statt reiner IDs.
 
-#### TC-EXP-003: Autarke Single-File-HTML-Chronik
+#### TC-EXP-003: Autarke Single-File-HTML-Chronik (Desktop, Android, iOS & Sandboxes)
 - **Traceability:** [REQ-EXP-003](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-exp-003-autarke-interaktive-html-chronik) -> [SPEC-EXP-003](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-003---req-exp-003)
-- **Test-Typ:** Integration Test (`src/utils/htmlExport.ts`)
-- **Test-Ziel:** Sicherstellen, dass die generierte HTML-Datei installationsfrei und ohne Internetverbindung im Webbrowser funktioniert.
-- **Preconditions:** 50 Personen im aktiven Baum.
+- **Test-Typ:** Integration & Mobile Compatibility Test (`src/utils/htmlExport.ts`)
+- **Test-Ziel:** Sicherstellen, dass die generierte HTML-Datei installationsfrei, ohne Internetverbindung und ohne externe CDN-Aufrufe lokal auf Desktop, Android- und iOS-Geräten (inklusive iOS Dateien-App/Quick Look und WhatsApp-Viewer) sowie auf Webservern voll funktionsfähig läuft.
+- **Preconditions:** Aktiver Personenbaum mit Stammvater, Nachkommen, Implex-Verweisen und Ehen.
 - **Testschritte:**
-  1. `generateHtmlChronik(persons, rootConfig)` aufrufen.
+  1. `buildInteractiveExportTree` und `generateInteractiveTreeHtml` aufrufen.
   2. Generierten HTML-Code auf externe Skript- oder CSS-Links (`http://`, `https://`) analysieren.
+  3. Vorhandensein der minifizierten D3-Engine (`D3.js v7.9.2`) und des `<script id="tree-data-json" type="application/json">`-Blocks prüfen.
+  4. Viewport-Meta-Tag auf `viewport-fit=cover` und CSS auf `height: 100dvh` sowie `env(safe-area-inset-*)` prüfen.
+  5. Touch-Hitboxen (`circle.touch-hitbox` mit `r=22`) und Mindest-Touch-Größen (44x44px) verifizieren.
+  6. Ausführen in simulierter Offline-/Null-Origin-Sandbox testen (Absicherung gegen `SecurityError` beim Web Storage über `safeStorage`).
 - **Erwartetes Ergebnis:**
-  * Alle CSS-Regeln und JavaScript-Routinen liegen inline im Dokument vor.
-  * Das Dokument enthält funktionierende interaktive Baumansichten und Suchfilter.
+  * 0 externe Netzwerkabfragen (`<script src="...">` und `<link href="...">` sind nicht vorhanden).
+  * Voll funktionsfähige clientseitige Volltextsuche, D3-Zoom/Pan mit `touch-action: none` ohne Gesten-Konflikte.
+  * Korrektes Öffnen und Navigieren auf iOS Quick Look und mobilen Touchscreens.
 
 #### TC-EXP-004: Hochauflösender Bild- & Vektorexport (SVG / PNG)
 - **Traceability:** [REQ-EXP-004](file:///c:/dev/Froning/app/LineageGraph/REQ.md#req-exp-004-hochaufl%C3%B6sender-bild---vektorexport-des-stammbaums) -> [SPEC-EXP-004](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-004---req-exp-004)

@@ -670,11 +670,11 @@ function handleSearchSelect(personId: string) {
       </div>
 
       <div class="floating-zoom-controls" @mousedown.stop @wheel.stop>
-        <button @click="emit('update:zoom', Math.max(zoom - 0.1, 0.2))" title="Rauszoomen">
+        <button @click="emit('update:zoom', Math.max(zoom - 0.1, 0.2))" :title="t('export_design_zoom_out')">
           ➖
         </button>
         <span>{{ Math.round(zoom * 100) }}%</span>
-        <button @click="emit('update:zoom', Math.min(zoom + 0.1, 2.5))" title="Reinzoomen">
+        <button @click="emit('update:zoom', Math.min(zoom + 0.1, 2.5))" :title="t('export_design_zoom_in')">
           ➕
         </button>
         <div class="divider"></div>
@@ -686,21 +686,25 @@ function handleSearchSelect(personId: string) {
 
 <style scoped>
 .tree-wrapper {
+  flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   height: 100%;
   position: relative;
+  background: #f8fafc;
 }
 .tree-tools {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 10px;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 15px;
-  border-bottom: 1px solid #dcdde1;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid #e2e8f0;
   z-index: 10;
-  background: white;
+  background: #ffffff;
+  flex-shrink: 0;
 }
 .tree-tools-left {
   display: flex;
@@ -714,63 +718,75 @@ function handleSearchSelect(personId: string) {
 }
 .tree-search-wrapper input {
   width: 100%;
-  padding: 0.5rem;
-  border: 1px solid #bdc3c7;
-  border-radius: 4px;
+  padding: 0.4rem 0.65rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  font-size: 0.82rem;
+  color: #0f172a;
+  background: #f8fafc;
   box-sizing: border-box;
+}
+.tree-search-wrapper input:focus {
+  outline: none;
+  border-color: #2563eb;
+  background: #ffffff;
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
 }
 .search-dropdown {
   position: absolute;
-  top: 100%;
+  top: calc(100% + 4px);
   left: 0;
   width: 100%;
-  background: white;
-  border: 1px solid #bdc3c7;
-  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
   max-height: 250px;
   overflow-y: auto;
   z-index: 100;
   list-style: none;
   padding: 0;
   margin: 0;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.14);
 }
 .search-dropdown li {
-  padding: 0.6rem;
+  padding: 0.5rem 0.7rem;
   cursor: pointer;
-  border-bottom: 1px solid #ecf0f1;
-  font-size: 0.85rem;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 0.82rem;
+  color: #1e293b;
 }
 .search-dropdown li:hover {
-  background: #e3f2fd;
+  background: #eff6ff;
 }
 button {
-  padding: 0.5rem 1rem;
-  background-color: #3498db;
+  padding: 0.4rem 0.8rem;
+  background-color: #2563eb;
   color: white;
   border: none;
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  font-weight: bold;
+  font-weight: 600;
 }
 button:hover:not(:disabled) {
-  background-color: #2980b9;
+  background-color: #1d4ed8;
 }
 .btn-new-free-query {
-  background-color: #8e44ad;
-  color: white;
-  font-size: 0.82rem;
-  padding: 0.45rem 0.85rem;
-  border-radius: 4px;
+  background-color: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  font-size: 0.8rem;
+  padding: 0.38rem 0.75rem;
+  border-radius: 6px;
 }
 .btn-new-free-query:hover:not(:disabled) {
-  background-color: #732d91;
+  background-color: #dbeafe;
 }
 .tree-viewport {
-  flex-grow: 1;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
   cursor: grab;
-  background: #fafafa;
+  background: #f8fafc;
   position: relative;
   user-select: none;
   -webkit-user-select: none;
@@ -784,45 +800,50 @@ button:hover:not(:disabled) {
 }
 .floating-zoom-controls {
   position: absolute;
-  bottom: 20px;
-  left: 20px;
-  background: rgba(255, 255, 255, 0.95);
-  padding: 10px 15px;
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
+  bottom: 16px;
+  left: 16px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 6px 10px;
+  border-radius: 9px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: 0.4rem;
   z-index: 50;
-  border: 1px solid #bdc3c7;
+  border: 1px solid #cbd5e1;
 }
 .floating-zoom-controls button {
-  background: #ecf0f1;
-  color: #2c3e50;
-  border: 1px solid #bdc3c7;
-  padding: 0.2rem 0.6rem;
-  border-radius: 4px;
-  font-size: 1rem;
+  background: #f8fafc;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  padding: 0.22rem 0.55rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
 }
 .floating-zoom-controls button:hover {
-  background: #dcdde1;
+  background: #e2e8f0;
 }
 .floating-zoom-controls span {
-  font-size: 0.85rem;
-  font-weight: bold;
-  width: 45px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #0f172a;
+  width: 44px;
   text-align: center;
 }
 .divider {
   width: 1px;
-  height: 20px;
-  background: #bdc3c7;
-  margin: 0 5px;
+  height: 18px;
+  background: #cbd5e1;
+  margin: 0 3px;
 }
 .btn-nav-reset {
-  background-color: #7f8c8d !important;
+  background-color: #334155 !important;
   color: white !important;
-  font-size: 0.85rem !important;
+  font-size: 0.78rem !important;
+  border-color: #1e293b !important;
+}
+.btn-nav-reset:hover {
+  background-color: #0f172a !important;
 }
 :deep(.css-tree > ul) {
   padding-top: 35px;

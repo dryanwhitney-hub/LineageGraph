@@ -202,12 +202,13 @@ graph TD
 ### 2.4 Benutzeroberfläche & Views (UI)
 
 #### REQ-UI-001: Interaktive Datentabelle mit Sortierung & Multi-Filtern
-- **Titel & Kurzbeschreibung:** Leistungsfähige Tabellenansicht mit spaltenweiser Text- und Datumsfilterung, Spaltensortierung und anpassbarer Spaltensichtbarkeit.
-- **Fachlicher Zweck / Business Value:** Schnelles Auffinden, Vergleichen und Selektieren von Personen aus großen Datenbeständen (> 10.000 Einträge).
+- **Titel & Kurzbeschreibung:** Leistungsfähige Vollbild-Tabellenansicht mit globaler Schnellsuche, spaltenweiser Text- und Popover-Datumsfilterung, Spaltensortierung und direkter 2-Spalten-Attributmatrix in den Einstellungen.
+- **Fachlicher Zweck / Business Value:** Schnelles Auffinden, Vergleichen und Selektieren von Personen aus großen Datenbeständen (> 10.000 Einträge) bei maximaler horizontaler und vertikaler Platzersparnis.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Spalten für ID, Nachname, Vorname, Geschlecht, Geburtsdatum/-ort, Sterbedatum/-ort, Henry-Code und Generation.
-  2. Spalten können in den Einstellungen ein-/ausgeblendet und in ihrer Reihenfolge verschoben werden.
-  3. Klick auf Spaltenkopf schaltet zwischen aufsteigender, absteigender und Standard-Sortierung um.
+  1. Spalten für ID, Nachname, Vorname, Geschlecht, Geburtsdatum/-ort, Sterbedatum/-ort, Henry-Code und Generation in einer `100vh`-Desktop-Shell mit Sticky-Header und angepinnter Paginierungsleiste.
+  2. Globale Schnellsuche (`tableQuickSearch`) sowie Sammel-Schaltfläche zum Zurücksetzen aller aktiven Spaltenfilter; Datumsfilter (exakt, vor, nach) sind in kompakten Popovern im Spaltenkopf gekapselt.
+  3. In den Einstellungen werden Sichtbarkeit und Reihenfolge über eine direkt sichtbare 2-Spalten-Matrix (`In Tabelle` | `In Details` | `Reihenfolge`) gesteuert.
+  4. Klick auf Spaltenkopf schaltet zwischen aufsteigender, absteigender und Standard-Sortierung um.
 - **Technische Spezifikation:** Siehe [SPEC-UI-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-001---req-ui-001)
 
 #### REQ-UI-002: Infinite Canvas Stammbaum-Visualisierung
@@ -220,12 +221,13 @@ graph TD
 - **Technische Spezifikation:** Siehe [SPEC-UI-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-002---req-ui-002)
 
 #### REQ-UI-003: Slide-Over Detail-Drawer & Verwandtschafts-Inspector
-- **Titel & Kurzbeschreibung:** Seitenleiste mit vollständiger Übersicht aller Attribute, Eltern, Geschwister, Partner, Kinder, Notizen und GEDCOM-Rohdaten.
-- **Fachlicher Zweck / Business Value:** Schneller Zugriff auf den genealogischen Kontext einer selektierten Person ohne Verlassen der aktuellen Hauptansicht.
+- **Titel & Kurzbeschreibung:** Einklappbare rechte Inspector-Seitenleiste (exklusiv in Tabellen- und Stammbaum-Ansicht) mit vollständiger Übersicht aller Attribute, Eltern, Partner, Kinder, Notizen und GEDCOM-Rohdaten.
+- **Fachlicher Zweck / Business Value:** Schneller Zugriff auf den genealogischen Kontext einer selektierten Person ohne Verlassen der aktuellen Hauptansicht und ohne Platzverlust im eingeklappten Zustand (`0px` Breite).
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Schnellsprung durch Klick auf Verwandte (Eltern, Partner, Kinder).
-  2. Integrierter Eltern-Editor im Editiermodus.
-  3. Anzeige strukturierter GEDCOM-Tags und Freitextnotizen.
+  1. Wird ausschließlich in der Tabellen- und Stammbaum-Ansicht eingeblendet (nicht im Design Studio oder Export) und beansprucht eingeklappt bzw. ohne Selektion `0px` Breite.
+  2. Schnellsprung (`@jump-to`) durch Klick auf Verwandte (Eltern, Partner, Kinder) im Lesemodus.
+  3. Im Editiermodus stehen durchsuchbare Schnellauswahl-Picker (`.searchable-picker`) für Vater, Mutter, Ehepartner und Kinder sowie **ein einziger zentraler Speichern-Button** (`Alle Änderungen speichern`) im angepinnten Drawer-Footer bereit, der Lebensdaten, Eltern und Ehen atomar speichert.
+  4. Anzeige strukturierter GEDCOM-Tags und Freitextnotizen.
 - **Technische Spezifikation:** Siehe [SPEC-UI-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-003---req-ui-003)
 
 #### REQ-UI-004: Freie Schnellabfrage (Free Query Modal)
@@ -270,12 +272,13 @@ graph TD
   4. Unvermeidbare Schnittpunkte zwischen horizontalen und vertikalen Segmenten werden als Halbkreis-Bogen (`bridgeRadius`) gerendert.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-002---req-dsg-002)
 
-#### REQ-DSG-003: Voll konfigurierbare Personenkarten
-- **Titel & Kurzbeschreibung:** Detaillierte Gestaltung von Kartenbreite, Typografie, Rahmenfarben, Schatten und angezeigten Datenfeldern.
-- **Fachlicher Zweck / Business Value:** Anpassung des visuellen Erscheinungsbildes an individuelle Vorlieben oder Publikationsstile.
+#### REQ-DSG-003: Voll konfigurierbare Personenkarten mit Live-Preview-Popover
+- **Titel & Kurzbeschreibung:** Detaillierte Gestaltung von Kartenbreite, Typografie, Rahmenfarben, Schatten und angezeigten Datenfeldern über ein optisch zurückgestelltes Live-Preview-Popover in der Studio-Toolbar.
+- **Fachlicher Zweck / Business Value:** Anpassung des visuellen Erscheinungsbildes mit sofortiger Live-Vorschau am echten Schaubild, ohne die Arbeitsfläche des Design Studios zu überfrachten.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Farben für männliche, weibliche und neutrale Personen getrennt konfigurierbar.
-  2. Optionale Einblendung von Geburts-/Sterbedatum, Lebensspanne, Henry-Code und Generation.
+  1. Farben für männliche, weibliche und neutrale Personen getrennt konfigurierbar; Kachel-Kopfbereiche bleiben frei von Mini-Aktionsbuttons.
+  2. Optionale Einblendung von Geburts-/Sterbedatum, Lebensspanne, Henry-Code und Generation direkt im Popover `⚙️ Kachel- & Layout-Optionen` mit unmittelbarer Live-Vorschau auf der Canvas.
+  3. Alle kontextabhängigen Karten- und Gruppenaktionen sind an einem einzigen schwebenden HUD (`group-floating-controls`) über der selektierten Karte/Gruppe gebündelt.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-003---req-dsg-003)
 
 #### REQ-DSG-004: Hintergrundgestaltung & Bild-Persistierung
@@ -356,20 +359,24 @@ graph TD
 - **Technische Spezifikation:** Siehe [SPEC-EXP-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-001---req-exp-001)
 
 #### REQ-EXP-002: Strukturierter CSV-Export
-- **Titel & Kurzbeschreibung:** Tabellarischer Export mit anpassbaren Trennzeichen und optionalem UTF-8-BOM für Microsoft Excel.
-- **Fachlicher Zweck / Business Value:** Weiterverarbeitung der Genealogiedaten in Tabellenkalkulationen und Statistikprogrammen.
+- **Titel & Kurzbeschreibung:** Tabellarischer Export mit anpassbaren Trennzeichen, optionalem UTF-8-BOM für Microsoft Excel und umschaltbarer Tabellen-/Rohtext-Vorschau.
+- **Fachlicher Zweck / Business Value:** Weiterverarbeitung der Genealogiedaten in Tabellenkalkulationen und Statistikprogrammen mit direkter visueller Tabellenkontrolle vor dem Export.
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Einstellbare Trennzeichen: Komma, Semikolon, Tabulator.
   2. Optionaler Byte-Order-Mark (`\u{FEFF}`) für native UTF-8-Erkennung in Excel.
-  3. Vollständige Namensauflösung für Vater und Mutter statt bloßer IDs.
+  3. Vollständige Namensauflösung für Vater und Mutter statt bloßer IDs sowie Umschalter zwischen gerenderter Tabellen-Vorschau und `.csv`-Rohtext.
 - **Technische Spezifikation:** Siehe [SPEC-EXP-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-002---req-exp-002)
 
 #### REQ-EXP-003: Autarke interaktive HTML-Chronik
-- **Titel & Kurzbeschreibung:** Generierung einer eigenständigen, installationsfreien Single-File-HTML-Datei mit Suchfunktion und Stammbäumen.
-- **Fachlicher Zweck / Business Value:** Einfaches Teilen der Forschungsergebnisse mit Verwandten ohne Software-Installation.
+- **Titel & Kurzbeschreibung:** Generierung einer eigenständigen, installationsfreien Single-File-HTML-Datei mit Suchfunktion, Stammbäumen und interaktivem Detail-Drawer.
+- **Fachlicher Zweck / Business Value:** Einfaches Teilen der Forschungsergebnisse mit Verwandten ohne Software-Installation inklusive bidirektionaler Verwandtschaftsnavigation im Detail-Drawer.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Alle Stile (CSS), Skripte (JS) und Datenstrukturen werden in einer einzigen `.html`-Datei gebündelt.
+  1. Alle Stile (CSS), Skripte (JS inklusive D3-Engine) und Datenstrukturen werden in einer einzigen `.html`-Datei gebündelt. Keine externen CDN- oder Netzanfragen.
   2. Voll funktionsfähige clientseitige Volltextsuche und Stammbaum-Navigation im Browser.
+  3. Der Detail-Drawer (`#sidebar`) ist sowohl mobil als auch auf dem Desktop ein- und ausklappbar und bietet klickbare Sprunglinks (`jumpToHenry`) für Eltern, Implex-Verweise und eine vollständige Kinder-Liste.
+  4. Vollständige Plattformunabhängigkeit: Natives Öffnen und Ausführen ohne funktionale Einbußen lokal auf Desktop, Android- und iOS-Geräten (inklusive iOS Dateien-App/Quick Look, WhatsApp-Viewer, Offline-Dateien) sowie auf Webservern.
+  5. Touch- & Viewport-Optimierung: Viewport mit `viewport-fit=cover`, Mindestgröße von 44x44px für Steuerelemente und transparente SVG-Knoten-Hitboxen (`r=22`), Dynamic Viewport Units (`100dvh`), Safe-Area-Insets (`env(safe-area-inset-*)`) und `touch-action: none` auf dem SVG-Container gegen Gestenkonflikte. Auf mobilen Bildschirmen bleibt das Suchfeld stets vollflächig sichtbar und Vorschlagslisten öffnen unbeschnitten über dem Canvas, während Werkzeug-Aktionen in einem Touch-Kontextmenü (`[☰ Menü]`) gebündelt werden.
+  6. Resilientes State Management & Dateninjektion: Datenhaltung über isoliertes `<script type="application/json" id="tree-data-json">` und abgesicherter Speicher-Zugriff (`safeStorage` mit In-Memory-Fallback) zur Prävention von `SecurityError`-Abbrüchen in iOS-Sandboxes.
 - **Technische Spezifikation:** Siehe [SPEC-EXP-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-003---req-exp-003)
 
 #### REQ-EXP-004: Hochauflösender Bild- & Vektorexport des Stammbaums

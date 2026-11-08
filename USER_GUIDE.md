@@ -442,11 +442,12 @@ Ein übersichtliches, kreuzungsminimiertes Schaubild im Design Mode und beim Bil
 Sie bestimmen bis ins Detail, wie die einzelnen Personenkarten im Stammbaum aussehen: Schriftgrößen, Rahmenfarben für Geschlechter, Schatteneffekte und welche Datenzeilen gedruckt werden.
 
 #### Wie bediene ich sie?
-1. Klicken Sie im Design Mode auf **„Kachel-Optionen“**.
-2. **Inhalte wählen:** Bestimmen Sie für jede der 5 Datenzeilen die Anzeige (z. B. Henry-ID, vollständiger Name, Geburts- und Sterbedaten, Heiratsdatum, Partnerangaben).
+1. Klicken Sie in der oberen Werkzeugleiste des Design Studios auf **„⚙️ Kachel- & Layout-Optionen“** (oder öffnen Sie die Einstellungen im Reiter *„Design Mode“*).
+2. **Inhalte wählen:** Bestimmen Sie für jede der 5 Datenzeilen die Anzeige (z. B. Henry-ID, Vorname, Geburts- und Sterbedaten, Heiratsdatum, Partnerangaben).
 3. **Formatierung:** Stellen Sie Zeilen nach Wunsch auf **Fett** oder *Kursiv*.
 4. **Jahreszahlen-Schalter:** Schalten Sie mit einem Klick zwischen vollen Datumsangaben (`* 12.05.1845`) und reinen Jahreszahlen (`* 1845`) um, um Platz zu sparen.
-5. In der Live-Vorschau sehen Sie die Kacheloptik in Echtzeit.
+5. **Linien & Brücken:** Wechseln Sie im Popover auf den Reiter *„📐 Linien & Brücken“*, um Spurabstände und Bogenradien anzupassen.
+6. Alle Änderungen wirken sich als **Live-Vorschau** sofort auf Ihr echtes Schaubild im Hintergrund aus.
 
 #### Was ist das Ergebnis?
 Ein maßgeschneidertes Erscheinungsbild, das perfekt zu Ihrem Anlass (z. B. Familientreffen, Wandposter oder Jubiläumsbuch) passt.
@@ -475,11 +476,11 @@ Das Wappen fügt sich harmonisch hinter den Personenkarten ein und wird dauerhaf
 Sie können neue Design-Entwürfe für jeden beliebigen Stammahnen anlegen, bestehende Layouts aus der Datenbank laden, externe Dateien öffnen und bearbeitete Stände als eigenständige `.json`-Dateien sichern oder mit anderen teilen.
 
 #### Wie bediene ich sie?
-* **Neues Design anlegen (mit Stammahn-Auswahl):** Klicken Sie unten rechts auf das runde Kreissymbol **📄**. Im Dialog können Sie den gewünschten Stammahnen (Ausgangspunkt des Schaubilds) aus allen definierten Stammahnen auswählen und einen individuellen Entwurfsnamen vergeben. Liegen ungespeicherte Änderungen vor, warnt eine Hinweismeldung direkt im Dialog. Beim Klick auf *„Neues Design erstellen“* wird ein frischer, initialer Entwurf für diesen Stammahnen erzeugt, ohne alte Speicherdateien zu laden.
-* **Stammahn im Dropdown wechseln:** Wenn Sie im Kopfbereich über das Dropdown *„🌳 Stammahnen-Auswahl (Sicht)“* zu einem anderen Stammahnen wechseln, lädt LineageGraph ausschließlich Speicherstände dieses spezifischen Stammahnen. Wurde für den gewählten Stammahnen noch kein Stand gesichert, wird automatisch das initiale Ausgangslayout berechnet (es wird kein Stand anderer Stammahnen fälschlich geladen).
-* **Gespeicherte Stände laden & Datei öffnen:** Klicken Sie unten rechts auf das Ordner-Symbol **📂**. Sie können direkt einen gespeicherten Entwurf aus der Liste des Stammahnen auswählen oder über die Schaltfläche *„📂 Datei auswählen & anwenden (.json)“* eine externe Datei von der Festplatte einlesen.
-* **Rückgängig (Undo):** Drücken Sie `Strg + Z` (oder klicken Sie unten rechts auf das Kreissymbol *„↩️“* bzw. in der Leiste auf *„↩️ Zurück“*), um eine versehentliche Verschiebung sofort rückgängig zu machen.
-* **Stand speichern:** Klicken Sie unten rechts auf das Disketten-Symbol **💾**, vergeben Sie einen Namen (z. B. `Hauptstamm_Poster_A0`) und wählen Sie *„In Stammbaum speichern“*.
+* **Neues Design anlegen (mit Stammahn-Auswahl):** Klicken Sie in der oberen Werkzeugleiste des Design Studios auf **„📄 Neu“**. Im Dialog können Sie den gewünschten Stammahnen (Ausgangspunkt des Schaubilds) aus allen definierten Stammahnen auswählen und einen individuellen Entwurfsnamen vergeben. Liegen ungespeicherte Änderungen vor, warnt eine Hinweismeldung direkt im Dialog. Beim Klick auf *„Neues Design erstellen“* wird ein frischer, initialer Entwurf für diesen Stammahnen erzeugt, ohne alte Speicherdateien zu laden.
+* **Stammahn im Dropdown wechseln:** Wenn Sie in der Werkzeugleiste über das kompakte Stammahnen-Dropdown zu einem anderen Stammahnen wechseln, lädt LineageGraph ausschließlich Speicherstände dieses spezifischen Stammahnen. Wurde für den gewählten Stammahnen noch kein Stand gesichert, wird automatisch das initiale Ausgangslayout berechnet.
+* **Gespeicherte Stände laden & Datei öffnen:** Klicken Sie in der oberen Werkzeugleiste auf **„📂 Laden“**. Sie können direkt einen gespeicherten Entwurf aus der Liste des Stammahnen auswählen oder über die Schaltfläche *„📂 Datei auswählen & anwenden (.json)“* eine externe Datei von der Festplatte einlesen.
+* **Rückgängig (Undo):** Drücken Sie `Strg + Z` (oder klicken Sie in der Werkzeugleiste auf **„↩️ Zurück“**), um eine versehentliche Verschiebung sofort rückgängig zu machen.
+* **Stand speichern:** Klicken Sie in der Werkzeugleiste auf **„💾 Speichern“**, vergeben Sie einen Namen (z. B. `Hauptstamm_Poster_A0`) und wählen Sie *„In Stammbaum speichern“*.
 * **Als Datei exportieren:** Über die Schaltfläche *„⬇️ Als Datei ablegen (.json)“* im Speichern-Dialog exportieren Sie das Layout als transportable JSON-Datei auf Ihre Festplatte.
 
 #### Was ist das Ergebnis?
@@ -614,17 +615,28 @@ Eine formatierte `.csv`-Datei mit aufgelösten Klarnamen für Eltern und Partner
 ### 2.6.3 Interaktive HTML-Chronik für den Webbrowser
 
 #### Was macht die Funktion?
-Erzeugt eine eigenständige, interaktive HTML-Datei, die Sie per E-Mail oder USB-Stick an Ihre Familie weitergeben können. Empfänger benötigen keinerlei Software – ein Doppelklick öffnet den Stammbaum in jedem modernen Webbrowser.
+Erzeugt eine vollständig autarke, interaktive HTML-Datei, die Sie per E-Mail, WhatsApp, AirDrop oder USB-Stick an Ihre Familie weitergeben können. Empfänger benötigen keinerlei Software-Installation oder Internetverbindung – die Datei öffnet sich nativ auf allen Plattformen:
+* **Desktop-Computer:** Unter Windows, macOS und Linux in jedem modernen Webbrowser (Edge, Chrome, Safari, Firefox).
+* **Apple iOS (iPhone & iPad):** Nativ in der iOS-Dateien-App (Quick Look), in Safari sowie direkt innerhalb von WhatsApp-, Signal- oder E-Mail-Vorschauen.
+* **Android-Smartphones & -Tablets:** Im Standard-Browser oder Dateimanager mit voller Gesten- und Touch-Steuerung.
+* **Webserver / Intranet:** Kann ohne Modifikationen auf beliebigen Webservern gehostet werden.
 
 #### Wie bediene ich sie?
 1. Wählen Sie im Export-Modul den Reiter **„Interaktiver HTML-Export“**.
 2. Wählen Sie den gewünschten Stammahn aus.
 3. Vergeben Sie nach Wunsch einen zweisprachigen Dokumenttitel (Deutsch / Englisch).
-4. Testen Sie die interaktive Browser-Vorschau direkt im Fenster (inklusive Umschaltung zwischen Desktop- und Smartphone-Ansicht).
+4. Testen Sie die interaktive Vorschau direkt im Fenster:
+   * **Desktop-Modus:** Großflächige Ansicht mit Maus-Navigation und ausklappbarer Seitenleiste.
+   * **Mobile-Modus:** Testen Sie die Ansicht im Smartphone-Mockup (umschaltbar zwischen Hoch- und Querformat mit Notch- und Safe-Area-Simulation).
 5. Klicken Sie auf **„Als HTML-Datei speichern“**.
 
 #### Was ist das Ergebnis?
-Eine einzige, in sich geschlossene `.html`-Datei mit integrierter Suchfunktion, ausklappbaren Stammbäumen und ansprechendem Design.
+Eine einzige, 100 % in sich geschlossene `.html`-Datei ohne externe Server- oder CDN-Abhängigkeiten. Sie enthält:
+* Einen interaktiven Vektor-Stammbaum mit D3-Zoom, Touch-Gesten und optimierten Touch-Zielen (mindestens 44x44 Pixel).
+* Blitzschnelle clientseitige Volltextsuche nach Namen, Geburtsorten und Henry-Codes (auf Smartphones dauerhaft vollflächig sichtbar mit frei schwebender Vorschlagsliste).
+* Ein kompaktes mobiles Kontextmenü (`[☰ Menü]`), das alle Navigationsaktionen (Zentrieren, Äste isolieren, Einklappen, Generationen ausklappen, Ehepartner ein/aus) übersichtlich und ohne horizontales Leistenscrollen bereitstellt.
+* Einen aufklappbaren Detail-Drawer mit biografischen Daten, Ehen, Implex-Sprüngen und anklickbaren Kinder-Listen.
+* Fehlertolerante Zustandsspeicherung (Sprache DE/EN und Ehepartner-Anzeige) mit automatischem Fallback für restriktive Sandbox-Umgebungen.
 
 ---
 
