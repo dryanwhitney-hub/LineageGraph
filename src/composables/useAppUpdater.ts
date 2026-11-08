@@ -1,4 +1,4 @@
-import { ref } from 'vue';
+import { ref, shallowRef, toRaw } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { check, type Update, type DownloadEvent } from '@tauri-apps/plugin-updater';
@@ -7,7 +7,8 @@ const currentVersion = ref<string>('');
 const isChecking = ref<boolean>(false);
 const isDownloading = ref<boolean>(false);
 const downloadProgress = ref<number>(0);
-const availableUpdate = ref<Update | null>(null);
+let rawUpdate: Update | null = null;
+const availableUpdate = shallowRef<Update | null>(null);
 const newVersion = ref<string>('');
 const releaseNotes = ref<string>('');
 const releaseDate = ref<string>('');
@@ -23,7 +24,7 @@ export function useAppUpdater() {
       try {
         currentVersion.value = await getVersion();
       } catch {
-        currentVersion.value = '0.2.2';
+        currentVersion.value = '0.2.3';
       }
     }
     return currentVersion.value;
@@ -61,6 +62,7 @@ export function useAppUpdater() {
 
       const update = await check();
       if (update) {
+        rawUpdate = update;
         availableUpdate.value = update;
         newVersion.value = update.version;
         releaseNotes.value = update.body || '';
@@ -71,6 +73,7 @@ export function useAppUpdater() {
         isChecking.value = false;
         return true;
       } else {
+        rawUpdate = null;
         availableUpdate.value = null;
         if (manual) {
           statusType.value = 'up-to-date';
@@ -105,7 +108,8 @@ export function useAppUpdater() {
   }
 
   async function confirmInstall(): Promise<void> {
-    if (!availableUpdate.value) return;
+    const update = rawUpdate || toRaw(availableUpdate.value);
+    if (!update) return;
     try {
       isDownloading.value = true;
       downloadProgress.value = 0;
@@ -114,7 +118,7 @@ export function useAppUpdater() {
       let downloaded = 0;
       let contentLength = 0;
 
-      await availableUpdate.value.downloadAndInstall((event: DownloadEvent) => {
+      await update.downloadAndInstall((event: DownloadEvent) => {
         if (event.event === 'Started') {
           contentLength = event.data.contentLength || 0;
           downloadProgress.value = 0;

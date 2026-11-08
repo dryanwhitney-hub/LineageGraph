@@ -101,11 +101,11 @@ Das Manifest `latest.json` teilt installierten Apps mit, welche Version aktuell 
 Kopieren Sie dieses Snippet in Ihr PowerShell-Terminal (ersetzen Sie bei Bedarf die Versionsnummer und Release-Notes):
 
 ```powershell
-$version = "a.b.d"
+$version = "0.2.3"
 $notes   = "Fehlerbehebungen und Verbesserungen im Stammbaum-Canvas."
 $repo    = "dryanwhitney-hub/LineageGraph"
 
-$sigPath = "src-tauri\target\release\bundle\nsis\LineageGraph_${version}_x64.nsis.zip.sig"
+$sigPath = "src-tauri\target\release\bundle\nsis\LineageGraph_${version}_x64-setup.exe.sig"
 $sig = (Get-Content $sigPath -Raw).Trim()
 $pubDate = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
@@ -116,14 +116,16 @@ $manifest = @{
     platforms = @{
         "windows-x86_64" = @{
             signature = $sig
-            url       = "https://github.com/$repo/releases/download/v$version/LineageGraph_${version}_x64.nsis.zip"
+            url       = "https://github.com/$repo/releases/download/v$version/LineageGraph_${version}_x64-setup.exe"
         }
     }
 }
 
 $manifestJson = $manifest | ConvertTo-Json -Depth 4
-# UTF-8 OHNE BOM schreiben, da serverseitige JSON-Parser (serde_json) sonst mit 'Could not fetch a valid release JSON' abbrechen
-[System.IO.File]::WriteAllText("src-tauri\target\release\bundle\nsis\latest.json", $manifestJson, [System.Text.UTF8Encoding]::new($false))
+# UTF-8 OHNE BOM schreiben, da serverseitige JSON-Parser (serde_json) sonst mit 'error decoding response body' abbrechen
+$targetPath = "$PSScriptRoot\src-tauri\target\release\bundle\nsis\latest.json"
+if (-not (Test-Path "src-tauri")) { $targetPath = "src-tauri\target\release\bundle\nsis\latest.json" }
+[System.IO.File]::WriteAllText((Resolve-Path $targetPath), $manifestJson, (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "✓ latest.json erfolgreich erzeugt (UTF-8 ohne BOM)!" -ForegroundColor Green
 ```
 
