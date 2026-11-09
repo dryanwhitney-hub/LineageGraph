@@ -24,7 +24,7 @@ export function useAppUpdater() {
       try {
         currentVersion.value = await getVersion();
       } catch {
-        currentVersion.value = '0.2.3';
+        currentVersion.value = '0.2.4';
       }
     }
     return currentVersion.value;

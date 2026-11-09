@@ -53,11 +53,17 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
     - [2.7.2 Kontextuelle Recherche-Empfehlungen & Online-Archiv-Suche](#272-kontextuelle-recherche-empfehlungen--online-archiv-suche)
     - [2.7.3 Priorisierung, differenzierter Aufgabenstatus & persönliche Genealogen-Notizen](#273-priorisierung-differenzierter-aufgabenstatus--persönliche-genealogen-notizen)
     - [2.7.4 Schwellenwerte & Recherche-Portale konfigurieren (Einstellungen)](#274-schwellenwerte--recherche-portale-konfigurieren-einstellungen)
+    - [2.7.5 Erkennung und Analyse isolierter Zweige (Insel-Finder)](#275-erkennung-und-analyse-isolierter-zweige-insel-finder)
 - [Kapitel 3: Praktische Tipps, Fehlersicherheiten & Best Practices](#kapitel-3-praktische-tipps-fehlersicherheiten--best-practices)
   - [3.1 Das zweistufige Sicherheitskonzept gegen Datenverlust](#31-das-zweistufige-sicherheitskonzept-gegen-datenverlust)
   - [3.2 Warum der Schutz vor Verwandtschaftsschleifen unverzichtbar ist](#32-warum-der-schutz-vor-verwandtschaftsschleifen-unverzichtbar-ist)
   - [3.3 Der sichere Umgang mit Personenabgleichen beim Merge](#33-der-sichere-umgang-mit-personenabgleichen-beim-merge)
   - [3.4 Empfohlene Arbeitsabläufe für die Familienforschung](#34-empfohlene-arbeitsabläufe-für-die-familienforschung)
+- [Anhang: Glossar genealogischer & technischer Fachbegriffe](#anhang-glossar-genealogischer--technischer-fachbegriffe)
+  - [A.1 Genealogische Kernbegriffe](#a1-genealogische-kernbegriffe)
+  - [A.2 Verwandtschaftsanalyse & Berechnungen](#a2-verwandtschaftsanalyse--berechnungen)
+  - [A.3 Datenintegrität, Abgleich & Forschung](#a3-datenintegrität-abgleich--forschung)
+  - [A.4 Darstellungs-, Export- & Archivformate](#a4-darstellungs--export--archivformate)
 
 ---
 
@@ -210,7 +216,7 @@ Alle Änderungen werden dauerhaft gespeichert. Die Tabelle wechselt zurück in d
 ### 2.1.3 Elternteile zuweisen & Schutz vor Zirkelbezügen
 
 #### Was macht die Funktion?
-Weist einer Person interaktiv Vater und Mutter zu oder korrigiert bestehende Elternzuweisungen. Eine integrierte biologische Plausibilitätsprüfung verhindert unlösbare Verwandtschaftsschleifen (z. B. dass ein Kind als Vorfahre seiner eigenen Eltern eingetragen wird).
+Weist einer Person interaktiv Vater und Mutter zu oder korrigiert bestehende Elternzuweisungen. Eine integrierte biologische Plausibilitätsprüfung verhindert unlösbare [Zirkelbezüge / Verwandtschaftsschleifen](#glossar-zirkelbezug) (z. B. dass ein Kind als Vorfahre seiner eigenen Eltern eingetragen wird).
 
 #### Wie bediene ich sie?
 1. Wählen Sie eine Person in der Tabelle oder im Stammbaum aus, sodass sich rechts das **Detail-Panel** öffnet.
@@ -279,7 +285,12 @@ In der Tabelle und im Detail-Panel sehen Sie in der Spalte *„Letzte Änderung�
 ### 2.2.1 Stammahnen (Probanden) festlegen & Sichten wechseln
 
 #### Was macht die Funktion?
-In großen Familienbüchern gibt es oft mehrere Stammväter oder -mütter. Sie können beliebig viele Personen als sogenannte **Stammahnen** (Probanden) definieren und ihnen ein individuelles Startkürzel geben (z. B. `1`, `2`, `A` oder `Linie-Nord`).
+In großen Familienbüchern gibt es oft mehrere Stammväter oder -mütter. Sie können beliebig viele Personen als sogenannte **Stammahnen** ([Probanden](#glossar-proband)) definieren und ihnen ein individuelles Startkürzel geben (z. B. `1`, `2`, `A` oder `Linie-Nord`).
+
+> [!NOTE] Begriffserklärung: Was ist ein Proband?
+> In der traditionellen Genealogie bezeichnet ein **Proband** (von lat. *probandus* = „der zu Prüfende“) die primäre Ausgangsperson (*Kekule-Nummer 1*), von der aus eine Ahnentafel oder Nachkommenlinie erforscht wird.
+>
+> In **LineageGraph** wird dieser Begriff pragmatisch als **Stammahn bzw. Bezugsperson** verwendet: Ein Proband dient als Stamm-Wurzel für die Berechnung von [Henry-Codes](#glossar-henry-system), für die Auswahl gefilterter Ansichten im Stammbaum-Canvas per Reiterklick sowie für zielgerichtete Teilauswertungen. Eine ausführliche Gegenüberstellung finden Sie im [Glossar: Proband](#glossar-proband).
 
 #### Wie bediene ich sie?
 1. Öffnen Sie die **„⚙️ Einstellungen“** und wechseln Sie in den Reiter **„Stammbaum Ansicht“** bzw. **„Stammahne konfigurieren“**.
@@ -296,7 +307,7 @@ Alle Nachkommen des gewählten Stammahnen werden sofort mit den entsprechenden h
 ### 2.2.2 Das Henry-Zählsystem verstehen & berechnen
 
 #### Was macht die Funktion?
-Das Henry-System ist ein weltweit bewährtes Nummerierungssystem in der Genealogie. Es weist jedem Nachkommen eine Ziffernkette zu, aus der sich die genaue Generationsabfolge und Geschwisterposition ablesen lässt:
+Das [Henry-System](#glossar-henry-system) ist ein weltweit bewährtes Nummerierungssystem in der Genealogie. Es weist jedem Nachkommen eine Ziffernkette zu, aus der sich die genaue Generationsabfolge und Geschwisterposition ablesen lässt:
 * Der Stammahn hat den Code `1`.
 * Sein erstgeborenes Kind erhält den Code `11`, das zweitgeborene `12`, das drittgeborene `13`.
 * Das erste Kind von Kind `12` erhält den Code `121`.
@@ -314,7 +325,7 @@ Das System sortiert alle Geschwister chronologisch nach ihrem tatsächlichen Geb
 ### 2.2.3 Kürzesten Verwandtschaftspfad zwischen zwei Personen ermitteln
 
 #### Was macht die Funktion?
-Findet blitzschnell heraus, wie zwei beliebige Personen im Stammbaum miteinander verwandt oder verschwägert sind. Das System berechnet die kürzeste Kette von Eltern, Kindern und Ehepartnern.
+Findet blitzschnell heraus, wie zwei beliebige Personen im Stammbaum miteinander verwandt oder verschwägert sind ([kürzester Verwandtschaftspfad](#glossar-verwandtschaftspfad)). Das System berechnet die kürzeste Kette unter Berücksichtigung von [Blutsverwandtschaft (Konsanguinität)](#glossar-konsanguinitaet) und optional [Schwägerschaft (Affinität)](#glossar-affinitaet).
 
 #### Wie bediene ich sie?
 1. Wählen Sie im Stammbaum oder der Tabelle die erste Person aus.
@@ -529,7 +540,7 @@ Komplexe und weit verzweigte Stammbäume lassen sich übersichtlich in handhabba
 ### 2.5.1 GEDCOM-Dateien importieren: Neues Projekt vs. Ersetzen
 
 #### Was macht die Funktion?
-Importiert Familiendaten aus anderen Genealogie-Programmen (z. B. Ahnenblatt, Ancestry, MyHeritage, FamilySearch) über das universelle GEDCOM-Format.
+Importiert Familiendaten aus anderen Genealogie-Programmen (z. B. Ahnenblatt, Ancestry, MyHeritage, FamilySearch) über das universelle [GEDCOM-Format](#glossar-gedcom).
 
 #### Wie bediene ich sie?
 1. Klicken Sie oben rechts auf **„GEDCOM-Datei importieren“**.
@@ -565,7 +576,7 @@ Sie erhalten eine übersichtliche Statistik:
 ### 2.5.3 Differentieller 3-Wege-Merge mit Konfliktlösung
 
 #### Was macht die Funktion?
-Sie haben die volle Kontrolle über jedes einzelne Datenfeld: Weicht ein Geburtsdatum oder Sterbeort ab, entscheiden Sie per Mausklick, ob Ihr bisheriger Datenbankwert oder die Angabe aus der Importdatei übernommen werden soll.
+Beim [3-Wege-Merge](#glossar-3-wege-merge) haben Sie die volle Kontrolle über jedes einzelne Datenfeld: Weicht ein Geburtsdatum oder Sterbeort ab, entscheiden Sie per Mausklick, ob Ihr bisheriger Datenbankwert oder die Angabe aus der Importdatei übernommen werden soll.
 
 #### Wie bediene ich sie?
 1. Nutzen Sie die Filter-Reiter: *„Nur mit Konflikten“* oder *„Neue Personen“*.
@@ -620,7 +631,7 @@ Eine formatierte `.csv`-Datei mit aufgelösten Klarnamen für Eltern und Partner
 ### 2.6.3 Interaktive HTML-Chronik für den Webbrowser
 
 #### Was macht die Funktion?
-Erzeugt eine vollständig autarke, interaktive HTML-Datei, die Sie per E-Mail, WhatsApp, AirDrop oder USB-Stick an Ihre Familie weitergeben können. Empfänger benötigen keinerlei Software-Installation oder Internetverbindung – die Datei öffnet sich nativ auf allen Plattformen:
+Erzeugt eine vollständig autarke, [interaktive HTML-Chronik](#glossar-html-chronik), die Sie per E-Mail, WhatsApp, AirDrop oder USB-Stick an Ihre Familie weitergeben können. Empfänger benötigen keinerlei Software-Installation oder Internetverbindung – die Datei öffnet sich nativ auf allen Plattformen:
 * **Desktop-Computer:** Unter Windows, macOS und Linux in jedem modernen Webbrowser (Edge, Chrome, Safari, Firefox).
 * **Apple iOS (iPhone & iPad):** Nativ in der iOS-Dateien-App (Quick Look), in Safari sowie direkt innerhalb von WhatsApp-, Signal- oder E-Mail-Vorschauen.
 * **Android-Smartphones & -Tablets:** Im Standard-Browser oder Dateimanager mit voller Gesten- und Touch-Steuerung.
@@ -648,7 +659,7 @@ Eine einzige, 100 % in sich geschlossene `.html`-Datei ohne externe Server- oder
 ### 2.6.4 Stammbaum-Bilder exportieren (PNG / JPG / SVG)
 
 #### Was macht die Funktion?
-Exportiert Ihren gestalteten Design-Stammbaum als gestochen scharfe Bilddatei für den Posterdruck oder als verlustfreie Vektorgrafik.
+Exportiert Ihren gestalteten Design-Stammbaum als gestochen scharfe Bilddatei für den Posterdruck oder als verlustfreie [Vektorgrafik (SVG)](#glossar-svg).
 
 #### Wie bediene ich sie?
 1. Wählen Sie den Reiter **„Design Mode Bild (PNG / JPG / SVG)“**.
@@ -669,7 +680,7 @@ Eine druckreife Bilddatei in brillanter Auflösung.
 ### 2.6.5 Druckfertige Buchchroniken mit LaTeX erzeugen
 
 #### Was macht die Funktion?
-Für höchste buchbinderische Ansprüche: Generiert mehrseitige, gesetzte Buchchroniken als PDF-Dokumente mit automatischer Kapitelaufteilung, Ahnentafeln und Generationeneinrückung.
+Für höchste buchbinderische Ansprüche: Generiert mehrseitige, gesetzte Buchchroniken als PDF-Dokumente über das Schriftsatz-System [LaTeX](#glossar-latex) mit automatischer Kapitelaufteilung, Ahnentafeln und Generationeneinrückung.
 
 #### Wie bediene ich sie?
 1. Wählen Sie den Reiter **„Druckformat (LaTeX)“**.
@@ -733,7 +744,7 @@ Um eine `.tex`-Datei auf Ihrem Computer zu öffnen, anzusehen, individuell anzup
 
 ### 2.7.1 Automatische Lückenerkennung & genealogische Heuristiken
 #### Was macht die Funktion?
-Der **Forschungsassistent** durchleuchtet Ihren gesamten Stammbaum auf Lücken und Brüche in den Überlieferungslinien. Anstatt Tausende Datensätze manuell auf fehlende Vorfahren oder unvollständige Urkunden prüfen zu müssen, filtert der Assistent gezielt vier Kernkategorien heraus:
+Der **Forschungsassistent** durchleuchtet Ihren gesamten Stammbaum auf Lücken und Brüche in den Überlieferungslinien mittels automatisierter [Lücken-Heuristiken](#glossar-lueckenheuristik). Anstatt Tausende Datensätze manuell auf fehlende Vorfahren oder unvollständige Urkunden prüfen zu müssen, filtert der Assistent gezielt vier Kernkategorien heraus:
 1. **Fehlende Elternlinie (`MISSING_PARENTS`):** Endpunkte von Ahnenlinien (Stammeltern, bei denen weder Vater noch Mutter bekannt sind) oder Personen mit nur einem bekannten Elternteil.
 2. **Fehlender Sterbeeintrag (`MISSING_DEATH`):** Personen, deren Geburt länger als das konfigurierte Höchstalter (Standard: 110 Jahre) zurückliegt, bei denen jedoch noch kein Sterbedatum erfasst ist.
 3. **Fehlende Lebensorte (`MISSING_PLACE`):** Personen mit bekanntem Geburts- oder Sterbedatum, bei denen der entsprechende Ort fehlt.
@@ -827,6 +838,60 @@ In den Programmeinstellungen können Sie sowohl die genealogischen Schwellenwert
 
 ---
 
+### 2.7.5 Erkennung und Analyse isolierter Zweige (Insel-Finder)
+#### Was macht die Funktion?
+In vielen genealogischen Sammlungen entstehen im Laufe der Zeit „Inseln“: Datensätze, die aus GEDCOM-Teilimporten, Kirchenbuchfunden auf Verdacht oder handschriftlichen Notizen stammen, aber bisher keine Verbindung zum eigentlichen Hauptstammbaum besitzen.
+Ein **[isolierter Zweig (Insel)](#glossar-isolierter-zweig)** ist eine Einzelperson oder eine Gruppe miteinander verwandter Personen (durch Eltern-Kind-Verbindungen oder Ehen/Partnerschaften), die über eine Tiefe von *n* Generationen reicht, jedoch vollkommen abgeschnitten vom restlichen Stammbaum existiert.
+
+Der **Insel-Finder** diagnostiziert solche Brüche vollautomatisch:
+* **Automatische Erkennung des Hauptstamms:** Die Verwandtschaftsgruppe, die den aktuell aktiven Probanden enthält (oder die personell größte Komponente), wird als **Hauptstamm** eingestuft.
+* **Klassifizierung aller Inseln:** Alle abgetrennten Gruppen werden nach Größe, Spitzenahnen, Zeitintervall und Generationentiefe katalogisiert.
+* **Heuristische Anknüpfungs-Hinweise:** Das System gleicht isolierte Personen automatisch mit dem Hauptstamm ab. Bei gleichen Nachnamen, übereinstimmenden Lebensorten und zeitlicher Nähe berechnet LineageGraph eine Konfidenz (z. B. `75% Übereinstimmung`) und schlägt konkrete Verbindungspersonen vor.
+
+#### Wie bediene ich sie?
+1. Klicken Sie in der Hauptnavigation auf **`🔬 Forschung`**.
+2. Wechseln Sie in der Kopfzeile auf den Sub-Tab **`🏝️ Isolierte Zweige & Inseln`**.
+3. Das Dashboard zeigt Ihnen:
+   * **Personen gesamt:** Gesamtzahl der erfassten Individuen in der Datenbank.
+   * **Hauptstamm:** Größe und prozentualer Anteil des Hauptbaums (z. B. 94%).
+   * **Isolierte Zweige:** Anzahl der abgetrennten Familienfragmente (> 1 Person).
+   * **Einzelpersonen:** Anzahl unverknüpfter Einzelfiguren.
+4. **Zweige gezielt filtern:**
+   * **Zweig-Typ:** Filtern Sie nach *Mehrgenerationen (≥ 2 Gen.)*, *Große Familien (> 5 Personen)*, *Kleinfragmente (2–5 Personen)* oder *Nur Einzelpersonen*.
+   * **Flexibler Generationsfilter ("n Generationen"):** Wählen Sie z. B. *Bis zu n Generationen (≤ n)*, *Ab n Generationen (≥ n)* oder *Genau n Generationen (= n)* und tragen Sie die gewünschte Generationenanzahl *n* in das Eingabefeld ein.
+   * **Suchfeld:** Suchen Sie direkt nach Nachnamen, Orten oder Namen von Spitzenahnen.
+5. **Aktionen pro Zweigkarte:**
+   * **👑 Spitzenahnen & 📍 Orte:** Sehen Sie auf einen Blick die ältesten bekannten Vorfahren des Zweigs und klicken Sie auf deren Namen, um den Detail-Drawer zu öffnen.
+   * **💡 Mögliche Anknüpfungspunkte & Zweistufige Kandidaten-Inspektion:** 
+     Klicken Sie bei einem Verbindungsvorschlag auf **`🔍 Kandidat ansehen`**, um direkt im Forschungsassistenten eine übersichtliche Gegenüberstellung beider Personen (Lebensdaten, Geburts-/Sterbeorte, Match-Score) aufzuklappen:
+     - **`🌳 Im Stammbaum öffnen`:** Springt unmittelbar zur Person im Stammbaum. Die Anwendung erkennt automatisch den passenden Kontext (Proband oder freie Ansicht) und öffnet den Ast lückenlos ohne lästigen Startperson-Auswahldialog.
+     - **`🔀 Zusammenführen...`:** Öffnet direkt die interaktive Merge-Maske, um die beiden Einträge zusammenzuführen.
+   * **`🌳 Im Baum zeigen`:** Öffnet den isolierten Zweig im Stammbaum-Canvas. Auch ohne aktiven Probanden ermittelt LineageGraph automatisch die Wurzel des Zweigs und öffnet alle Generationen bis zur Zielperson.
+   * **`📋 In Tabelle zeigen`:** Filtert die Tabellenansicht auf die Personen dieses Zweigs.
+   * **`🔬 Lücken analysieren`:** Schaltet direkt auf den Reiter *Genealogische Lücken* um und analysiert gezielt alle Forschungsdesiderate dieses isolierten Zweigs.
+   * **`🗑️ Zweig löschen` (bzw. `🗑️ Person löschen`):** Entfernt den gesamten isolierten Zweig oder die Einzelperson sicher aus der Datenbank.
+
+### 2.7 Datenbankbereinigung & Selektiver Personen-Merge
+
+#### 1. Personen und Zweige sicher löschen
+* Sowohl im Forschungsassistenten (`🗑️ Zweig löschen`) als auch im Detail-Drawer jeder Person (`🗑️ Löschen`) können Einträge dauerhaft entfernt werden.
+* **Automatische Sicherheitskopie (.bak):** Vor dem Ausführen jeder Löschung erstellt LineageGraph vollautomatisch einen Zeitstempel-Snapshot der SQLite-Datenbank (`<tree>_delete_<timestamp>.db.bak`).
+* **Zweistufiger Sicherheitsdialog:** Ein 2-Stufen-Modal verhindert versehentliches Löschen; der Standard-Fokus liegt sicherheitshalber auf *Abbrechen*.
+* **Kaskadierende Bereinigung:** Alle Eltern-Kind-Relationen, Eheverbindungen, Ereignisse und Henry-Codes werden sauber mitbereinigt; verwaiste leere Familiendatensätze werden automatisch entfernt.
+
+#### 2. Einträge selektiv zusammenführen (Merge-Maske)
+Wenn zwei Einträge dieselbe reale Person repräsentieren, können Sie diese über die Merge-Maske konsolidieren:
+* **Aufruf:** Entweder aus dem Forschungsassistenten über die Kandidaten-Vorschaukarte (`🔀 Zusammenführen...`) oder im Detail-Drawer einer Person (`🔀 Zusammenführen...` -> Partner suchen & wählen).
+* **Rollen tauschen (`⇄ Rollen tauschen`):** Bestimmen Sie flexibel, welche Person als **Ziel** erhalten bleibt und welche als **Quelle** nach der Datenübernahme aufgelöst wird.
+* **Feldweise Attributauswahl:** Wählen Sie per Radio-Pill für jedes Feld (Vorname, Nachname, Geschlecht, Geburtsdatum, Geburtsort, Sterbedatum, Sterbeort), ob der Wert aus dem Ziel- oder dem Quell-Eintrag übernommen werden soll.
+* **Elternverhältnis:** Entscheiden Sie, ob die Eltern der Zielperson beibehalten, die Eltern der Quellperson übernommen oder die Elternverknüpfung gelöst werden soll.
+* **Gemeinsame Ehepartner auflösen:** Sind beide Personen mit demselben Partner verheiratet, wählen Sie zwischen *Zusammenführen zu einer gemeinsamen Ehe* oder *Separate Ehen beibehalten*.
+* **Ereignisse & Findings:** Wählen Sie per Checkliste gezielt aus, welche Ereignisse (z. B. Taufen, Berufe, Wohnorte) in den Ziel-Eintrag übernommen werden.
+* **Revisionsprotokoll & Notiz:** LineageGraph generiert automatisch einen Revisionshinweis im Notizfeld des Ziel-Eintrags mit Dokumentation der aufgelösten Quell-ID und verworfener abweichender Werte. Dieser Text kann vor dem Speichern individuell ergänzt werden.
+* **Sicherheit:** Auch vor jedem Merge wird automatisch eine `.bak`-Datenbanksicherung angelegt.
+
+---
+
 ---
 
 # Kapitel 3: Praktische Tipps, Fehlersicherheiten & Best Practices
@@ -865,4 +930,147 @@ Wenn Sie neue Daten in einen bestehenden Stammbaum einpflegen, beachten Sie folg
 3. **Ergebnisse präsentieren:**
    * Für den schnellen Austausch in der Familie: Erzeugen Sie eine **Interaktive HTML-Chronik** – Ihre Verwandten werden begeistert sein, wie einfach sie auf dem Smartphone oder PC durch die Familiengeschichte stöbern können.
    * Für runde Geburtstage oder Familientreffen: Gestalten Sie im **Design Studio** ein Wappen-Poster und exportieren Sie es als hochauflösendes **PNG** oder **SVG** für den Copyshop.
+
+---
+
+# Anhang: Glossar genealogischer & technischer Fachbegriffe
+
+Dieses Glossar erläutert die wichtigsten Fachbegriffe der Genealogie sowie spezifische Konzepte und Verfahren in LineageGraph.
+
+---
+
+## A.1 Genealogische Kernbegriffe
+
+### <a id="glossar-proband"></a>Proband (Ausgangsperson / Stammahn)
+* **Genealogische Definition:**  
+  Der Begriff **Proband** (von lat. *probandus* = „der zu Prüfende“, im Plural *Probanden*) bezeichnet in der traditionellen Genealogie die zentrale Ausgangs- bzw. Testperson einer genealogischen Tafel.  
+  * Bei einer **Ahnentafel (Vorfahrenforschung)** ist der Proband die Person der jüngsten Generation (Kekule-Nummer `1`), von der aus systematisch die Eltern (`2`, `3`), Großeltern (`4`–`7`) und weiteren Ahnen in die Vergangenheit erforscht werden.
+  * Bei einer **Nachkommentafel (Deszendenz)** steht der Proband an der Spitze der Tafel und alle absteigenden Generationen (Kinder, Enkel, Urenkel) werden von ihm abgeleitet.
+* **Bedeutung & Funktion in LineageGraph:**  
+  In LineageGraph wird der Begriff **Proband** pragmatisch und gleichbedeutend mit **Stammahn** bzw. **aktiver Bezugsperson** verwendet:
+  1. **Wurzel der Nummerierung:** Jeder definierte Proband bildet den Ausgangspunkt für die Berechnung des [Henry-Zählsystems](#glossar-henry-system). Er erhält ein individuelles Startkürzel (z. B. `1`, `A` oder `Linie-Nord`), von dem sich die Kennungen aller Nachkommen chronologisch ableiten.
+  2. **Perspektivenwechsel per Klick:** Für jeden Probanden legt die Software automatisch einen eigenen Tab in der Navigationsleiste an. Ein Klick schaltet den gesamten Stammbaum-Canvas sowie die Tabellenfilter auf die jeweilige Linie um.
+  3. **Fokus im Forschungsassistenten & Export:** Teilauswertungen, Buchchroniken und HTML-Exporte können gezielt auf die Nachkommen oder Vorfahren des gewählten Probanden eingegrenzt werden.
+
+---
+
+### <a id="glossar-stammahn"></a>Stammahn / Spitzenahn
+* **Definition:**  
+  Die älteste urkundlich gesicherte Stammeltern-Person (Stammvater oder -mutter), von der eine bestimmte Familie oder ein Namensast in gerader Linie abstammt.
+* **In LineageGraph:**  
+  Spitzenahnen bilden die obersten Wurzelknoten des Stammbaum-Graphen. Wenn Sie Spitzenahnen als Probanden definieren, ermöglicht dies die saubere Aufteilung komplexer Gesamtdatenbestände in übersichtliche Familienzweige.
+
+---
+
+### <a id="glossar-zirkelbezug"></a>Zirkelbezug (Verwandtschaftsschleife / Zyklus)
+* **Definition:**  
+  Ein logischer Datenfehler in einem Stammbaum, bei dem eine Person direkt oder über Umwege als Vorfahre ihrer eigenen Ahnen eingetragen wird (z. B. Großvater wird irrtümlich als Sohn seines eigenen Enkels verknüpft). In der Graphentheorie spricht man von einem geschlossenen Zyklus in einem gerichteten Graphen.
+* **In LineageGraph:**  
+  Da Zirkelbezüge zu Endlosschleifen bei Generationsberechnungen führen würden, führt LineageGraph vor dem Speichern jeder Eltern-Kind-Verbindung eine zyklische Tiefenprüfung durch und blockiert unlogische Zuordnungen automatisch mit einer klaren Warnmeldung.
+
+---
+
+### <a id="glossar-isolierter-zweig"></a>Isolierter Zweig (Insel)
+* **Definition:**  
+  Eine Einzelperson oder eine Gruppe miteinander verwandter Personen in der Datenbank, die keinerlei verwandtschaftliche oder angeheiratete Verbindung zur Hauptfamilie besitzt. Inseln entstehen typischerweise durch Teilimporte, provisorische Zufallsfunde in Kirchenbüchern oder getrennt begonnene Forschungsansätze.
+* **In LineageGraph:**  
+  Der integrierte **Insel-Finder** (im Modus *Forschung*) analysiert alle zusammenhängenden Komponenten des Familiengraphen, identifiziert den Hauptstammbaum und schlägt für abgetrennte Inseln anhand von Nachnamen, Jahreszahlen und Orten automatische Anknüpfungspunkte vor.
+
+---
+
+## A.2 Verwandtschaftsanalyse & Berechnungen
+
+### <a id="glossar-henry-system"></a>Henry-System (Henry-Nummerierung)
+* **Definition:**  
+  Ein 1935 von Reginald Buchanan Henry entwickeltes, weltweit standardisiertes Kennzeichnungssystem für Nachkommen.
+* **Funktionsweise:**  
+  * Der Proband / Stammahn erhält den Basis-Code `1`.
+  * Das erste Kind erhält `11`, das zweite `12`, das dritte `13` usw.
+  * Kinder des Kindes `12` erhalten `121`, `122`, `123`.
+  * Ab dem 10. Kind werden Buchstaben verwendet (`A` für das 10. Kind, `B` für das 11. Kind), um die Generationslänge an der Anzahl der Stellen eindeutig ablesen zu können (z. B. 4 Stellen = 4. Generation).
+* **In LineageGraph:**  
+  Die Software berechnet Henry-Codes vollautomatisch und sortiert Geschwisterfolgen unter Berücksichtigung tatsächlicher Geburtsdaten chronologisch.
+
+---
+
+### <a id="glossar-verwandtschaftspfad"></a>Kürzester Verwandtschaftspfad (Shortest Path)
+* **Definition:**  
+  Die minimale Anzahl genealogischer Kanten (Eltern-, Kind- und Partnerschaftsbeziehungen), die erforderlich sind, um zwei beliebige Individuen in einer Familiendatenbank miteinander zu verbinden.
+* **In LineageGraph:**  
+  Mithilfe des Dijkstra-/BFS-Graphenalgorithmus berechnet die Anwendung in Echtzeit die kürzeste Kette zwischen zwei Personen (z. B. *„Ururgroßvater mütterlicherseits“* oder *„Schwägerin über Heirat des Bruders“*) und hebt den Pfad im interaktiven Stammbaum farblich hervor.
+
+---
+
+### <a id="glossar-konsanguinitaet"></a>Konsanguinität (Blutsverwandtschaft) vs. <a id="glossar-affinitaet"></a>Affinität (Schwägerschaft)
+* **Konsanguinität (Blutsverwandtschaft):**  
+  Verwandtschaft durch biologische Abstammung von mindestens einem gemeinsamen Vorfahren (z. B. Eltern, Geschwister, Tanten, Cousinen).
+* **Affinität (Schwägerschaft):**  
+  Die durch Heirat bzw. Partnerschaft begründete Verbindung zu den Verwandten des Ehepartners (z. B. Schwiegereltern, Stiefgeschwister, angeheiratete Onkel).
+* **In LineageGraph:**  
+  Bei der Pfadsuche und Verwandtschaftsanalyse können Sie per Schiebeschalter entscheiden, ob Schwägerschaften (*„Über Ehepartner“*) in die Berechnung einbezogen werden sollen oder reine Blutsverwandtschaftslinien gefordert sind.
+
+---
+
+## A.3 Datenintegrität, Abgleich & Forschung
+
+### <a id="glossar-gedcom"></a>GEDCOM (GEnealogical Data COMmunication)
+* **Definition:**  
+  Das international führende, von *FamilySearch* entwickelte Dateiformat (.ged) zum Austausch genealogischer Rohdaten zwischen unterschiedlicher Software und Webportalen.
+* **In LineageGraph:**  
+  LineageGraph unterstützt sowohl den vollwertigen Import als auch den selektiven Export von Teilbäumen im standardkonformen GEDCOM-Format inklusive Personen-IDs (`INDI`), Familienstrukturen (`FAM`), Datumsformaten und Quellenangaben.
+
+---
+
+### <a id="glossar-3-wege-merge"></a>3-Wege-Merge (Differentieller Datenabgleich)
+* **Definition:**  
+  Ein Abgleichverfahren, bei dem zwei Datenstände (die bestehende Datenbank und eine neu importierte GEDCOM-Datei) miteinander verglichen werden, um Ergänzungen automatisch einzupflegen und Widersprüche transparent offenzulegen.
+* **In LineageGraph:**  
+  Anstatt vorhandene Datensätze blind zu überschreiben, analysiert der Abgleich-Assistent die Daten feldweise. Sie sehen für jede abweichende Angabe (z. B. abweichender Sterbeort) beide Werte nebeneinander und entscheiden per Mausklick, welcher Wert in Ihre Chronik übernommen wird.
+
+---
+
+### <a id="glossar-lueckenheuristik"></a>Lücken-Heuristik & Forschungsstatus
+* **Definition:**  
+  Genealogische Plausibilitätsregeln und mathematische Prüfmuster, die Unvollständigkeiten in der Quellenüberlieferung aufdecken.
+* **In LineageGraph:**  
+  Der Forschungsassistent prüft fortlaufend Heuristiken wie:
+  * Fehlen von Sterbedaten bei Personen mit Geburtsjahr vor über 110 Jahren (`MISSING_DEATH`).
+  * Unnatürlich große Geburtenabstände von mehr als 3,5 Jahren zwischen Geschwistern (`CHILD_GAP`).
+  * Fehlende Elternzuweisungen an Linienenden (`MISSING_PARENTS`).
+  * Fehlende Lebensorte bei bekannten Datumsangaben (`MISSING_PLACE`).
+  Jedes Finding kann mit einem Bearbeitungsstatus (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`) versehen und mit persönlichen Forschungsnotizen dokumentiert werden.
+
+---
+
+### <a id="glossar-quellen"></a>Primär- und Sekundärquellen
+* **Primärquellen:**  
+  Zeitnah zum Ereignis verfasste Originalurkunden und Amtsbücher (z. B. Kirchenbuch-Einträge zu Taufe, Trauung und Begräbnis, standesamtliche Geburts- und Sterbeurkunden, notarielle Testamente). Sie besitzen die höchste Beweiskraft.
+* **Sekundärquellen:**  
+  Spätere Zusammenstellungen, Abhandlungen oder mündliche Berichte (z. B. gedruckte Ortsfamilienbücher, Ahnentafeln dritter Forscher, Internet-Forenbeiträge). Sie bieten wertvolle Hinweise, bedürfen jedoch stets der Verifikation an den Originalquellen.
+
+---
+
+## A.4 Darstellungs-, Export- & Archivformate
+
+### <a id="glossar-latex"></a>LaTeX & PDF-Satz
+* **Definition:**  
+  Ein professionelles, quelltextbasiertes Schriftsatzsystem, das weltweit im wissenschaftlichen Buchdruck verwendet wird. Es trennt Inhalt strikt vom Layout und berechnet Satzspiegel, Trennungen und Schriftbilder typografisch perfekt.
+* **In LineageGraph:**  
+  Das Programm generiert vollständige, compilierfertige `.tex`-Dateien für Ahnentafeln und Nachkommenchroniken inklusive Stammbaumstrukturen, Bildtafeln und genealogischen Sonderzeichen (`*`, `†`, `⚭`), die mit Editoren wie TeXstudio und Distributionen wie MiKTeX direkt in hochwertige Buch-PDFs verwandelt werden können.
+
+---
+
+### <a id="glossar-html-chronik"></a>Interaktive HTML-Chronik
+* **Definition:**  
+  Eine autarke Webanwendung, die als einzelne, in sich geschlossene HTML-Datei ohne externe Abhängigkeiten oder Serveranbindung gespeichert wird.
+* **In LineageGraph:**  
+  Mit der HTML-Chronik exportieren Sie Ihren Stammbaum für Verwandte und Interessierte. Die Datei läuft auf jedem Computer, Tablet und Smartphone in jedem Standardbrowser und bietet interaktiven D3-Zoom, Volltextsuche, Detail-Drawers und responsive Layouts ohne jede Softwareinstallation.
+
+---
+
+### <a id="glossar-svg"></a>Vektorgrafik (SVG) vs. Rastergrafik (PNG / JPG)
+* **SVG (Scalable Vector Graphics):**  
+  Ein auf mathematischen Linien, Kurven und Vektoren basierendes Bildformat. Stammbäume im SVG-Format können beliebig vergrößert werden (z. B. auf riesige Wandplaner im DIN-A0-Format), ohne unscharf zu werden oder Pixelkanten zu zeigen.
+* **PNG / JPG (Rastergrafiken):**  
+  Pixelbasierte Formate. PNG eignet sich durch Transparenz und Schärfe hervorragend für digitale Bildschirmanzeigen und Collagen; JPG für Fotos und platzsparende Druckdateien. LineageGraph bietet hochauflösenden Export (2x Druckqualität) für alle drei Formate.
 

@@ -103,6 +103,34 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
 - **Technische Umsetzung:**
   `current_gedcom_chan()` erzeugt ein standardkonformes JSON-Objekt mit den Feldern `DATE` (`DD MMM YYYY`) und `TIME` (`HH:MM:SS`) unter Verwendung von `chrono::Local::now()`. Dieses Objekt wird im `json_data`-Blob der `individuals`-Tabelle unter dem Schlüssel `CHAN` abgelegt. Fehlt beim Import oder bei Neuanlage ein `_UID`, wird mittels `uuid::Uuid::new_v4()` eine eindeutige 32-Zeichen-Hex-ID erzeugt.
 
+#### SPEC-DAT-006 -> REQ-DAT-006
+- **Fachliche Anforderung:** Einzel- & Zweig-Löschung mit Backup-Sicherung ([REQ-DAT-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-006-einzel---zweig-l%C3%B6schung-mit-backup-sicherung))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`backup_current_tree_db`, `delete_person`, `delete_persons_batch`, `delete_persons_batch_internal`)
+  - UI-Modal: [`src/components/modals/DeletePersonModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/DeletePersonModal.vue)
+  - Vue Composables: [`src/composables/usePersons.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/usePersons.ts) (`deletePerson`, `deletePersonsBatch`)
+  - UI-Trigger: [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue), [`src/components/details/PersonDetailsDrawer.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/details/PersonDetailsDrawer.vue)
+- **Technische Umsetzung:**
+  1. `backup_current_tree_db` kopiert die aktive SQLite-Datenbank transaktionssicher vor dem Löschvorgang in `<tree_name>_<action>_<timestamp>.db.bak`.
+  2. `delete_persons_batch_internal` führt kaskadierende Löschungen aus: Löschen aus `research_tasks`, `events`, `parent_child`, Nullsetzen/Löschen von Partnerreferenzen in `families`, Entfernen verwaister Familien ohne Partner und Kinder, Löschen aus `root_ancestors` und `proband_henry_codes` sowie Entfernen aus `individuals`.
+  3. Nach erfolgreichem Löschen wird `calculate_henry_codes_internal` ausgeführt.
+  4. Im Frontend sichert `DeletePersonModal` den Vorgang über einen 2-stufigen Bestätigungsdialog mit Autofokus auf `Abbrechen`.
+
+#### SPEC-DAT-007 -> REQ-DAT-007
+- **Fachliche Anforderung:** Selektiver Personen-Merge mit Konfliktlösung ([REQ-DAT-007](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-007-selektiver-personen-merge-mit-konfliktl%C3%B6sung))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`merge_persons`, `merge_persons_internal`, `get_person_events_internal`, `backup_current_tree_db`)
+  - UI-Modals: [`src/components/modals/PersonMergeModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/PersonMergeModal.vue), `merge-picker-modal` in [`src/App.vue`](file:///c:/dev/Froning/app/LineageGraph/src/App.vue)
+  - Vue Composables: [`src/composables/usePersons.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/usePersons.ts) (`mergePersons`, `getPersonEvents`)
+  - Quick-Inspector: [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue)
+- **Technische Umsetzung:**
+  1. Automatischer `.bak`-Snapshot via `backup_current_tree_db(..., "merge")`.
+  2. `merge_persons_internal` übernimmt selektierte Attribute (`given_name`, `surname`, `sex`, `birth_date`, `birth_place`, `death_date`, `death_place`) in den Ziel-Eintrag.
+  3. Re-Pointing von Beziehungen: Elternverhältnisse (`parent_family_source`), Kinder (`parent_child.child_id`), Partner (`families.husband_id` / `wife_id` mit Doppelheiratsauflösung oder -erhalt) und Research Tasks (`research_tasks.person_id`).
+  4. Ereignisse (`events`): Quell-Events aus `selected_event_ids` werden auf `target_id` umgeschrieben; nicht selektierte Quell-Events werden entfernt.
+  5. Audit-Notiz: `audit_note` wird in `json_data.NOTE` dokumentiert; Quell-Person wird kaskadierend aus `individuals` gelöscht.
+  6. Automatische Neuberechnung der Henry-Codes für alle Probanden.
+
 ---
 
 ### 2.3 Domäne: Genealogische Berechnungen & Algorithmen (ALG)
@@ -373,5 +401,20 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
   - **Personenzentriertes Dossier:** Zentralisierte Recherche-Leiste einmalig pro Personenkopf; kompakte Lücken-Checkliste mit 1-Klick Status-Pill-Dropdown (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`), Akkordeon-Aufklappung für ausführliche Handlungsempfehlungen und per-Task-Notizen; Batch-Aktion `Alle als erledigt markieren` und Filter `Erledigte ausblenden`.
 
   - **Navigation:** 1-Klick-Sprünge zur Person in den Stammbaum-Canvas (`navigate-tree`), die Tabellenansicht (`navigate-table`) und den Personendetail-Drawer (`open-details`).
+
+#### SPEC-RES-005 -> REQ-RES-005
+- **Fachliche Anforderung:** Erkennung und Analyse isolierter Zweige (Insel-Finder) ([REQ-RES-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-005-erkennung-und-analyse-isolierter-zweige-insel-finder))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/research.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/research.rs) (`find_isolated_branches`, `calc_branch_depth`, `make_person_summary`)
+  - Tauri Command: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`get_isolated_branches`)
+  - Types: [`src/types/research.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/research.ts) (`IsolatedBranchesResultDto`, `IsolatedBranchDto`, `BranchPersonSummary`, `SuggestedConnection`)
+  - Composable: [`src/composables/useResearchAssistant.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useResearchAssistant.ts) (`isolatedBranchesData`, `loadIsolatedBranches`)
+  - UI-Komponente: [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue)
+- **Technische Umsetzung:**
+  - **Graph-Konnektivität & BFS:** Modellierung eines ungerichteten Adjazenzgraphen über `parent_ids`, `children_ids` und `spouses`. BFS segmentiert alle Personen in Zusammenhangskomponenten.
+  - **Hauptstamm-Identifikation:** Komponente mit `active_proband_id` (oder größter Personenzahl bei fehlendem Probanden) wird als Hauptstamm (`main_tree`) festgelegt; alle weiteren Komponenten bilden die isolierten Zweige.
+  - **Metadaten-Aggregation:** Bestimmung der Spitzenahnen (Personen im Zweig ohne Eltern innerhalb der Komponente), Berechnung der Generationentiefe via längstem DAG-Pfad (`calc_branch_depth`), Zeitintervall (`earliest_year` bis `latest_year`) und Häufigkeitsverteilung von Nachnamen und Orten.
+  - **Anknüpfungs-Heuristik:** Abgleich von isolierten Personen gegen den Hauptstamm (indiziert nach normalisiertem Nachnamen). Konfidenz-Scoring: Basisscore (50) bei Nachnamensgleichheit, Bonus (+25) bei Übereinstimmung des Geburts-/Sterbeortes, Bonus (+15 bis +20) bei zeitlicher Nähe (±15 bis ±45 Jahre).
+  - **UI-Präsentation & Interaktion:** Header-Subtab-Umschalter mit Badge-Zählern, KPI-Dashboard, flexibler Toolbar-Filter für Typ und Generationen ("n Generationen" mit dynamischem Number-Input) sowie Volltextsuche. 1-Klick-Aktionen zur Navigation in den Baum (`navigate-tree`), Tabelle (`navigate-table`) und direkte Lückenanalyse (`handleAnalyzeBranch`).
 
 

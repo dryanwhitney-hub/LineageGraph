@@ -179,6 +179,40 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * `json_data` enthält das Objekt `"CHAN": {"DATE": "...", "TIME": "..."}` mit aktuellem Tagesdatum.
   * `_UID` enthält eine valide 32-Zeichen-Hexadezimal-UUID.
 
+#### TC-DAT-006: Einzel- und Batch-Löschung mit Kaskadenbereinigung & Backup
+- **Traceability:** [REQ-DAT-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-006-einzel---zweig-l%C3%B6schung-mit-backup-sicherung) -> [SPEC-DAT-006](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-006---req-dat-006)
+- **Test-Typ:** Unit & Integration Test (*Implemented: `tests::test_delete_person_and_cleanup_empty_families`*)
+- **Test-Ziel:** Sicherstellen, dass das Löschen von Personen alle abhängigen Referenzen (Familien, parent_child, Events, Henry-Codes, Research-Tasks) sauber kaskadierend entfernt und leere Familienverwaiste bereinigt werden.
+- **Preconditions:** Familie F1 mit Vater I1, Mutter I2, Kind I3.
+- **Testschritte:**
+  1. `delete_person_internal(&mut conn, "I3")` aufrufen.
+  2. Prüfen, dass `parent_child` für I3 entfernt ist, F1 aber mit I1 und I2 bestehen bleibt.
+  3. `delete_persons_batch_internal(&mut conn, &["I1".to_string(), "I2".to_string()])` aufrufen.
+  4. Prüfen, dass I1 und I2 aus `individuals` gelöscht sind und die verwaiste Familie F1 vollständig gelöscht wurde.
+- **Erwartetes Ergebnis:**
+  * I1, I2, I3 existieren nicht mehr in `individuals`.
+  * Familie F1 wird vollständig aus `families` entfernt.
+  * Keine verwaisten Fremdschlüsselverletzungen oder Zombi-Datensätze in der SQLite-Datenbank.
+
+#### TC-DAT-007: Selektiver Personen-Merge mit Attribut- & Partner-Auflösung
+- **Traceability:** [REQ-DAT-007](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-007-selektiver-personen-merge-mit-konfliktl%C3%B6sung) -> [SPEC-DAT-007](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-007---req-dat-007)
+- **Test-Typ:** Unit & Integration Test (*Implemented: `tests::test_merge_persons_selective_fields`*)
+- **Test-Ziel:** Verifikation, dass der Merge selektiv Stammdaten übernimmt, Kinder und Partner auf die Zielperson umhängt, Ereignisse filtert und eine Revisionsnotiz dokumentiert.
+- **Preconditions:** Zielperson I_TARGET und Quellperson I_SOURCE mit jeweils eigenem Kind und eigenem Partner.
+- **Testschritte:**
+  1. `merge_persons_internal` aufrufen mit:
+     - `given_name`: "Johann Heinrich" (von Quelle)
+     - `surname`: "Froning" (von Ziel)
+     - `birth_date`: "1800-01-01"
+     - `parent_family_source`: "target"
+     - `audit_note`: "Zusammengeführt am 2026-11-09."
+  2. Zielperson I_TARGET und Quellperson I_SOURCE prüfen.
+- **Erwartetes Ergebnis:**
+  * I_TARGET besitzt `given_name = "Johann Heinrich"`, `birth_date = "1800-01-01"`.
+  * Kinder und Partner von I_SOURCE sind nun mit I_TARGET verknüpft.
+  * I_SOURCE existiert nicht mehr in `individuals`.
+  * In `json_data` von I_TARGET ist die Revisionsnotiz in `NOTE` hinterlegt.
+
 ---
 
 ### 2.3 Domäne: Genealogische Berechnungen & Algorithmen (ALG)
@@ -552,6 +586,20 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 - **Erwartetes Ergebnis:**
   * Dynamische Portal-Steuerung ohne doppelte Links; flüssige 1-Klick-Statusverwaltung im kompakten Personendossier.
 
+#### TC-RES-005: Erkennung isolierter Zweige, Generationsfilter & Anknüpfungs-Heuristik
+- **Traceability:** [REQ-RES-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-005-erkennung-und-analyse-isolierter-zweige-insel-finder) -> [SPEC-RES-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-005---req-res-005)
+- **Test-Typ:** Unit Test (Rust `research::tests::test_find_isolated_branches`) & Component Test (Vue 3)
+- **Test-Ziel:** Verifikation der Zerlegung in Zusammenhangskomponenten, korrekte Bestimmung von Hauptstamm und isolierten Zweigen, Berechnung der Generationentiefe sowie Ermittlung von Anknüpfungsvorschlägen mit Konfidenz-Scoring.
+- **Preconditions:** Testdatensatz mit Hauptstamm (I1 -> I2 -> I3), isoliertem Zweig (B1 -> B2, 2 Generationen, Nachname Becker) und Einzelperson (S1, Nachname Froning, Ort Münster).
+- **Testschritte:**
+  1. `find_isolated_branches(&persons, Some("I1"))` aufrufen.
+  2. Prüfung von Komponentenanzahl, Hauptstamm-Größe und Anzahl isolierter Zweige / Einzelpersonen.
+  3. Verifikation, dass Zweig Becker generation_depth = 2 und Spitzenahn B1 aufweist.
+  4. Verifikation, dass S1 einen Anknüpfungsvorschlag an den Hauptstamm (Froning, Münster) mit Konfidenz >= 65 % generiert.
+  5. UI-Test: Umschalten auf Sub-Tab `Isolierte Zweige & Inseln`, Filtern nach "≥ 2 Gen." und Prüfen der 1-Klick-Navigation.
+- **Erwartetes Ergebnis:**
+  * Exakte Erkennung isolierter Teilgraphen, robuste Generationszählung und relevante Anknüpfungshinweise.
+
 ---
 
 ## Teil 3: End-to-End Traceability-Matrix (Anforderung -> Spezifikation -> Test)
@@ -593,4 +641,5 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 | **RES** | [REQ-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-002-kontextuelle-recherche-handlungsempfehlungen---archiv-links) | [SPEC-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-002---req-res-002) | **TC-RES-002** | Unit Test (Rust URL Encoding) | 100 % |
 | **RES** | [REQ-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-003-priorisierungs-scoring---persistente-aufgabenverwaltung) | [SPEC-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-003---req-res-003) | **TC-RES-003** | Unit & Integration Test (Rust/SQLite) | 100 % |
 | **RES** | [REQ-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-004-konfigurierbare-recherche-portale---personenzentriertes-forschungsdossier) | [SPEC-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-004---req-res-004) | **TC-RES-004** | Component & Composable Test (Vue/TS) | 100 % |
+| **RES** | [REQ-RES-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-005-erkennung-und-analyse-isolierter-zweige-insel-finder) | [SPEC-RES-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-005---req-res-005) | **TC-RES-005** | Unit Test (Rust Graph CC/BFS) & Vue 3 | 100 % |
 

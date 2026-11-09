@@ -7,6 +7,7 @@ import type {
   ResearchScope,
   ScopeType,
   TaskStatus,
+  IsolatedBranchesResultDto,
 } from '../types/research';
 
 const STORAGE_KEY_SETTINGS = 'lineagegraph_research_settings';
@@ -15,6 +16,11 @@ export function useResearchAssistant(activeProbandId: () => string | null, selec
   const tasks = ref<ResearchTaskDto[]>([]);
   const isLoading = ref<boolean>(false);
   const error = ref<string | null>(null);
+
+  // Isolated Branches state
+  const isolatedBranchesData = ref<IsolatedBranchesResultDto | null>(null);
+  const isLoadingBranches = ref<boolean>(false);
+  const errorBranches = ref<string | null>(null);
 
   // Filter & Scope state
   const scopeType = ref<ScopeType>('all');
@@ -185,9 +191,29 @@ export function useResearchAssistant(activeProbandId: () => string | null, selec
     });
   });
 
+  const loadIsolatedBranches = async () => {
+    isLoadingBranches.value = true;
+    errorBranches.value = null;
+    try {
+      const result = await invoke<IsolatedBranchesResultDto>('get_isolated_branches', {
+        activeProbandId: activeProbandId() || null,
+      });
+      isolatedBranchesData.value = result;
+    } catch (err: any) {
+      console.error('Failed to get isolated branches:', err);
+      errorBranches.value = err?.toString() || 'Fehler beim Laden der isolierten Zweige';
+    } finally {
+      isLoadingBranches.value = false;
+    }
+  };
+
   // Watch scope type or active proband / person changes to auto-reload
   watch([scopeType, activeProbandId, selectedPersonId], () => {
     loadTasks();
+  });
+
+  watch(activeProbandId, () => {
+    loadIsolatedBranches();
   });
 
   return {
@@ -205,5 +231,9 @@ export function useResearchAssistant(activeProbandId: () => string | null, selec
     filteredTasks,
     loadTasks,
     updateTask,
+    isolatedBranchesData,
+    isLoadingBranches,
+    errorBranches,
+    loadIsolatedBranches,
   };
 }

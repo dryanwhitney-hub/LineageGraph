@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use chrono::Datelike;
 use crate::Person;
 
@@ -50,6 +50,52 @@ pub struct ResearchStatsDto {
     pub missing_death_count: usize,
     pub missing_place_count: usize,
     pub child_gap_count: usize,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct BranchPersonSummary {
+    pub id: String,
+    pub name: String,
+    pub birth_date: Option<String>,
+    pub death_date: Option<String>,
+    pub birth_place: Option<String>,
+    pub death_place: Option<String>,
+    pub sex: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SuggestedConnection {
+    pub isolated_person_id: String,
+    pub isolated_person_name: String,
+    pub main_person_id: String,
+    pub main_person_name: String,
+    pub match_reason: String,
+    pub confidence_score: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IsolatedBranchDto {
+    pub id: usize,
+    pub name: String,
+    pub person_count: usize,
+    pub generation_depth: usize,
+    pub root_ancestors: Vec<BranchPersonSummary>,
+    pub persons: Vec<BranchPersonSummary>,
+    pub earliest_year: Option<i32>,
+    pub latest_year: Option<i32>,
+    pub top_places: Vec<String>,
+    pub top_surnames: Vec<String>,
+    pub suggested_connections: Vec<SuggestedConnection>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IsolatedBranchesResultDto {
+    pub total_persons: usize,
+    pub total_components: usize,
+    pub main_tree_person_count: usize,
+    pub isolated_branches_count: usize,
+    pub isolated_individuals_count: usize,
+    pub branches: Vec<IsolatedBranchDto>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -962,6 +1008,475 @@ pub fn upsert_task_status(
     Ok(())
 }
 
+fn make_person_summary(p: &Person) -> BranchPersonSummary {
+    let name_str = format!(
+        "{} {}",
+        p.given_name.as_deref().unwrap_or(""),
+        p.surname.as_deref().unwrap_or("")
+    )
+    .trim()
+    .to_string();
+    let display_name = if name_str.is_empty() {
+        p.id.clone()
+    } else {
+        name_str
+    };
+
+    BranchPersonSummary {
+        id: p.id.clone(),
+        name: display_name,
+        birth_date: p.birth_date.clone(),
+        death_date: p.death_date.clone(),
+        birth_place: p.birth_place.clone(),
+        death_place: p.death_place.clone(),
+        sex: p.sex.clone(),
+    }
+}
+
+fn calc_branch_depth(
+    pid: &str,
+    child_map: &HashMap<String, Vec<String>>,
+    memo: &mut HashMap<String, usize>,
+    visiting: &mut HashSet<String>,
+) -> usize {
+    if let Some(&d) = memo.get(pid) {
+        return d;
+    }
+    if visiting.contains(pid) {
+        return 1;
+    }
+    visiting.insert(pid.to_string());
+    let mut max_child_depth = 0;
+    if let Some(children) = child_map.get(pid) {
+        for ch in children {
+            let cd = calc_branch_depth(ch, child_map, memo, visiting);
+            if cd > max_child_depth {
+                max_child_depth = cd;
+            }
+        }
+    }
+    visiting.remove(pid);
+    let d = 1 + max_child_depth;
+    memo.insert(pid.to_string(), d);
+    d
+}
+
+pub fn find_isolated_branches(
+    all_persons: &[Person],
+    active_proband_id: Option<&str>,
+) -> Result<IsolatedBranchesResultDto, String> {
+    if all_persons.is_empty() {
+        return Ok(IsolatedBranchesResultDto {
+            total_persons: 0,
+            total_components: 0,
+            main_tree_person_count: 0,
+            isolated_branches_count: 0,
+            isolated_individuals_count: 0,
+            branches: Vec::new(),
+        });
+    }
+
+    let person_map: HashMap<&str, &Person> = all_persons.iter().map(|p| (p.id.as_str(), p)).collect();
+
+    // 1. Build adjacency list (undirected graph of family connections)
+    let mut adj: HashMap<&str, HashSet<&str>> = HashMap::new();
+    for p in all_persons {
+        adj.entry(&p.id).or_default();
+
+        // Parents
+        for parent_id in &p.parent_ids {
+            if person_map.contains_key(parent_id.as_str()) {
+                adj.entry(&p.id).or_default().insert(parent_id.as_str());
+                adj.entry(parent_id.as_str()).or_default().insert(&p.id);
+            }
+        }
+        if let Some(ref fid) = p.father_id {
+            if person_map.contains_key(fid.as_str()) {
+                adj.entry(&p.id).or_default().insert(fid.as_str());
+                adj.entry(fid.as_str()).or_default().insert(&p.id);
+            }
+        }
+        if let Some(ref mid) = p.mother_id {
+            if person_map.contains_key(mid.as_str()) {
+                adj.entry(&p.id).or_default().insert(mid.as_str());
+                adj.entry(mid.as_str()).or_default().insert(&p.id);
+            }
+        }
+
+        // Children
+        for ch_id in &p.children_ids {
+            if person_map.contains_key(ch_id.as_str()) {
+                adj.entry(&p.id).or_default().insert(ch_id.as_str());
+                adj.entry(ch_id.as_str()).or_default().insert(&p.id);
+            }
+        }
+
+        // Spouses
+        for sp in &p.spouses {
+            if person_map.contains_key(sp.id.as_str()) {
+                adj.entry(&p.id).or_default().insert(sp.id.as_str());
+                adj.entry(sp.id.as_str()).or_default().insert(&p.id);
+            }
+        }
+    }
+
+    // 2. Compute Connected Components using BFS
+    let mut visited: HashSet<&str> = HashSet::new();
+    let mut components: Vec<Vec<&str>> = Vec::new();
+
+    for p in all_persons {
+        let p_id = p.id.as_str();
+        if visited.contains(p_id) {
+            continue;
+        }
+
+        let mut comp = Vec::new();
+        let mut queue = VecDeque::new();
+        visited.insert(p_id);
+        queue.push_back(p_id);
+
+        while let Some(curr) = queue.pop_front() {
+            comp.push(curr);
+            if let Some(neighbors) = adj.get(curr) {
+                for &neighbor in neighbors {
+                    if !visited.contains(neighbor) {
+                        visited.insert(neighbor);
+                        queue.push_back(neighbor);
+                    }
+                }
+            }
+        }
+
+        components.push(comp);
+    }
+
+    let total_components = components.len();
+
+    // 3. Determine Main Tree Component:
+    // If active_proband_id is provided and present in a component, that component is the main tree.
+    // Otherwise, the component with the largest number of persons is the main tree.
+    let mut main_comp_idx = 0;
+    let mut max_comp_size = 0;
+
+    for (idx, comp) in components.iter().enumerate() {
+        if comp.len() > max_comp_size {
+            max_comp_size = comp.len();
+            main_comp_idx = idx;
+        }
+    }
+
+    if let Some(proband_id) = active_proband_id {
+        if !proband_id.is_empty() {
+            for (idx, comp) in components.iter().enumerate() {
+                if comp.iter().any(|&id| id == proband_id) {
+                    main_comp_idx = idx;
+                    break;
+                }
+            }
+        }
+    }
+
+    let main_comp_persons: HashSet<&str> = components
+        .get(main_comp_idx)
+        .map(|c| c.iter().copied().collect())
+        .unwrap_or_default();
+    let main_tree_person_count = main_comp_persons.len();
+
+    // Build index of main tree persons by lowercase surname for fast connection suggestions
+    let mut main_surname_map: HashMap<String, Vec<&Person>> = HashMap::new();
+    for &pid in &main_comp_persons {
+        if let Some(p) = person_map.get(pid) {
+            if let Some(ref sn) = p.surname {
+                let trimmed = sn.trim().to_lowercase();
+                if trimmed.len() >= 2 {
+                    main_surname_map.entry(trimmed).or_default().push(p);
+                }
+            }
+        }
+    }
+
+    // 4. Process all isolated components
+    let mut raw_branches: Vec<IsolatedBranchDto> = Vec::new();
+
+    for (idx, comp) in components.iter().enumerate() {
+        if idx == main_comp_idx {
+            continue;
+        }
+
+        let comp_set: HashSet<&str> = comp.iter().copied().collect();
+        let mut comp_persons: Vec<&Person> = comp.iter().filter_map(|&id| person_map.get(id).copied()).collect();
+
+        // Sort persons roughly by birth year or name
+        comp_persons.sort_by(|a, b| {
+            let by_a = a.birth_date.as_deref().and_then(extract_year).unwrap_or(9999);
+            let by_b = b.birth_date.as_deref().and_then(extract_year).unwrap_or(9999);
+            by_a.cmp(&by_b).then_with(|| a.id.cmp(&b.id))
+        });
+
+        // Identify root ancestors: persons in component with no parents in this component
+        let mut root_ancestors_list: Vec<&Person> = Vec::new();
+        let mut child_map: HashMap<String, Vec<String>> = HashMap::new();
+
+        for p in &comp_persons {
+            let mut has_parent_in_comp = false;
+            for parent_id in &p.parent_ids {
+                if comp_set.contains(parent_id.as_str()) {
+                    has_parent_in_comp = true;
+                    break;
+                }
+            }
+            if !has_parent_in_comp {
+                if let Some(ref fid) = p.father_id {
+                    if comp_set.contains(fid.as_str()) {
+                        has_parent_in_comp = true;
+                    }
+                }
+            }
+            if !has_parent_in_comp {
+                if let Some(ref mid) = p.mother_id {
+                    if comp_set.contains(mid.as_str()) {
+                        has_parent_in_comp = true;
+                    }
+                }
+            }
+
+            if !has_parent_in_comp {
+                root_ancestors_list.push(p);
+            }
+
+            // Directed children in component
+            let mut children_in_comp = Vec::new();
+            for cid in &p.children_ids {
+                if comp_set.contains(cid.as_str()) {
+                    children_in_comp.push(cid.clone());
+                }
+            }
+            child_map.insert(p.id.clone(), children_in_comp);
+        }
+
+        // Fallback: if cyclical relations exist and no roots found, use the oldest person
+        if root_ancestors_list.is_empty() && !comp_persons.is_empty() {
+            root_ancestors_list.push(comp_persons[0]);
+        }
+
+        // Calculate generation depth
+        let mut memo: HashMap<String, usize> = HashMap::new();
+        let mut visiting: HashSet<String> = HashSet::new();
+        let mut generation_depth = 1;
+        for r in &root_ancestors_list {
+            let d = calc_branch_depth(&r.id, &child_map, &mut memo, &mut visiting);
+            if d > generation_depth {
+                generation_depth = d;
+            }
+        }
+        if generation_depth < 1 {
+            generation_depth = 1;
+        }
+
+        // Years range
+        let mut earliest_year: Option<i32> = None;
+        let mut latest_year: Option<i32> = None;
+        for p in &comp_persons {
+            if let Some(by) = p.birth_date.as_deref().and_then(extract_year) {
+                earliest_year = Some(earliest_year.map_or(by, |ey| ey.min(by)));
+                latest_year = Some(latest_year.map_or(by, |ly| ly.max(by)));
+            }
+            if let Some(dy) = p.death_date.as_deref().and_then(extract_year) {
+                earliest_year = Some(earliest_year.map_or(dy, |ey| ey.min(dy)));
+                latest_year = Some(latest_year.map_or(dy, |ly| ly.max(dy)));
+            }
+        }
+
+        // Top places & surnames frequency
+        let mut place_counts: HashMap<String, usize> = HashMap::new();
+        let mut surname_counts: HashMap<String, usize> = HashMap::new();
+
+        for p in &comp_persons {
+            if let Some(ref bp) = p.birth_place {
+                let trimmed = bp.trim().to_string();
+                if !trimmed.is_empty() {
+                    *place_counts.entry(trimmed).or_default() += 1;
+                }
+            }
+            if let Some(ref dp) = p.death_place {
+                let trimmed = dp.trim().to_string();
+                if !trimmed.is_empty() {
+                    *place_counts.entry(trimmed).or_default() += 1;
+                }
+            }
+            if let Some(ref sn) = p.surname {
+                let trimmed = sn.trim().to_string();
+                if !trimmed.is_empty() && trimmed != "?" {
+                    *surname_counts.entry(trimmed).or_default() += 1;
+                }
+            }
+        }
+
+        let mut sorted_places: Vec<(String, usize)> = place_counts.into_iter().collect();
+        sorted_places.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let top_places: Vec<String> = sorted_places.into_iter().take(4).map(|(p, _)| p).collect();
+
+        let mut sorted_surnames: Vec<(String, usize)> = surname_counts.into_iter().collect();
+        sorted_surnames.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        let top_surnames: Vec<String> = sorted_surnames.into_iter().take(3).map(|(s, _)| s).collect();
+
+        // Branch naming
+        let branch_name = if comp_persons.len() == 1 {
+            let p = comp_persons[0];
+            let name = format!(
+                "{} {}",
+                p.given_name.as_deref().unwrap_or(""),
+                p.surname.as_deref().unwrap_or("")
+            )
+            .trim()
+            .to_string();
+            if name.is_empty() {
+                format!("Einzelperson #{}", p.id)
+            } else {
+                format!("Einzelperson: {}", name)
+            }
+        } else if let Some(first_sn) = top_surnames.first() {
+            format!("Zweig {}", first_sn)
+        } else if let Some(root_sn) = root_ancestors_list.first().and_then(|r| r.surname.as_deref()) {
+            format!("Zweig {}", root_sn.trim())
+        } else {
+            format!("Isolierter Zweig ({} Personen)", comp_persons.len())
+        };
+
+        // Root ancestors summaries
+        let root_summaries: Vec<BranchPersonSummary> = root_ancestors_list.iter().map(|&p| make_person_summary(p)).collect();
+        let person_summaries: Vec<BranchPersonSummary> = comp_persons.iter().map(|&p| make_person_summary(p)).collect();
+
+        // Suggested connections heuristic against main tree
+        let mut suggested_connections: Vec<SuggestedConnection> = Vec::new();
+        let mut seen_pairs: HashSet<(String, String)> = HashSet::new();
+
+        // Prioritize checking root ancestors and key persons of the branch
+        for iso_p in &comp_persons {
+            if let Some(ref sn) = iso_p.surname {
+                let trimmed_sn = sn.trim().to_lowercase();
+                if let Some(main_candidates) = main_surname_map.get(&trimmed_sn) {
+                    let iso_by = iso_p.birth_date.as_deref().and_then(extract_year);
+                    let iso_dy = iso_p.death_date.as_deref().and_then(extract_year);
+                    let iso_place = iso_p.birth_place.as_deref().or(iso_p.death_place.as_deref());
+
+                    for main_p in main_candidates {
+                        let pair_key = (iso_p.id.clone(), main_p.id.clone());
+                        if seen_pairs.contains(&pair_key) {
+                            continue;
+                        }
+
+                        let main_by = main_p.birth_date.as_deref().and_then(extract_year);
+                        let main_dy = main_p.death_date.as_deref().and_then(extract_year);
+                        let main_place = main_p.birth_place.as_deref().or(main_p.death_place.as_deref());
+
+                        let mut score = 50; // Base score for matching surname
+                        let mut reason_parts = Vec::new();
+                        reason_parts.push(format!("Gleicher Nachname '{}'", sn.trim()));
+
+                        // Check location match
+                        if let (Some(ip), Some(mp)) = (iso_place, main_place) {
+                            let ip_lc = ip.trim().to_lowercase();
+                            let mp_lc = mp.trim().to_lowercase();
+                            if !ip_lc.is_empty() && !mp_lc.is_empty() {
+                                if ip_lc == mp_lc || ip_lc.contains(&mp_lc) || mp_lc.contains(&ip_lc) {
+                                    score += 25;
+                                    reason_parts.push(format!("Ort '{}'", ip.trim()));
+                                }
+                            }
+                        }
+
+                        // Check time proximity
+                        let year_diff = match (iso_by.or(iso_dy), main_by.or(main_dy)) {
+                            (Some(y1), Some(y2)) => Some((y1 - y2).abs()),
+                            _ => None,
+                        };
+
+                        if let Some(diff) = year_diff {
+                            if diff <= 15 {
+                                score += 20;
+                                reason_parts.push(format!("Zeitlich nahe (±{} Jahre)", diff));
+                            } else if diff <= 45 {
+                                score += 15;
+                                reason_parts.push(format!("Plausibler Generationsabstand ({} Jahre)", diff));
+                            }
+                        }
+
+                        if score >= 65 {
+                            seen_pairs.insert(pair_key);
+                            let iso_name = format!(
+                                "{} {}",
+                                iso_p.given_name.as_deref().unwrap_or(""),
+                                iso_p.surname.as_deref().unwrap_or("")
+                            )
+                            .trim()
+                            .to_string();
+                            let main_name = format!(
+                                "{} {}",
+                                main_p.given_name.as_deref().unwrap_or(""),
+                                main_p.surname.as_deref().unwrap_or("")
+                            )
+                            .trim()
+                            .to_string();
+
+                            suggested_connections.push(SuggestedConnection {
+                                isolated_person_id: iso_p.id.clone(),
+                                isolated_person_name: if iso_name.is_empty() { iso_p.id.clone() } else { iso_name },
+                                main_person_id: main_p.id.clone(),
+                                main_person_name: if main_name.is_empty() { main_p.id.clone() } else { main_name },
+                                match_reason: reason_parts.join(" • "),
+                                confidence_score: score,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        suggested_connections.sort_by(|a, b| b.confidence_score.cmp(&a.confidence_score));
+        suggested_connections.truncate(4);
+
+        raw_branches.push(IsolatedBranchDto {
+            id: 0, // Will be set after sorting
+            name: branch_name,
+            person_count: comp_persons.len(),
+            generation_depth,
+            root_ancestors: root_summaries,
+            persons: person_summaries,
+            earliest_year,
+            latest_year,
+            top_places,
+            top_surnames,
+            suggested_connections,
+        });
+    }
+
+    // Sort branches: largest first, then deepest generation, then name
+    raw_branches.sort_by(|a, b| {
+        b.person_count
+            .cmp(&a.person_count)
+            .then_with(|| b.generation_depth.cmp(&a.generation_depth))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    // Assign sequential 1-based IDs
+    for (idx, branch) in raw_branches.iter_mut().enumerate() {
+        branch.id = idx + 1;
+    }
+
+    let isolated_branches_count = raw_branches.iter().filter(|b| b.person_count > 1).count();
+    let isolated_individuals_count = raw_branches.iter().filter(|b| b.person_count == 1).count();
+
+    Ok(IsolatedBranchesResultDto {
+        total_persons: all_persons.len(),
+        total_components,
+        main_tree_person_count,
+        isolated_branches_count,
+        isolated_individuals_count,
+        branches: raw_branches,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1173,5 +1688,141 @@ mod tests {
         let tasks_desc = analyze_gaps(&conn, &persons, &scope_desc, &settings).unwrap();
         assert!(tasks_desc.iter().any(|t| t.person_id == "I2"));
         assert!(tasks_desc.iter().any(|t| t.person_id == "I3"));
+    }
+
+    #[test]
+    fn test_find_isolated_branches() {
+        let persons = vec![
+            // Main tree: I1 -> I2 -> I3
+            Person {
+                id: "I1".to_string(),
+                given_name: Some("Anton".to_string()),
+                surname: Some("Froning".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: Some("1820-05-10".to_string()),
+                birth_place: Some("Münster".to_string()),
+                death_date: Some("1890-01-01".to_string()),
+                death_place: Some("Münster".to_string()),
+                father_id: None,
+                mother_id: None,
+                children_ids: vec!["I2".to_string()],
+                spouses: vec![],
+                parent_ids: vec![],
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+            },
+            Person {
+                id: "I2".to_string(),
+                given_name: Some("Bernhard".to_string()),
+                surname: Some("Froning".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: Some("1850-01-01".to_string()),
+                birth_place: Some("Münster".to_string()),
+                death_date: Some("1920-01-01".to_string()),
+                death_place: Some("Münster".to_string()),
+                father_id: Some("I1".to_string()),
+                mother_id: None,
+                children_ids: vec!["I3".to_string()],
+                spouses: vec![],
+                parent_ids: vec!["I1".to_string()],
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+            },
+            Person {
+                id: "I3".to_string(),
+                given_name: Some("Clara".to_string()),
+                surname: Some("Froning".to_string()),
+                sex: Some("F".to_string()),
+                birth_date: Some("1880-01-01".to_string()),
+                birth_place: Some("Münster".to_string()),
+                death_date: None,
+                death_place: None,
+                father_id: Some("I2".to_string()),
+                mother_id: None,
+                children_ids: vec![],
+                spouses: vec![],
+                parent_ids: vec!["I2".to_string()],
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+            },
+            // Isolated branch: B1 -> B2 (2 persons, 2 generations)
+            Person {
+                id: "B1".to_string(),
+                given_name: Some("Wilhelm".to_string()),
+                surname: Some("Becker".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: Some("1830-01-01".to_string()),
+                birth_place: Some("Köln".to_string()),
+                death_date: Some("1900-01-01".to_string()),
+                death_place: Some("Köln".to_string()),
+                father_id: None,
+                mother_id: None,
+                children_ids: vec!["B2".to_string()],
+                spouses: vec![],
+                parent_ids: vec![],
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+            },
+            Person {
+                id: "B2".to_string(),
+                given_name: Some("Heinrich".to_string()),
+                surname: Some("Becker".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: Some("1860-01-01".to_string()),
+                birth_place: Some("Köln".to_string()),
+                death_date: None,
+                death_place: None,
+                father_id: Some("B1".to_string()),
+                mother_id: None,
+                children_ids: vec![],
+                spouses: vec![],
+                parent_ids: vec!["B1".to_string()],
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+            },
+            // Isolated single person: S1 (Surname Froning, Place Münster -> connection hint!)
+            Person {
+                id: "S1".to_string(),
+                given_name: Some("Franz".to_string()),
+                surname: Some("Froning".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: Some("1825-03-01".to_string()),
+                birth_place: Some("Münster".to_string()),
+                death_date: None,
+                death_place: None,
+                father_id: None,
+                mother_id: None,
+                children_ids: vec![],
+                spouses: vec![],
+                parent_ids: vec![],
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+            },
+        ];
+
+        let result = find_isolated_branches(&persons, Some("I1")).unwrap();
+        assert_eq!(result.total_persons, 6);
+        assert_eq!(result.total_components, 3);
+        assert_eq!(result.main_tree_person_count, 3);
+        assert_eq!(result.isolated_branches_count, 1);
+        assert_eq!(result.isolated_individuals_count, 1);
+        assert_eq!(result.branches.len(), 2);
+
+        // First branch should be Becker branch (2 persons)
+        let b1 = &result.branches[0];
+        assert_eq!(b1.person_count, 2);
+        assert_eq!(b1.generation_depth, 2);
+        assert_eq!(b1.name, "Zweig Becker");
+        assert_eq!(b1.root_ancestors.len(), 1);
+        assert_eq!(b1.root_ancestors[0].id, "B1");
+
+        // Second branch should be single person S1
+        let s1 = &result.branches[1];
+        assert_eq!(s1.person_count, 1);
+        assert_eq!(s1.generation_depth, 1);
+        assert!(s1.name.contains("Franz Froning"));
+        assert!(!s1.suggested_connections.is_empty());
+        assert_eq!(s1.suggested_connections[0].isolated_person_id, "S1");
+        assert!(s1.suggested_connections[0].confidence_score >= 65);
     }
 }

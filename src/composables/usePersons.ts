@@ -111,6 +111,35 @@ export interface RootAncestorConfig {
   surname: string | null;
 }
 
+export interface SpouseResolution {
+  partner_id: string;
+  resolution: 'merge' | 'keep_separate' | 'target_only' | 'source_only';
+  marriage_date?: string | null;
+}
+
+export interface PersonMergeFieldsDto {
+  given_name?: string | null;
+  surname?: string | null;
+  sex?: string | null;
+  birth_date?: string | null;
+  birth_place?: string | null;
+  death_date?: string | null;
+  death_place?: string | null;
+  parent_family_source: 'target' | 'source' | 'none';
+  spouse_resolutions: SpouseResolution[];
+  selected_event_ids: string[];
+  audit_note?: string | null;
+}
+
+export interface PersonEventDto {
+  id: string;
+  owner_id: string;
+  tag: string;
+  date_str?: string | null;
+  place?: string | null;
+  description?: string | null;
+}
+
 export interface ColumnFilter {
   text: string;
   dateOp: 'before' | 'after' | 'between';
@@ -1614,6 +1643,66 @@ export function usePersons(
     }
   }
 
+  async function deletePerson(personId: string) {
+    isLoading.value = true;
+    try {
+      await invoke('delete_person', { personId });
+      if (selectedPerson.value?.id === personId) {
+        selectedPerson.value = null;
+        personDetails.value = null;
+      }
+      await loadPersons();
+      await loadRootAncestors();
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function deletePersonsBatch(personIds: string[]) {
+    if (personIds.length === 0) return;
+    isLoading.value = true;
+    try {
+      await invoke('delete_persons_batch', { personIds });
+      if (selectedPerson.value && personIds.includes(selectedPerson.value.id)) {
+        selectedPerson.value = null;
+        personDetails.value = null;
+      }
+      await loadPersons();
+      await loadRootAncestors();
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function mergePersons(targetId: string, sourceId: string, fields: PersonMergeFieldsDto) {
+    isLoading.value = true;
+    try {
+      await invoke('merge_persons', {
+        targetId,
+        sourceId,
+        fields,
+      });
+      await loadPersons();
+      await loadRootAncestors();
+      const updated = persons.value.find(p => p.id === targetId);
+      if (updated) {
+        selectedPerson.value = updated;
+        await loadDetails(targetId);
+      }
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  async function getPersonEvents(personId: string): Promise<PersonEventDto[]> {
+    try {
+      return await invoke<PersonEventDto[]>('get_person_events', { personId });
+    } catch (e) {
+      console.warn('Failed to load person events:', e);
+      return [];
+    }
+  }
+
   async function initTrees() {
     await loadTrees();
     if (trees.value.length > 0) {
@@ -1708,6 +1797,10 @@ export function usePersons(
     confirmDeleteTree,
     openAddModal,
     handleAddPerson,
+    deletePerson,
+    deletePersonsBatch,
+    mergePersons,
+    getPersonEvents,
     initTrees,
   };
 }

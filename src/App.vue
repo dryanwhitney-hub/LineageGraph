@@ -9,12 +9,15 @@ import PersonTableView from './components/table/PersonTableView.vue';
 import TreeCanvasView from './components/tree/TreeCanvasView.vue';
 import PersonDetailsDrawer from './components/details/PersonDetailsDrawer.vue';
 import DeleteTreeModal from './components/modals/DeleteTreeModal.vue';
+import DeletePersonModal, { type DeletePersonTarget } from './components/modals/DeletePersonModal.vue';
+import PersonMergeModal from './components/modals/PersonMergeModal.vue';
 import AddPersonModal from './components/modals/AddPersonModal.vue';
 import SettingsModal, { type SettingsTab } from './components/modals/SettingsModal.vue';
 import GedcomImportModal from './components/modals/GedcomImportModal.vue';
 import UpdateConfirmModal from './components/modals/UpdateConfirmModal.vue';
 import ResearchAssistantView from './components/research/ResearchAssistantView.vue';
-import { usePersons } from './composables/usePersons';
+import { usePersons, type Person, type PersonMergeFieldsDto } from './composables/usePersons';
+import type { IsolatedBranchDto } from './types/research';
 import { useShortestPath } from './composables/useShortestPath';
 import { useAppUpdater } from './composables/useAppUpdater';
 import { useResearchAssistant } from './composables/useResearchAssistant';
@@ -129,6 +132,10 @@ const {
   openAddModal,
   handleAddPerson,
   initTrees,
+  deletePerson,
+  deletePersonsBatch,
+  mergePersons,
+  loadPersons,
 } = usePersons(t, {
   onIdRenamed: (oldId, newId) => {
     if (currentTreeRootId.value === oldId) {
@@ -177,6 +184,8 @@ const {
   expandedNodes,
   expandedSideNodes,
   expandedFromChildMap,
+  rootAncestors,
+  setProbandTab,
 });
 
 function setProbandTab(personId: string | null) {
@@ -238,18 +247,141 @@ const {
   filteredTasks: filteredResearchTasks,
   loadTasks: loadResearchTasks,
   updateTask: updateResearchTask,
+  isolatedBranchesData,
+  isLoadingBranches,
+  errorBranches: researchBranchesError,
+  loadIsolatedBranches,
 } = useResearchAssistant(
   () => activeProbandTab.value,
   () => selectedPerson.value?.id || null
 );
 
 function onResearchNavigateTree(personId: string) {
-  const p = persons.value.find(item => item.id === personId);
-  if (p) {
-    selectedPerson.value = p;
-  }
-  currentView.value = 'tree';
+  jumpToTreePerson(personId);
   isDetailsOpen.value = true;
+}
+
+// Person- und Zweig-Löschung
+const showDeletePersonModal = ref(false);
+const deletePersonTarget = ref<DeletePersonTarget | null>(null);
+const isDeletingPerson = ref(false);
+
+function handleRequestDeletePerson(personId: string) {
+  const p = persons.value.find(item => item.id === personId);
+  if (!p) return;
+  deletePersonTarget.value = {
+    type: 'person',
+    id: personId,
+    name: `${p.given_name || ''} ${p.surname || ''} (${personId})`.trim(),
+    personIds: [personId],
+  };
+  showDeletePersonModal.value = true;
+}
+
+function handleRequestDeleteBranch(branch: IsolatedBranchDto) {
+  const personIds = branch.persons.map(p => p.id);
+  deletePersonTarget.value = {
+    type: 'branch',
+    id: String(branch.id),
+    name: branch.name,
+    personIds,
+  };
+  showDeletePersonModal.value = true;
+}
+
+async function handleConfirmDelete(personIds: string[]) {
+  isDeletingPerson.value = true;
+  try {
+    if (personIds.length === 1) {
+      await deletePerson(personIds[0]);
+    } else {
+      await deletePersonsBatch(personIds);
+    }
+    if (selectedPerson.value && personIds.includes(selectedPerson.value.id)) {
+      selectedPerson.value = null;
+    }
+    await loadPersons();
+    await loadResearchTasks();
+    await loadIsolatedBranches();
+    showDeletePersonModal.value = false;
+  } catch (err) {
+    console.error('Fehler beim Löschen:', err);
+  } finally {
+    isDeletingPerson.value = false;
+  }
+}
+
+// Person Merge Modal & Picker
+const showMergeModal = ref(false);
+const mergeTargetPerson = ref<Person | null>(null);
+const mergeSourcePerson = ref<Person | null>(null);
+const isMergingPersons = ref(false);
+
+const showMergePickerModal = ref(false);
+const mergePickerSearchQuery = ref('');
+const mergePickerInitiatorPerson = ref<Person | null>(null);
+
+const mergePickerCandidates = computed(() => {
+  const query = mergePickerSearchQuery.value.toLowerCase().trim();
+  const initId = mergePickerInitiatorPerson.value?.id;
+  return persons.value
+    .filter(
+      p =>
+        p.id !== initId &&
+        (!query ||
+          p.id.toLowerCase().includes(query) ||
+          (p.given_name || '').toLowerCase().includes(query) ||
+          (p.surname || '').toLowerCase().includes(query))
+    )
+    .slice(0, 15);
+});
+
+function handleOpenMergeForPerson(personId: string) {
+  const p = persons.value.find(item => item.id === personId);
+  if (!p) return;
+  mergePickerInitiatorPerson.value = p;
+  mergePickerSearchQuery.value = '';
+  showMergePickerModal.value = true;
+}
+
+function handleSelectMergeCandidate(candidate: Person) {
+  showMergePickerModal.value = false;
+  if (!mergePickerInitiatorPerson.value) return;
+  mergeTargetPerson.value = mergePickerInitiatorPerson.value;
+  mergeSourcePerson.value = candidate;
+  showMergeModal.value = true;
+}
+
+function handleRequestMergeTwoPersons(targetId: string, sourceId: string) {
+  const tPerson = persons.value.find(item => item.id === targetId);
+  const sPerson = persons.value.find(item => item.id === sourceId);
+  if (!tPerson || !sPerson) return;
+  mergeTargetPerson.value = tPerson;
+  mergeSourcePerson.value = sPerson;
+  showMergeModal.value = true;
+}
+
+async function handleConfirmMerge(payload: {
+  targetId: string;
+  sourceId: string;
+  fields: PersonMergeFieldsDto;
+}) {
+  isMergingPersons.value = true;
+  try {
+    await mergePersons(payload.targetId, payload.sourceId, payload.fields);
+    await loadPersons();
+    const updated = persons.value.find(p => p.id === payload.targetId);
+    if (updated) {
+      selectedPerson.value = updated;
+    }
+    await loadResearchTasks();
+    await loadIsolatedBranches();
+    showMergeModal.value = false;
+  } catch (err) {
+    console.error('Fehler bei der Zusammenführung:', err);
+  } finally {
+    isMergingPersons.value = false;
+  }
 }
 
 function onResearchNavigateTable(personId: string) {
@@ -284,12 +416,14 @@ watch(currentView, newView => {
   }
   if (newView === 'research') {
     loadResearchTasks();
+    loadIsolatedBranches();
   }
 });
 
 watch([activeTree, persons], () => {
   if (currentView.value === 'research') {
     loadResearchTasks();
+    loadIsolatedBranches();
   }
 });
 
@@ -401,7 +535,7 @@ onMounted(() => {
           📥 {{ t('import_btn') }}
         </button>
         <button class="subbar-btn btn-add-rel" @click="openAddModal">
-          {{ t('add_new_person_btn') }}
+          ➕ {{ t('add_new_person_btn') }}
         </button>
         <div class="subbar-divider"></div>
         <button
@@ -482,16 +616,91 @@ onMounted(() => {
     <!-- Modal: App-Aktualisierung Bestätigungsdialog -->
     <UpdateConfirmModal
       :visible="showConfirmModal"
-      :current-version="currentVersion"
-      :new-version="newVersion"
-      :release-notes="releaseNotes"
-      :release-date="releaseDate"
-      :is-downloading="isDownloading"
-      :download-progress="downloadProgress"
-      :error-message="updaterStatusType === 'error' ? updaterStatusMessage : null"
+      :currentVersion="currentVersion"
+      :newVersion="newVersion"
+      :releaseNotes="releaseNotes"
+      :releaseDate="releaseDate"
+      :isDownloading="isDownloading"
+      :downloadProgress="downloadProgress"
+      :errorMessage="updaterStatusType === 'error' ? updaterStatusMessage : null"
       @confirm="confirmInstall"
       @cancel="dismissConfirmModal"
     />
+
+    <!-- Modal: Person oder Zweig entfernen -->
+    <DeletePersonModal
+      :visible="showDeletePersonModal"
+      :target="deletePersonTarget"
+      :is-deleting="isDeletingPerson"
+      @cancel="showDeletePersonModal = false"
+      @confirm="handleConfirmDelete"
+    />
+
+    <!-- Modal: Person zusammenführen (Merge Maske) -->
+    <PersonMergeModal
+      :visible="showMergeModal"
+      :target-person="mergeTargetPerson"
+      :source-person="mergeSourcePerson"
+      :all-persons="persons"
+      :is-merging="isMergingPersons"
+      @close="showMergeModal = false"
+      @confirm="handleConfirmMerge"
+    />
+
+    <!-- Modal: Personenauswahl für Zusammenführung (aus Detail-Drawer) -->
+    <div
+      v-if="showMergePickerModal"
+      class="modal-overlay merge-picker-overlay"
+      @click.self="showMergePickerModal = false"
+      @keydown.esc="showMergePickerModal = false"
+    >
+      <div class="modal-content merge-picker-modal">
+        <header class="merge-picker-header">
+          <h3>🔀 {{ t('merge_picker_title', 'Zusammenführungspartner wählen') }}</h3>
+          <button type="button" class="btn-picker-close" @click="showMergePickerModal = false">✕</button>
+        </header>
+        <p class="picker-instruction">
+          {{ t('merge_picker_instruction', 'Wählen Sie die Person aus, mit der') }}
+          <strong>{{ mergePickerInitiatorPerson?.given_name || 'N.N.' }} {{ mergePickerInitiatorPerson?.surname || 'N.N.' }} ({{ mergePickerInitiatorPerson?.id }})</strong>
+          {{ t('merge_picker_instruction_suffix', 'zusammengeführt werden soll:') }}
+        </p>
+        <div class="picker-search-bar">
+          <input
+            type="text"
+            v-model="mergePickerSearchQuery"
+            class="picker-search-input"
+            :placeholder="t('details_search_person_placeholder', 'Name oder ID suchen...')"
+            autofocus
+          />
+        </div>
+        <div class="picker-results-list">
+          <div
+            v-for="cand in mergePickerCandidates"
+            :key="cand.id"
+            class="picker-result-row"
+            @click="handleSelectMergeCandidate(cand)"
+          >
+            <div class="cand-name">
+              <strong>{{ cand.surname || 'N.N.' }}</strong>, {{ cand.given_name || 'N.N.' }}
+              <span class="cand-id">({{ cand.id }})</span>
+            </div>
+            <div class="cand-meta">
+              <span v-if="cand.birth_date">⭐ {{ cand.birth_date }}</span>
+              <span v-if="cand.birth_place">({{ cand.birth_place }})</span>
+              <span v-if="cand.death_date">✝ {{ cand.death_date }}</span>
+            </div>
+          </div>
+          <div v-if="mergePickerCandidates.length === 0" class="picker-no-results">
+            <em>{{ t('no_results', 'Keine passenden Personen gefunden') }}</em>
+          </div>
+        </div>
+        <div class="picker-footer">
+          <button type="button" class="btn-picker-cancel" @click="showMergePickerModal = false">
+            {{ t('cancel', 'Abbrechen') }}
+          </button>
+        </div>
+      </div>
+    </div>
 
     <div class="workspace">
       <!-- 1. Tabellen-Ansicht -->
@@ -605,6 +814,9 @@ onMounted(() => {
         :root-ancestors="rootAncestors"
         :active-proband-id="activeProbandTab"
         :selected-person-id="selectedPerson?.id || null"
+        :isolated-branches-data="isolatedBranchesData"
+        :is-loading-branches="isLoadingBranches"
+        :error-branches="researchBranchesError"
         v-model:scope-type="researchScopeType"
         v-model:selected-gap-type="selectedResearchGapType"
         v-model:selected-status="selectedResearchStatus"
@@ -616,10 +828,13 @@ onMounted(() => {
           if (found) selectedPerson = found;
         }"
         @refresh="loadResearchTasks"
+        @refresh-isolated="loadIsolatedBranches"
         @update-task="updateResearchTask"
         @navigate-tree="onResearchNavigateTree"
         @navigate-table="onResearchNavigateTable"
         @open-details="onResearchOpenDetails"
+        @request-delete-branch="handleRequestDeleteBranch"
+        @request-merge-persons="(targetId, sourceId) => handleRequestMergeTwoPersons(targetId, sourceId)"
       />
 
       <!-- Rechte Spalte: Detail-Drawer (nur in Tabelle & Stammbaum-Ansicht) -->
@@ -664,6 +879,8 @@ onMounted(() => {
         @remove-child-link="childId => removeChildLink(childId)"
         @jump-to="jumpToTreePerson"
         @start-shortest-path="startShortestPathTo"
+        @delete-person="pid => handleRequestDeletePerson(pid)"
+        @merge-person="pid => handleOpenMergeForPerson(pid)"
       />
     </div>
   </main>
@@ -1003,5 +1220,157 @@ html, body, #app {
   position: relative;
   overflow: hidden;
   background: #f8fafc;
+}
+
+/* Merge Picker Modal */
+.merge-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(15, 23, 42, 0.65);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.merge-picker-modal {
+  background: #ffffff;
+  border-radius: 12px;
+  width: 90%;
+  max-width: 500px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2);
+  border: 1px solid #cbd5e1;
+  overflow: hidden;
+}
+
+.merge-picker-header {
+  padding: 14px 18px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.merge-picker-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.btn-picker-close {
+  background: none;
+  border: none;
+  font-size: 1.1rem;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.btn-picker-close:hover {
+  color: #0f172a;
+  background: #e2e8f0;
+}
+
+.picker-instruction {
+  padding: 12px 18px 0 18px;
+  margin: 0;
+  font-size: 0.88rem;
+  color: #475569;
+  line-height: 1.4;
+}
+
+.picker-search-bar {
+  padding: 10px 18px;
+}
+
+.picker-search-bar .picker-search-input {
+  width: 100%;
+  padding: 8px 12px;
+  font-size: 0.88rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  outline: none;
+}
+.picker-search-bar .picker-search-input:focus {
+  border-color: #0284c7;
+  box-shadow: 0 0 0 2px rgba(2, 132, 199, 0.15);
+}
+
+.picker-results-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 18px 12px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.picker-result-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.picker-result-row:hover {
+  background: #f0f9ff;
+  border-color: #93c5fd;
+}
+
+.cand-name {
+  font-size: 0.88rem;
+  color: #0f172a;
+}
+
+.cand-id {
+  font-size: 0.78rem;
+  color: #64748b;
+  margin-left: 4px;
+}
+
+.cand-meta {
+  font-size: 0.78rem;
+  color: #64748b;
+  display: flex;
+  gap: 6px;
+}
+
+.picker-no-results {
+  padding: 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 0.85rem;
+}
+
+.picker-footer {
+  padding: 10px 18px;
+  border-top: 1px solid #e2e8f0;
+  display: flex;
+  justify-content: flex-end;
+  background: #f8fafc;
+}
+
+.btn-picker-cancel {
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #475569;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.btn-picker-cancel:hover {
+  background: #f1f5f9;
 }
 </style>

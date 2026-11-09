@@ -2,13 +2,25 @@
 import { ref, computed, onMounted } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { openUrl } from '@tauri-apps/plugin-opener';
-import type { ResearchTaskDto, TaskStatus, ResearchPortalConfig } from '../../types/research';
+import type {
+  ResearchTaskDto,
+  TaskStatus,
+  ResearchPortalConfig,
+  IsolatedBranchesResultDto,
+  IsolatedBranchDto,
+  SuggestedConnection,
+} from '../../types/research';
 import { useResearchPortals } from '../../composables/useResearchPortals';
 
 interface PersonCandidate {
   id: string;
   given_name: string | null;
   surname: string | null;
+  birth_date?: string | null;
+  birth_place?: string | null;
+  death_date?: string | null;
+  death_place?: string | null;
+  sex?: string | null;
 }
 
 interface RootAncestorConfig {
@@ -60,6 +72,9 @@ const props = defineProps<{
   selectedStatus: string;
   searchQuery: string;
   sortBy: 'priority' | 'name' | 'generation';
+  isolatedBranchesData?: IsolatedBranchesResultDto | null;
+  isLoadingBranches?: boolean;
+  errorBranches?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -71,11 +86,94 @@ const emit = defineEmits<{
   (e: 'update:searchQuery', val: string): void;
   (e: 'update:sortBy', val: 'priority' | 'name' | 'generation'): void;
   (e: 'refresh'): void;
+  (e: 'refresh-isolated'): void;
   (e: 'update-task', task: ResearchTaskDto, status: TaskStatus, notes?: string | null): void;
   (e: 'navigate-tree', personId: string): void;
   (e: 'navigate-table', personId: string): void;
   (e: 'open-details', personId: string, taskId?: string): void;
+  (e: 'request-delete-branch', branch: IsolatedBranchDto): void;
+  (e: 'request-merge-persons', targetId: string, sourceId: string): void;
 }>();
+
+// Subtab Switcher: 'gaps' (Genealogische Lücken) vs. 'isolated' (Isolierte Zweige & Inseln)
+const activeSubTab = ref<'gaps' | 'isolated'>('gaps');
+
+// Isolated branches filter states
+const filterBranchType = ref<'all' | 'multi_gen' | 'large' | 'small' | 'single'>('all');
+const filterGenMode = ref<'all' | 'exact_1' | 'le_n' | 'ge_n' | 'exact_n'>('all');
+const filterGenN = ref<number>(2);
+const filterSearchBranch = ref<string>('');
+
+const isolatedCount = computed(() => {
+  return props.isolatedBranchesData?.branches?.length ?? 0;
+});
+
+function handleSwitchToIsolated() {
+  activeSubTab.value = 'isolated';
+  if (!props.isolatedBranchesData && !props.isLoadingBranches) {
+    emit('refresh-isolated');
+  }
+}
+
+const filteredBranches = computed<IsolatedBranchDto[]>(() => {
+  if (!props.isolatedBranchesData?.branches) return [];
+  let list = props.isolatedBranchesData.branches;
+
+  // Type filter
+  if (filterBranchType.value === 'multi_gen') {
+    list = list.filter(b => b.generation_depth >= 2);
+  } else if (filterBranchType.value === 'large') {
+    list = list.filter(b => b.person_count > 5);
+  } else if (filterBranchType.value === 'small') {
+    list = list.filter(b => b.person_count >= 2 && b.person_count <= 5);
+  } else if (filterBranchType.value === 'single') {
+    list = list.filter(b => b.person_count === 1);
+  }
+
+  // Generation filter ("n Generationen")
+  const n = filterGenN.value || 1;
+  if (filterGenMode.value === 'exact_1') {
+    list = list.filter(b => b.generation_depth === 1);
+  } else if (filterGenMode.value === 'le_n') {
+    list = list.filter(b => b.generation_depth <= n);
+  } else if (filterGenMode.value === 'ge_n') {
+    list = list.filter(b => b.generation_depth >= n);
+  } else if (filterGenMode.value === 'exact_n') {
+    list = list.filter(b => b.generation_depth === n);
+  }
+
+  // Search query filter
+  const q = filterSearchBranch.value.trim().toLowerCase();
+  if (q) {
+    list = list.filter(b =>
+      b.name.toLowerCase().includes(q) ||
+      b.top_surnames.some(s => s.toLowerCase().includes(q)) ||
+      b.top_places.some(p => p.toLowerCase().includes(q)) ||
+      b.root_ancestors.some(r => r.name.toLowerCase().includes(q)) ||
+      b.persons.some(p => p.name.toLowerCase().includes(q))
+    );
+  }
+
+  return list;
+});
+
+function handleAnalyzeBranch(rootPersonId: string) {
+  emit('update:selectedPersonId', rootPersonId);
+  emit('update:scopeType', 'person_descendants');
+  activeSubTab.value = 'gaps';
+  emit('refresh');
+}
+
+const inspectingConnectionKey = ref<string | null>(null);
+
+function toggleInspectConnection(conn: SuggestedConnection) {
+  const key = `${conn.isolated_person_id}_${conn.main_person_id}`;
+  inspectingConnectionKey.value = inspectingConnectionKey.value === key ? null : key;
+}
+
+function getPersonSummary(personId: string) {
+  return props.persons.find(p => p.id === personId) || null;
+}
 
 // Darstellungsmodus: 'grouped' (nach Personen-Dossier) oder 'list' (flache Liste)
 const viewMode = ref<'grouped' | 'list'>('grouped');
@@ -319,28 +417,54 @@ function getGapTypeName(type: string) {
       <div class="research-header-top">
         <div class="header-titles">
           <h2 class="header-main-title">
-            <span class="header-icon">🔬</span>
-            {{ t('research.title', 'Forschungsassistent & Lücken-Finder') }}
+            <span class="header-icon">{{ activeSubTab === 'gaps' ? '🔬' : '🏝️' }}</span>
+            {{ activeSubTab === 'gaps' ? t('research.title', 'Forschungsassistent & Lücken-Finder') : t('research.isolatedTitle', 'Isolierte Zweige & Verwandtschafts-Inseln') }}
           </h2>
           <p class="header-subtitle">
-            {{ t('research.subtitle', 'Automatische Erkennung genealogischer Lücken mit konkreten Rechercheempfehlungen und Archiv-Links.') }}
+            {{ activeSubTab === 'gaps' ? t('research.subtitle', 'Automatische Erkennung genealogischer Lücken mit konkreten Rechercheempfehlungen und Archiv-Links.') : t('research.isolatedSubtitle', 'Erkennung nicht an den Hauptstamm angebundener Personen und Familienfragmente über n Generationen mit Anknüpfungs-Vorschlägen.') }}
           </p>
         </div>
 
         <button
           type="button"
-          @click="emit('refresh')"
-          :disabled="isLoading"
+          @click="activeSubTab === 'gaps' ? emit('refresh') : emit('refresh-isolated')"
+          :disabled="activeSubTab === 'gaps' ? isLoading : isLoadingBranches"
           class="btn-refresh"
           :title="t('research.refreshTooltip', 'Neu analysieren')"
         >
-          <span class="refresh-spinner" :class="{ 'is-spinning': isLoading }">↻</span>
+          <span class="refresh-spinner" :class="{ 'is-spinning': activeSubTab === 'gaps' ? isLoading : isLoadingBranches }">↻</span>
           {{ t('research.refresh', 'Aktualisieren') }}
         </button>
       </div>
 
-      <!-- KPI Dashboard Kacheln -->
-      <div class="kpi-grid">
+      <!-- Sub-Tab Umschalter: Genealogische Lücken vs. Isolierte Zweige -->
+      <div class="subtab-switcher">
+        <button
+          type="button"
+          class="subtab-btn"
+          :class="{ active: activeSubTab === 'gaps' }"
+          @click="activeSubTab = 'gaps'"
+        >
+          <span class="subtab-icon">🔬</span>
+          {{ t('research.tabGaps', 'Genealogische Lücken') }}
+          <span class="subtab-badge">{{ stats.total_gaps }}</span>
+        </button>
+        <button
+          type="button"
+          class="subtab-btn"
+          :class="{ active: activeSubTab === 'isolated' }"
+          @click="handleSwitchToIsolated"
+        >
+          <span class="subtab-icon">🏝️</span>
+          {{ t('research.tabIsolated', 'Isolierte Zweige & Inseln') }}
+          <span class="subtab-badge" :class="{ 'has-isolated': isolatedCount > 0 }">
+            {{ isolatedCount }}
+          </span>
+        </button>
+      </div>
+
+      <!-- KPI Dashboard Kacheln (Lücken) -->
+      <div v-if="activeSubTab === 'gaps'" class="kpi-grid">
         <div class="kpi-card kpi-total">
           <span class="kpi-label">{{ t('research.statTotal', 'Lücken gesamt') }}</span>
           <span class="kpi-value">{{ stats.total_gaps }}</span>
@@ -362,10 +486,35 @@ function getGapTypeName(type: string) {
           <span class="kpi-value text-muted">{{ stats.ignored_count }}</span>
         </div>
       </div>
+
+      <!-- KPI Dashboard Kacheln (Isolierte Zweige) -->
+      <div v-else class="kpi-grid">
+        <div class="kpi-card kpi-total">
+          <span class="kpi-label">{{ t('research.statTotalPersons', 'Personen gesamt') }}</span>
+          <span class="kpi-value">{{ isolatedBranchesData?.total_persons ?? 0 }}</span>
+        </div>
+        <div class="kpi-card kpi-completed">
+          <span class="kpi-label">{{ t('research.statMainTree', 'Hauptstamm') }}</span>
+          <span class="kpi-value text-green">
+            {{ isolatedBranchesData?.main_tree_person_count ?? 0 }}
+            <span class="kpi-sub-percent" v-if="isolatedBranchesData && isolatedBranchesData.total_persons > 0">
+              ({{ Math.round(((isolatedBranchesData.main_tree_person_count) / isolatedBranchesData.total_persons) * 100) }}%)
+            </span>
+          </span>
+        </div>
+        <div class="kpi-card kpi-open">
+          <span class="kpi-label">{{ t('research.statIsolatedBranches', 'Isolierte Zweige') }}</span>
+          <span class="kpi-value text-amber">{{ isolatedBranchesData?.isolated_branches_count ?? 0 }}</span>
+        </div>
+        <div class="kpi-card kpi-progress">
+          <span class="kpi-label">{{ t('research.statIsolatedIndividuals', 'Einzelpersonen') }}</span>
+          <span class="kpi-value text-blue">{{ isolatedBranchesData?.isolated_individuals_count ?? 0 }}</span>
+        </div>
+      </div>
     </header>
 
-    <!-- 2. Filter- & Werkzeugleiste -->
-    <div class="research-toolbar">
+    <!-- 2. Filter- & Werkzeugleiste (Genealogische Lücken) -->
+    <div v-if="activeSubTab === 'gaps'" class="research-toolbar">
       <div class="toolbar-left">
         <!-- Scope Auswahl -->
         <div class="filter-group">
@@ -560,8 +709,8 @@ function getGapTypeName(type: string) {
       </div>
     </div>
 
-    <!-- 3. Haupt-Inhaltsbereich -->
-    <main class="research-content">
+    <!-- 3. Haupt-Inhaltsbereich (Lücken) -->
+    <main v-if="activeSubTab === 'gaps'" class="research-content">
       <!-- Fehler-Meldung -->
       <div v-if="error" class="alert-box alert-error">
         <span>⚠️ {{ error }}</span>
@@ -669,7 +818,7 @@ function getGapTypeName(type: string) {
                   @click="filterByPerson(grp.person_id, 'single_person')"
                   :title="t('research.scopeSinglePerson', 'Nur diese Person analysieren')"
                 >
-                  🎯 Nur diese
+                  🎯 {{ t('research.scopeOnlyThis', 'Nur diese') }}
                 </button>
                 <button
                   type="button"
@@ -677,7 +826,7 @@ function getGapTypeName(type: string) {
                   @click="filterByPerson(grp.person_id, 'person_ancestors')"
                   :title="t('research.scopePersonAncestors', 'Vorfahren dieser Person analysieren')"
                 >
-                  🌿 Vorfahren
+                  🌿 {{ t('research.scopeAncestors', 'Vorfahren') }}
                 </button>
                 <button
                   type="button"
@@ -685,7 +834,7 @@ function getGapTypeName(type: string) {
                   @click="filterByPerson(grp.person_id, 'person_descendants')"
                   :title="t('research.scopePersonDescendants', 'Nachkommen dieser Person analysieren')"
                 >
-                  🌱 Nachkommen
+                  🌱 {{ t('research.scopeDescendants', 'Nachkommen') }}
                 </button>
               </div>
 
@@ -697,7 +846,7 @@ function getGapTypeName(type: string) {
                   class="btn-jump-action"
                   :title="t('research.jumpTreeTitle', 'Im Stammbaum zentrieren')"
                 >
-                  🌳 Baum
+                  🌳 {{ t('research.viewTree', 'Baum') }}
                 </button>
                 <button
                   type="button"
@@ -705,7 +854,7 @@ function getGapTypeName(type: string) {
                   class="btn-jump-action"
                   :title="t('research.jumpTableTitle', 'In Tabelle filtern')"
                 >
-                  📋 Tabelle
+                  📋 {{ t('research.viewTable', 'Tabelle') }}
                 </button>
                 <button
                   type="button"
@@ -713,7 +862,7 @@ function getGapTypeName(type: string) {
                   class="btn-jump-action btn-jump-primary"
                   :title="t('research.openDrawerTitle', 'Detail-Seitenleiste öffnen')"
                 >
-                  🔍 Details
+                  🔍 {{ t('research.viewDetails', 'Details') }}
                 </button>
               </div>
             </div>
@@ -996,6 +1145,345 @@ function getGapTypeName(type: string) {
             >
               🔍 {{ t('research.openDrawer', 'Details öffnen') }}
             </button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 2b. Filter- & Werkzeugleiste (Isolierte Zweige) -->
+    <div v-if="activeSubTab === 'isolated'" class="research-toolbar">
+      <div class="toolbar-left">
+        <!-- Zweig-Typ / Größe Filter -->
+        <div class="filter-group">
+          <label class="filter-label">{{ t('research.filterBranchType', 'Zweig-Typ:') }}</label>
+          <select v-model="filterBranchType" class="filter-select">
+            <option value="all">{{ t('research.filterBranchAll', 'Alle Zweige & Inseln') }}</option>
+            <option value="multi_gen">{{ t('research.filterBranchMultiGen', 'Mehrgenerationen (≥ 2 Gen.)') }}</option>
+            <option value="large">{{ t('research.filterBranchLarge', 'Große Familien (> 5 Personen)') }}</option>
+            <option value="small">{{ t('research.filterBranchSmall', 'Kleinfragmente (2–5 Personen)') }}</option>
+            <option value="single">{{ t('research.filterBranchSingle', 'Nur Einzelpersonen (1 Person)') }}</option>
+          </select>
+        </div>
+
+        <!-- Generations-Filter ("n Generationen") -->
+        <div class="filter-group">
+          <label class="filter-label">📈 {{ t('research.filterGenLabel', 'Generationen:') }}</label>
+          <select v-model="filterGenMode" class="filter-select">
+            <option value="all">{{ t('research.filterGenAll', 'Alle Generationen') }}</option>
+            <option value="exact_1">{{ t('research.filterGenExact1', '1 Generation (Einzelpersonen)') }}</option>
+            <option value="le_n">{{ t('research.filterGenLeN', 'Bis zu n Generationen (≤ n)') }}</option>
+            <option value="ge_n">{{ t('research.filterGenGeN', 'Ab n Generationen (≥ n)') }}</option>
+            <option value="exact_n">{{ t('research.filterGenExactN', 'Genau n Generationen (= n)') }}</option>
+          </select>
+          <input
+            v-if="filterGenMode === 'le_n' || filterGenMode === 'ge_n' || filterGenMode === 'exact_n'"
+            type="number"
+            min="1"
+            max="50"
+            v-model.number="filterGenN"
+            class="filter-input-number"
+            :title="t('research.filterGenNPlaceholder', 'n')"
+          />
+        </div>
+      </div>
+
+      <div class="toolbar-right">
+        <!-- Freitext-Suchfeld -->
+        <div class="search-wrap">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            v-model="filterSearchBranch"
+            :placeholder="t('research.filterSearchPlaceholder', 'Nachname, Ort oder Ahne suchen...')"
+            class="search-input"
+          />
+          <button
+            v-if="filterSearchBranch"
+            type="button"
+            @click="filterSearchBranch = ''"
+            class="btn-clear-search"
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3b. Haupt-Inhaltsbereich (Isolierte Zweige) -->
+    <main v-if="activeSubTab === 'isolated'" class="research-content">
+      <!-- Loading State -->
+      <div v-if="isLoadingBranches" class="loading-state">
+        <span class="refresh-spinner is-spinning">↻</span>
+        <p>{{ t('common.loading', 'Lade isolierte Zweige...') }}</p>
+      </div>
+
+      <!-- Error State -->
+      <div v-else-if="errorBranches" class="alert-box alert-error">
+        <span>⚠️ {{ errorBranches }}</span>
+        <button type="button" @click="emit('refresh-isolated')" class="btn-retry">
+          {{ t('common.retry', 'Erneut versuchen') }}
+        </button>
+      </div>
+
+      <!-- Empty State: Keine isolierten Zweige in der gesamten Datenbank -->
+      <div
+        v-else-if="props.isolatedBranchesData && props.isolatedBranchesData.branches.length === 0"
+        class="celebration-box"
+      >
+        <span class="celebration-icon">🎉</span>
+        <h3 class="celebration-title">{{ t('research.noIsolatedBranchesFound', 'Keine isolierten Zweige gefunden') }}</h3>
+        <p class="celebration-text">
+          {{ t('research.noIsolatedBranchesHint', 'Alle erfassten Personen sind lückenlos über Verwandtschaftsbeziehungen mit dem Hauptstamm verbunden.') }}
+        </p>
+      </div>
+
+      <!-- Empty State: Keine Treffer mit aktuellem Filter -->
+      <div v-else-if="filteredBranches.length === 0" class="empty-state">
+        <span class="empty-icon">🔎</span>
+        <h3>{{ t('research.noBranchesMatchFilter', 'Keine Zweige entsprechen den gewählten Filterkriterien.') }}</h3>
+      </div>
+
+      <!-- Zweig-Karten Liste -->
+      <div v-else class="branch-cards-grid">
+        <div
+          v-for="branch in filteredBranches"
+          :key="branch.id"
+          class="branch-card"
+        >
+          <!-- Card Header -->
+          <div class="branch-card-header">
+            <div class="branch-header-left">
+              <span class="branch-type-icon">{{ branch.person_count === 1 ? '👤' : '🏝️' }}</span>
+              <div class="branch-title-wrap">
+                <h3 class="branch-title">{{ branch.name }}</h3>
+                <div class="branch-meta-badges">
+                  <span class="branch-badge badge-count">
+                    👥 {{ branch.person_count }} {{ t('research.isolatedPersons', 'Personen') }}
+                  </span>
+                  <span class="branch-badge badge-depth">
+                    📈 {{ branch.generation_depth }} {{ t('research.isolatedGenerations', 'Generationen') }}
+                  </span>
+                  <span v-if="branch.earliest_year || branch.latest_year" class="branch-badge badge-years">
+                    📅 {{ branch.earliest_year ?? '?' }} – {{ branch.latest_year ?? '?' }}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Card Actions -->
+            <div class="branch-actions">
+              <button
+                type="button"
+                @click="emit('navigate-tree', branch.root_ancestors[0]?.id || branch.persons[0]?.id)"
+                class="btn-action"
+                :title="t('research.jumpTreeTitle', 'Im Stammbaum anzeigen')"
+              >
+                🌳 {{ t('research.jumpTree', 'Im Baum zeigen') }}
+              </button>
+              <button
+                type="button"
+                @click="emit('navigate-table', branch.root_ancestors[0]?.id || branch.persons[0]?.id)"
+                class="btn-action"
+                :title="t('research.jumpTableTitle', 'In Tabelle filtern')"
+              >
+                📋 {{ t('research.jumpTable', 'In Tabelle zeigen') }}
+              </button>
+              <button
+                type="button"
+                @click="handleAnalyzeBranch(branch.root_ancestors[0]?.id || branch.persons[0]?.id)"
+                class="btn-action btn-action-primary"
+                :title="t('research.analyzeBranchGaps', 'Lücken dieses Zweigs analysieren')"
+              >
+                🔬 {{ t('research.analyzeBranchGaps', 'Lücken analysieren') }}
+              </button>
+              <button
+                type="button"
+                @click="emit('request-delete-branch', branch)"
+                class="btn-action btn-action-danger"
+                :title="branch.person_count === 1 ? t('delete_person_btn', 'Person löschen') : t('delete_branch_btn', 'Zweig löschen')"
+              >
+                🗑️ {{ branch.person_count === 1 ? t('delete_person_btn', 'Person löschen') : t('delete_branch_btn', 'Zweig löschen') }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Card Body -->
+          <div class="branch-card-body">
+            <!-- Spitzenahnen -->
+            <div v-if="branch.root_ancestors.length > 0" class="branch-section">
+              <span class="branch-section-label">👑 {{ t('research.rootAncestors', 'Spitzenahnen:') }}</span>
+              <div class="branch-chips-list">
+                <div
+                  v-for="root in branch.root_ancestors"
+                  :key="root.id"
+                  class="person-chip root-chip"
+                  @click="emit('open-details', root.id)"
+                  :title="t('research.openDrawerTitle', 'Details anzeigen')"
+                >
+                  <span class="chip-gender">{{ root.sex === 'F' ? '♀' : '♂' }}</span>
+                  <span class="chip-name">{{ root.name }}</span>
+                  <span v-if="root.birth_date || root.death_date" class="chip-dates">
+                    ({{ root.birth_date || '?' }} – {{ root.death_date || '?' }})
+                  </span>
+                  <span v-if="root.birth_place || root.death_place" class="chip-place">
+                    📍 {{ root.birth_place || root.death_place }}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Wichtigste Orte -->
+            <div v-if="branch.top_places.length > 0" class="branch-section">
+              <span class="branch-section-label">📍 {{ t('research.topPlaces', 'Wichtigste Orte:') }}</span>
+              <div class="places-pills-list">
+                <span v-for="place in branch.top_places" :key="place" class="place-pill">
+                  {{ place }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Personen im Zweig Vorschau -->
+            <div class="branch-section">
+              <span class="branch-section-label">👥 {{ t('research.personsPreview', 'Personen im Zweig:') }}</span>
+              <div class="branch-chips-list">
+                <div
+                  v-for="p in branch.persons.slice(0, 8)"
+                  :key="p.id"
+                  class="person-chip"
+                  @click="emit('open-details', p.id)"
+                  :title="t('research.openDrawerTitle', 'Details anzeigen')"
+                >
+                  <span class="chip-name">{{ p.name }}</span>
+                  <span v-if="p.birth_date" class="chip-sub">(* {{ p.birth_date }})</span>
+                </div>
+                <span v-if="branch.persons.length > 8" class="chip-more">
+                  {{ t('research.andMore', { count: branch.persons.length - 8 }) }}
+                </span>
+              </div>
+            </div>
+
+            <!-- Mögliche Anknüpfungspunkte an Hauptstamm (Heuristik) -->
+            <div v-if="branch.suggested_connections.length > 0" class="suggested-connections-box">
+              <div class="suggested-header">
+                <span class="suggested-title">{{ t('research.suggestedConnectionsTitle', '💡 Mögliche Anknüpfungspunkte an den Hauptstamm:') }}</span>
+              </div>
+              <div class="suggested-list">
+                <div
+                  v-for="conn in branch.suggested_connections"
+                  :key="conn.isolated_person_id + '_' + conn.main_person_id"
+                  class="suggested-item-wrapper"
+                >
+                  <div class="suggested-item">
+                    <div class="suggested-item-left">
+                      <span class="confidence-badge" :class="{ 'high-conf': conn.confidence_score >= 80 }">
+                        {{ t('research.candidateConfidence', { score: conn.confidence_score }) }}
+                      </span>
+                      <span class="suggested-text">
+                        <strong>{{ conn.isolated_person_name }}</strong>
+                        <span class="arrow-sep">↔</span>
+                        <strong>{{ conn.main_person_name }}</strong>
+                        <span class="suggested-reason">({{ conn.match_reason }})</span>
+                      </span>
+                    </div>
+                    <div class="suggested-item-actions">
+                      <button
+                        type="button"
+                        class="btn-candidate-jump"
+                        @click="toggleInspectConnection(conn)"
+                        :title="t('research.viewCandidate', 'Kandidat ansehen')"
+                      >
+                        🔍 {{ inspectingConnectionKey === (conn.isolated_person_id + '_' + conn.main_person_id) ? t('close', 'Schließen') : t('research.viewCandidate', 'Kandidat ansehen') }}
+                      </button>
+                    </div>
+                  </div>
+
+                  <!-- Zweistufige Quick-Inspector Vorschaukarte -->
+                  <div
+                    v-if="inspectingConnectionKey === (conn.isolated_person_id + '_' + conn.main_person_id)"
+                    class="quick-inspector-card"
+                  >
+                    <div class="inspector-grid">
+                      <!-- Links: Person aus isoliertem Zweig -->
+                      <div class="inspector-col isolated-col">
+                        <span class="col-kicker">🏝️ {{ t('research.isolatedCandidate', 'Isolierter Zweig') }}</span>
+                        <h4 class="inspector-person-name">
+                          {{ conn.isolated_person_name }}
+                          <span class="sub-id">({{ conn.isolated_person_id }})</span>
+                        </h4>
+                        <div v-if="getPersonSummary(conn.isolated_person_id)" class="inspector-details">
+                          <div class="detail-row" v-if="getPersonSummary(conn.isolated_person_id)?.birth_date || getPersonSummary(conn.isolated_person_id)?.birth_place">
+                            <span class="det-icon">⭐</span>
+                            <span>{{ getPersonSummary(conn.isolated_person_id)?.birth_date || '?' }}</span>
+                            <span v-if="getPersonSummary(conn.isolated_person_id)?.birth_place"> in {{ getPersonSummary(conn.isolated_person_id)?.birth_place }}</span>
+                          </div>
+                          <div class="detail-row" v-if="getPersonSummary(conn.isolated_person_id)?.death_date || getPersonSummary(conn.isolated_person_id)?.death_place">
+                            <span class="det-icon">✝</span>
+                            <span>{{ getPersonSummary(conn.isolated_person_id)?.death_date || '?' }}</span>
+                            <span v-if="getPersonSummary(conn.isolated_person_id)?.death_place"> in {{ getPersonSummary(conn.isolated_person_id)?.death_place }}</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <!-- Mitte: Match-Indikator -->
+                      <div class="inspector-middle">
+                        <span class="match-score-badge" :class="{ high: conn.confidence_score >= 80 }">
+                          {{ conn.confidence_score }}% Match
+                        </span>
+                        <span class="match-reason-text">{{ conn.match_reason }}</span>
+                      </div>
+
+                      <!-- Rechts: Person aus Hauptstamm -->
+                      <div class="inspector-col main-col">
+                        <span class="col-kicker">🌳 {{ t('research.mainTreeCandidate', 'Hauptstammbaum') }}</span>
+                        <h4 class="inspector-person-name">
+                          {{ conn.main_person_name }}
+                          <span class="sub-id">({{ conn.main_person_id }})</span>
+                        </h4>
+                        <div v-if="getPersonSummary(conn.main_person_id)" class="inspector-details">
+                          <div class="detail-row" v-if="getPersonSummary(conn.main_person_id)?.birth_date || getPersonSummary(conn.main_person_id)?.birth_place">
+                            <span class="det-icon">⭐</span>
+                            <span>{{ getPersonSummary(conn.main_person_id)?.birth_date || '?' }}</span>
+                            <span v-if="getPersonSummary(conn.main_person_id)?.birth_place"> in {{ getPersonSummary(conn.main_person_id)?.birth_place }}</span>
+                          </div>
+                          <div class="detail-row" v-if="getPersonSummary(conn.main_person_id)?.death_date || getPersonSummary(conn.main_person_id)?.death_place">
+                            <span class="det-icon">✝</span>
+                            <span>{{ getPersonSummary(conn.main_person_id)?.death_date || '?' }}</span>
+                            <span v-if="getPersonSummary(conn.main_person_id)?.death_place"> in {{ getPersonSummary(conn.main_person_id)?.death_place }}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Aktionen für den inspizierten Kandidaten -->
+                    <div class="inspector-actions">
+                      <button
+                        type="button"
+                        class="btn-inspect-action btn-tree"
+                        @click="emit('navigate-tree', conn.main_person_id)"
+                        :title="t('research.viewCandidateInTree', 'Im Stammbaum öffnen')"
+                      >
+                        🌳 {{ t('research.viewCandidateInTree', 'Im Stammbaum öffnen') }}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-inspect-action btn-merge"
+                        @click="emit('request-merge-persons', conn.main_person_id, conn.isolated_person_id)"
+                        :title="t('research.mergeCandidates', 'Zusammenführen...')"
+                      >
+                        🔀 {{ t('research.mergeCandidates', 'Zusammenführen...') }}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-inspect-action btn-close-inspect"
+                        @click="inspectingConnectionKey = null"
+                      >
+                        ✕ {{ t('close', 'Schließen') }}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1847,6 +2335,512 @@ function getGapTypeName(type: string) {
 }
 .btn-action-primary:hover {
   background: #dbeafe;
+}
+
+/* Subtab Switcher */
+.subtab-switcher {
+  display: flex;
+  gap: 8px;
+  background: #f1f5f9;
+  padding: 4px;
+  border-radius: 8px;
+  width: fit-content;
+  margin-top: 4px;
+}
+.subtab-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #64748b;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.subtab-btn:hover {
+  color: #1e293b;
+  background: rgba(255, 255, 255, 0.6);
+}
+.subtab-btn.active {
+  color: #1e40af;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+}
+.subtab-icon {
+  font-size: 0.95rem;
+}
+.subtab-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  border-radius: 10px;
+  background: #e2e8f0;
+  color: #475569;
+}
+.subtab-btn.active .subtab-badge {
+  background: #dbeafe;
+  color: #1e40af;
+}
+.subtab-badge.has-isolated {
+  background: #fef3c7;
+  color: #b45309;
+}
+
+/* Isolated KPI additions */
+.kpi-sub-percent {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #15803d;
+  margin-left: 4px;
+}
+
+/* Isolated Toolbar input */
+.filter-input-number {
+  width: 50px;
+  padding: 4px 6px;
+  font-size: 0.82rem;
+  font-weight: 600;
+  text-align: center;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #0f172a;
+}
+.filter-input-number:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
+}
+
+/* Branch Cards Grid & Card */
+.branch-cards-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.branch-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
+  transition: all 0.15s ease;
+}
+.branch-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.06);
+}
+.branch-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-bottom: 1px solid #f1f5f9;
+  flex-wrap: wrap;
+}
+.branch-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.branch-type-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+.branch-title-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.branch-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+  margin: 0;
+}
+.branch-meta-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.branch-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.badge-count {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+.badge-depth {
+  background: #f0fdf4;
+  color: #15803d;
+  border: 1px solid #bbf7d0;
+}
+.badge-years {
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+.branch-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Branch Card Body */
+.branch-card-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.branch-section {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.8rem;
+  flex-wrap: wrap;
+}
+.branch-section-label {
+  font-weight: 600;
+  color: #475569;
+  min-width: 130px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.branch-chips-list {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.person-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  font-size: 0.76rem;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.person-chip:hover {
+  background: #e2e8f0;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+.person-chip.root-chip {
+  background: #fefce8;
+  border-color: #fef08a;
+  color: #854d0e;
+  font-weight: 600;
+}
+.person-chip.root-chip:hover {
+  background: #fef9c3;
+  border-color: #fde047;
+}
+.chip-gender {
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.chip-dates {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+.chip-place {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+.chip-sub {
+  font-size: 0.72rem;
+  color: #64748b;
+}
+.chip-more {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #64748b;
+  padding: 2px 6px;
+}
+
+/* Places Pills */
+.places-pills-list {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.place-pill {
+  font-size: 0.74rem;
+  padding: 1px 6px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  color: #475569;
+}
+
+/* Suggested Connections Box */
+.suggested-connections-box {
+  margin-top: 4px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 6px;
+  padding: 8px 12px;
+}
+.suggested-header {
+  margin-bottom: 6px;
+}
+.suggested-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #92400e;
+}
+.suggested-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.suggested-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  background: #ffffff;
+  padding: 4px 8px;
+  border: 1px solid #fef3c7;
+  border-radius: 4px;
+}
+.suggested-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.confidence-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #fef3c7;
+  color: #b45309;
+}
+.confidence-badge.high-conf {
+  background: #dcfce7;
+  color: #15803d;
+}
+.suggested-text {
+  color: #1e293b;
+}
+.arrow-sep {
+  color: #94a3b8;
+  margin: 0 4px;
+}
+.suggested-reason {
+  color: #64748b;
+  font-size: 0.74rem;
+  margin-left: 4px;
+}
+.btn-candidate-jump {
+  padding: 2px 8px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  color: #334155;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+.btn-candidate-jump:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.btn-action-danger {
+  color: #b91c1c;
+  border-color: #fca5a5;
+  background: #fff1f2;
+}
+.btn-action-danger:hover {
+  background: #fee2e2;
+  border-color: #f87171;
+}
+
+.suggested-item-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quick-inspector-card {
+  background: #ffffff;
+  border: 1px solid #93c5fd;
+  border-radius: 8px;
+  padding: 12px 14px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.inspector-grid {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.inspector-col {
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.isolated-col {
+  border-left: 3px solid #f59e0b;
+}
+
+.main-col {
+  border-left: 3px solid #10b981;
+}
+
+.col-kicker {
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+  letter-spacing: 0.03em;
+}
+
+.inspector-person-name {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+
+.sub-id {
+  font-size: 0.72rem;
+  font-weight: 400;
+  color: #64748b;
+}
+
+.inspector-details {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.78rem;
+  color: #475569;
+}
+
+.detail-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.det-icon {
+  font-size: 0.8rem;
+  color: #94a3b8;
+}
+
+.inspector-middle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px;
+  text-align: center;
+}
+
+.match-score-badge {
+  font-size: 0.76rem;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #e0f2fe;
+  color: #0369a1;
+  border: 1px solid #bae6fd;
+}
+
+.match-score-badge.high {
+  background: #dcfce7;
+  color: #15803d;
+  border-color: #bbf7d0;
+}
+
+.match-reason-text {
+  font-size: 0.7rem;
+  color: #64748b;
+  max-width: 130px;
+  line-height: 1.2;
+}
+
+.inspector-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  border-top: 1px solid #f1f5f9;
+  padding-top: 8px;
+}
+
+.btn-inspect-action {
+  padding: 5px 12px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-tree {
+  color: #0284c7;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+}
+.btn-tree:hover {
+  background: #e0f2fe;
+}
+
+.btn-merge {
+  color: #ffffff;
+  background: #0284c7;
+  border: 1px solid #0369a1;
+}
+.btn-merge:hover {
+  background: #0369a1;
+}
+
+.btn-close-inspect {
+  color: #64748b;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+}
+.btn-close-inspect:hover {
+  background: #f1f5f9;
 }
 
 /* Animations */

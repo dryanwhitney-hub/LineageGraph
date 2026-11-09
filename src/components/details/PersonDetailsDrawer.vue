@@ -60,6 +60,8 @@ const emit = defineEmits<{
   'save-parents': [];
   'jump-to': [personId: string];
   'start-shortest-path': [targetPersonId: string];
+  'delete-person': [personId: string];
+  'merge-person': [personId: string];
 }>();
 
 const { t } = useI18n();
@@ -377,6 +379,26 @@ function handleRemoveChild(childId: string) {
           @click="emit('update:isDetailsOpen', false)"
         >
           ✕
+        </button>
+      </div>
+
+      <!-- Schnellaktionen für ausgewählte Person: Zusammenführen & Löschen -->
+      <div class="drawer-person-actions">
+        <button
+          type="button"
+          class="drawer-action-btn btn-action-merge"
+          @click="emit('merge-person', selectedPerson.id)"
+          :title="t('merge_person_tooltip', 'Diese Person mit einem anderen Eintrag zusammenführen')"
+        >
+          🔀 {{ t('merge_btn', 'Zusammenführen...') }}
+        </button>
+        <button
+          type="button"
+          class="drawer-action-btn btn-action-delete"
+          @click="emit('delete-person', selectedPerson.id)"
+          :title="t('delete_person_tooltip', 'Diese Person aus der Datenbank entfernen')"
+        >
+          🗑️ {{ t('delete_person_btn', 'Löschen') }}
         </button>
       </div>
 
@@ -965,6 +987,47 @@ function handleRemoveChild(childId: string) {
   background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
   flex-shrink: 0;
+}
+
+.drawer-person-actions {
+  display: flex;
+  gap: 8px;
+  padding: 8px 1.1rem;
+  background: #ffffff;
+  border-bottom: 1px solid #f1f5f9;
+  flex-shrink: 0;
+}
+
+.drawer-action-btn {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+
+.btn-action-merge {
+  color: #0369a1;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+}
+.btn-action-merge:hover {
+  background: #e0f2fe;
+}
+
+.btn-action-delete {
+  color: #b91c1c;
+  background: #fff1f2;
+  border: 1px solid #fecaca;
+}
+.btn-action-delete:hover {
+  background: #fee2e2;
 }
 
 .details-kicker {

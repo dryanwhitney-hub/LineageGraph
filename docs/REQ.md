@@ -37,6 +37,8 @@ graph TD
     CAT_DAT --> REQ_DAT_003["REQ-DAT-003: Eltern-Kind & Rekursionsprüfung"]:::req
     CAT_DAT --> REQ_DAT_004["REQ-DAT-004: Ehe- & Partnerschafts-Lifecycle"]:::req
     CAT_DAT --> REQ_DAT_005["REQ-DAT-005: Audit-Felder (CHAN / UID)"]:::req
+    CAT_DAT --> REQ_DAT_006["REQ-DAT-006: Einzel- & Zweig-Löschung mit Backup"]:::req
+    CAT_DAT --> REQ_DAT_007["REQ-DAT-007: Selektiver Personen-Merge"]:::req
 
     CAT_ALG --> REQ_ALG_001["REQ-ALG-001: Multi-Probanden-Verwaltung"]:::req
     CAT_ALG --> REQ_ALG_002["REQ-ALG-002: Henry-Code-Berechnung"]:::req
@@ -163,6 +165,27 @@ graph TD
   1. Bei Neuanlage einer Person ohne UID wird automatisch eine UUID v4 im Feld `_UID` persistiert.
   2. Jede Bearbeitung aktualisiert das Tag `CHAN` mit aktuellem Datum und Uhrzeit im Format `DD MMM YYYY / HH:MM:SS`.
 - **Technische Spezifikation:** Siehe [SPEC-DAT-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-005---req-dat-005)
+
+#### REQ-DAT-006: Einzel- & Zweig-Löschung mit Backup-Sicherung
+- **Titel & Kurzbeschreibung:** Vollständiges Löschen einzelner Personen oder ganzer isolierter Familienzweige aus der Datenbank inklusive automatischer `.bak`-Snapshot-Erstellung und relationaler Kaskadenbereinigung.
+- **Fachlicher Zweck / Business Value:** Sicheres Entfernen fehlerhafter oder irrelevanter Datenbestände ohne Risiko eines Datenverlusts und ohne Verbleib von verwaisten Familien- oder Beziehungsfragmenten.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Vor Ausführung jeder Löschung muss automatisch ein Backup-Snapshot der aktiven `.db`-Datei (`<treename>_<action>_<timestamp>.db.bak`) im Datenbankverzeichnis angelegt werden.
+  2. Kaskadierende Bereinigung aller abhängigen Datensätze: `parent_child`, `families`, `events`, `research_tasks`, `root_ancestors` und `proband_henry_codes`.
+  3. Familien, die nach dem Entfernen der Person(en) weder Partner noch Kinder besitzen, werden automatisch entfernt.
+  4. Die Benutzeroberfläche erzwingt einen 2-stufigen Sicherheitsdialog mit Standardfokus auf der Abbrechen-Schaltfläche.
+- **Technische Spezifikation:** Siehe [SPEC-DAT-006 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-006---req-dat-006)
+
+#### REQ-DAT-007: Selektiver Personen-Merge mit Konfliktlösung
+- **Titel & Kurzbeschreibung:** Interaktive Zusammenführung zweier Personendatensätze (Ziel- und Quell-Eintrag) über eine Vergleichsmaske mit feldweiser Attributübernahme, Eltern- und Partner-Auflösung sowie automatischer Revisionsnotiz.
+- **Fachlicher Zweck / Business Value:** Bereinigung von Dubletten und Konsolidierung isolierter Fragmente mit dem Hauptstammbaum unter voller Kontrolle über divergierende Werte.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Die Benutzeroberfläche bietet eine zweispaltige Gegenüberstellung von Ziel (bleibt erhalten) und Quelle (wird aufgelöst) mit Rollentausch-Funktion (`⇄`).
+  2. Selektive Übernahme via Radio-Pills für Vorname, Nachname, Geschlecht, Geburtsdatum/-ort, Sterbedatum/-ort.
+  3. Konfigurierbare Eltern-Übernahme (`target`, `source`, `none`) und Auflösung doppelter Ehepartner (`merge` vs. `keep_separate`).
+  4. Checklisten-Auswahl zu übernehmender Ereignisse (`events`) und automatische Generierung einer Revisionsnotiz zur Dokumentation der Quell-ID und verworfener Werte.
+  5. Atomare Transaktion mit automatischer `.bak`-Datenbanksicherung und Neuberechnung der Henry-Codes.
+- **Technische Spezifikation:** Siehe [SPEC-DAT-007 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-007---req-dat-007)
 
 ---
 
@@ -436,5 +459,17 @@ graph TD
   4. Lücken einer Person werden als kompakte Checklistenzeilen mit 1-Klick-Statuswahl (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`), dezenten Archiv-Badges und aufklappbarem Empfehlungs-/Notiz-Akkordeon geführt.
   5. Bereitstellung eines Batch-Buttons („Alle als erledigt“) sowie eines Schnellfilters „Erledigte ausblenden“.
 - **Technische Spezifikation:** Siehe [SPEC-RES-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-004---req-res-004)
+
+#### REQ-RES-005: Erkennung und Analyse isolierter Zweige (Insel-Finder)
+- **Titel & Kurzbeschreibung:** Automatische Diagnose von Zusammenhangskomponenten im Verwandtschaftsgraphen zur Identifikation isolierter Zweige, Familienfragmente und unverbundener Einzelpersonen über *n* Generationen, inklusive heuristischer Anknüpfungs-Hinweise an den Hauptstamm.
+- **Fachlicher Zweck / Business Value:** In Datenbanken mit Teilimporten oder zufälligen Einzelfunden verlieren Genealogen leicht die Übersicht über unverknüpfte Personen. Das Werkzeug listet diese Inseln übersichtlich auf und schlägt konkrete Verbindungspersonen im Hauptstamm vor.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Zwei Personen gelten als verbunden, wenn eine ungerichtete Kette aus Eltern-Kind-Beziehungen oder Ehen/Partnerschaften zwischen ihnen besteht.
+  2. Die Komponente des aktiven Probanden (oder die personell größte Komponente bei fehlendem Probanden) wird automatisch als Hauptstamm klassifiziert; alle weiteren Komponenten gelten als isolierte Zweige oder Inseln.
+  3. Berechnung von Metadaten pro Zweig: Personenanzahl, Generationentiefe (längster Abstammungspfad), Zeitspanne (frühestes bis spätestes Lebensjahr), Spitzenahnen (Personen ohne Eltern im Zweig), wichtigste Orte und Nachnamen.
+  4. Flexibler Generationsfilter ("n Generationen") in der Benutzeroberfläche: Alle Generationen, Einzelpersonen (1 Gen.), bis zu *n* Generationen (≤ *n*), ab *n* Generationen (≥ *n*) und genau *n* Generationen (= *n*).
+  5. Heuristische Anknüpfungs-Vorschläge: Automatischer Abgleich isolierter Personen mit dem Hauptstamm auf Basis von Nachnamensgleichheit, Ortsidentität und plausibler Zeitdifferenz mit Konfidenz-Scoring.
+  6. 1-Klick-Aktionen zur Navigation in den Baum, die Tabelle und zur direkten Lückenanalyse des isolierten Zweiges.
+- **Technische Spezifikation:** Siehe [SPEC-RES-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-005---req-res-005)
 
 

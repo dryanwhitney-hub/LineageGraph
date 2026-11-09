@@ -810,7 +810,7 @@ defineExpose({
               @click="emit('update:isBgDraggingOnCanvas', !isBgDraggingOnCanvas)"
               :title="isBgDraggingOnCanvas ? 'Maus-Verschieben beenden' : 'Mit der Maus im Canvas verschieben'"
             >
-              ✥ {{ isBgDraggingOnCanvas ? 'Aktiv (Ziehen)' : 'Per Maus' }}
+              ✥ {{ isBgDraggingOnCanvas ? t('design_bg_drag_active') : t('design_bg_drag_mouse') }}
             </button>
           </div>
           <div class="bg-coord-row">
@@ -826,7 +826,7 @@ defineExpose({
           <div class="bg-quick-btn-row">
             <button type="button" class="btn-quick-bg" @click="centerBgImage">⌖ {{ t('design_bg_image_center_btn') }}</button>
             <button type="button" class="btn-quick-bg" @click="alignBottomCenterBgImage">⬇️ {{ t('design_bg_image_bottom_btn') }}</button>
-            <button type="button" class="btn-quick-bg" @click="alignTopLeftBgImage">↖️ Oben links</button>
+            <button type="button" class="btn-quick-bg" @click="alignTopLeftBgImage">↖️ {{ t('design_bg_image_top_left_btn') }}</button>
           </div>
         </div>
       </div>
@@ -854,7 +854,7 @@ defineExpose({
           </div>
 
           <div class="design-modal-proband-banner">
-            <span class="proband-label">Stammahn:</span>
+            <span class="proband-label">{{ t('proband_label') }}</span>
             <strong>{{ activeProbandName || '–' }}</strong>
           </div>
 
@@ -911,21 +911,21 @@ defineExpose({
               ⚠️ {{ t('design_overwrite_warning') }}
             </span>
             <span v-else class="design-input-hint">
-              {{ saveMode === 'overwrite' ? t('design_overwrite_hint') : 'Mehrere Stände können gespeichert werden, um verschiedene Anordnungen auszuprobieren.' }}
+              {{ saveMode === 'overwrite' ? t('design_overwrite_hint') : t('design_save_new_hint') }}
             </span>
           </div>
 
           <div class="design-summary-box">
             <div class="summary-item">
-              <span class="s-label">Ebenen:</span>
+              <span class="s-label">{{ t('design_summary_levels') }}</span>
               <span class="s-val">{{ totalLevels }}</span>
             </div>
             <div class="summary-item">
-              <span class="s-label">Gruppen:</span>
+              <span class="s-label">{{ t('design_summary_groups') }}</span>
               <span class="s-val">{{ siblingGroupsCount }}</span>
             </div>
             <div class="summary-item">
-              <span class="s-label">Zweig-Abgrenzungen:</span>
+              <span class="s-label">{{ t('design_summary_branch_widths') }}</span>
               <span class="s-val">{{ branchWidthsCount }}</span>
             </div>
           </div>
@@ -1003,7 +1003,7 @@ defineExpose({
           <!-- Gespeicherte Stände Liste -->
           <div class="design-presets-container">
             <div v-if="isLoadingLayouts" class="design-presets-loading">
-              Lade Stände...
+              {{ t('design_loading_presets') }}
             </div>
             <div v-else-if="savedLayoutsList.length === 0" class="design-empty-presets">
               {{ t('design_no_presets') }}
@@ -1037,7 +1037,7 @@ defineExpose({
                     @click="emit('export-entry', entry)"
                     :title="t('design_export_file_btn')"
                   >
-                    💾 Datei
+                    💾 {{ t('file') || 'Datei' }}
                   </button>
                   <button
                     class="d-preset-btn btn-delete"
@@ -1234,7 +1234,7 @@ defineExpose({
           <!-- Verfügbare Zweig-Designs -->
           <div class="design-presets-container">
             <div v-if="isLoadingSubtreeLayouts" class="design-presets-loading">
-              Lade Zweig-Designs...
+              {{ t('design_loading_subtrees') }}
             </div>
             <div v-else-if="!availableSubtreeLayouts || availableSubtreeLayouts.length === 0" class="design-empty-presets">
               <p>{{ t('design_no_subtree_layouts') }}</p>

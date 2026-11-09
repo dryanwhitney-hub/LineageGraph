@@ -80,3 +80,45 @@ export interface ResearchScope {
   proband_id?: string | null;
   person_id?: string | null;
 }
+
+export interface BranchPersonSummary {
+  id: string;
+  name: string;
+  birth_date: string | null;
+  death_date: string | null;
+  birth_place: string | null;
+  death_place: string | null;
+  sex: string | null;
+}
+
+export interface SuggestedConnection {
+  isolated_person_id: string;
+  isolated_person_name: string;
+  main_person_id: string;
+  main_person_name: string;
+  match_reason: string;
+  confidence_score: number;
+}
+
+export interface IsolatedBranchDto {
+  id: number;
+  name: string;
+  person_count: number;
+  generation_depth: number;
+  root_ancestors: BranchPersonSummary[];
+  persons: BranchPersonSummary[];
+  earliest_year: number | null;
+  latest_year: number | null;
+  top_places: string[];
+  top_surnames: string[];
+  suggested_connections: SuggestedConnection[];
+}
+
+export interface IsolatedBranchesResultDto {
+  total_persons: number;
+  total_components: number;
+  main_tree_person_count: number;
+  isolated_branches_count: number;
+  isolated_individuals_count: number;
+  branches: IsolatedBranchDto[];
+}

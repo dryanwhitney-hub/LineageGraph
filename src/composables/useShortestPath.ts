@@ -1,5 +1,5 @@
 import { ref, computed, watch, type Ref } from 'vue';
-import type { Person } from './usePersons';
+import type { Person, RootAncestorConfig } from './usePersons';
 import { centerTreeOnPerson } from '../components/tree/TreeCanvasView.vue';
 
 export function getParentHenryCode(hCode: string, startCode: string): string | null {
@@ -172,6 +172,8 @@ export interface UseShortestPathOptions {
   expandedNodes: Ref<Map<string, boolean>>;
   expandedSideNodes: Ref<Map<string, { spouses: boolean; parents: boolean }>>;
   expandedFromChildMap: Ref<Map<string, string>>;
+  rootAncestors?: Ref<RootAncestorConfig[]>;
+  setProbandTab?: (probandId: string | null) => void;
 }
 
 export function useShortestPath(options: UseShortestPathOptions) {
@@ -187,6 +189,8 @@ export function useShortestPath(options: UseShortestPathOptions) {
     expandedNodes,
     expandedSideNodes,
     expandedFromChildMap,
+    rootAncestors,
+    setProbandTab,
   } = options;
 
   const activePartnerPath = ref<Person[]>([]);
@@ -384,8 +388,45 @@ export function useShortestPath(options: UseShortestPathOptions) {
     expandedSideNodes.value.clear();
     expandedFromChildMap.value.clear();
 
-    const pid = activeProbandTab.value;
+    let pid = activeProbandTab.value;
     const startCode = getActiveStartCode();
+
+    // 1. Prüfen, ob target (oder Ehepartner) im aktuell aktiven Probanden liegt
+    const targetHasActiveCode = !!(pid && target.proband_data[pid]?.henry_code);
+    const partnerHasActiveCode = !!(
+      pid &&
+      target.spouses.some(s => {
+        const sp = persons.value.find(p => p.id === s.id);
+        return sp && pid && sp.proband_data[pid]?.henry_code;
+      })
+    );
+
+    if (!targetHasActiveCode && !partnerHasActiveCode && rootAncestors?.value) {
+      // 2. Prüfen, ob target zu einem anderen konfigurierten Probanden gehört
+      for (const ra of rootAncestors.value) {
+        if (target.proband_data[ra.person_id]?.henry_code) {
+          pid = ra.person_id;
+          break;
+        }
+        const spMatch = target.spouses.some(s => {
+          const sp = persons.value.find(p => p.id === s.id);
+          return sp && sp.proband_data[ra.person_id]?.henry_code;
+        });
+        if (spMatch) {
+          pid = ra.person_id;
+          break;
+        }
+      }
+
+      if (pid && pid !== activeProbandTab.value) {
+        if (setProbandTab) {
+          setProbandTab(pid);
+        } else {
+          activeProbandTab.value = pid;
+        }
+      }
+    }
+
     const tCode = pid ? target.proband_data[pid]?.henry_code : null;
 
     if (pid && tCode) {
@@ -395,6 +436,7 @@ export function useShortestPath(options: UseShortestPathOptions) {
       chain.slice(1).forEach(anc => {
         expandedNodes.value.set(anc.id, true);
       });
+      expandedNodes.value.set(target.id, true);
     } else if (pid) {
       // Falls target selbst keinen Henry-Code hat, prüfen ob ein Ehepartner im Baum des Stammahnen liegt
       const partnerWithCode = target.spouses
@@ -407,51 +449,47 @@ export function useShortestPath(options: UseShortestPathOptions) {
           expandedNodes.value.set(anc.id, true);
         });
         expandedSideNodes.value.set(partnerWithCode.id, { spouses: true, parents: false });
+        expandedNodes.value.set(target.id, true);
       } else {
-        currentTreeRootId.value = target.id;
+        // Nicht in diesem Probanden auffindbar -> In freie Ansicht wechseln
+        if (setProbandTab) {
+          setProbandTab(null);
+        } else {
+          activeProbandTab.value = null;
+        }
+        setupFreeTreeForTarget(target);
       }
     } else {
-      // Freie Ansicht: Nötige Generationen von der aktuellen Wurzel zum Eintrag öffnen (oder Eintrag als Wurzel setzen)
-      const baseRootId = freeInitialRootId.value || currentTreeRootId.value;
-      const baseRoot = baseRootId ? persons.value.find(p => p.id === baseRootId) : null;
-      if (baseRoot && baseRoot.id !== target.id) {
-        const ancMapTarget = buildAncestorPathsMap(target, persons.value);
-        if (ancMapTarget.has(baseRoot.id)) {
-          const chain = ancMapTarget.get(baseRoot.id)!;
-          currentTreeRootId.value = baseRoot.id;
-          chain.slice(1).forEach(anc => {
-            expandedNodes.value.set(anc.id, true);
-          });
-        } else {
-          const ancMapBase = buildAncestorPathsMap(baseRoot, persons.value);
-          let lcaId: string | null = null;
-          let bestDist = Infinity;
-          ancMapTarget.forEach((cT, aId) => {
-            const cB = ancMapBase.get(aId);
-            if (cB && cT.length + cB.length < bestDist) {
-              bestDist = cT.length + cB.length;
-              lcaId = aId;
-            }
-          });
-          if (lcaId) {
-            currentTreeRootId.value = lcaId;
-            const chain = ancMapTarget.get(lcaId)!;
-            chain.slice(1).forEach(anc => {
-              expandedNodes.value.set(anc.id, true);
-            });
-          } else {
-            currentTreeRootId.value = target.id;
-            freeInitialRootId.value = target.id;
-          }
-        }
-      } else {
-        currentTreeRootId.value = target.id;
-        freeInitialRootId.value = target.id;
-      }
+      // Freie Ansicht: Automatisch die Wurzel dieses Zweiges ermitteln und öffnen
+      setupFreeTreeForTarget(target);
     }
 
     // Bildschirmausschnitt so setzen, dass der neu markierte Eintrag zentriert/fokussiert wird
     centerTreeOnPerson(target.id, pan);
+  }
+
+  function setupFreeTreeForTarget(target: Person) {
+    const ancMap = buildAncestorPathsMap(target, persons.value);
+    let oldestAncestorId = target.id;
+    let maxDepth = 0;
+    ancMap.forEach((chain, ancId) => {
+      if (chain.length > maxDepth) {
+        maxDepth = chain.length;
+        oldestAncestorId = ancId;
+      }
+    });
+
+    currentTreeRootId.value = oldestAncestorId;
+    freeInitialRootId.value = oldestAncestorId;
+
+    const chain = ancMap.get(oldestAncestorId);
+    if (chain) {
+      // chain ist [target, ..., oldestAncestor]
+      chain.forEach(anc => {
+        expandedNodes.value.set(anc.id, true);
+      });
+    }
+    expandedNodes.value.set(target.id, true);
   }
 
   watch(shortestPathIncludeSpouses, () => {
