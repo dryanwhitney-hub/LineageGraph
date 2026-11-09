@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
@@ -13,9 +13,11 @@ import AddPersonModal from './components/modals/AddPersonModal.vue';
 import SettingsModal, { type SettingsTab } from './components/modals/SettingsModal.vue';
 import GedcomImportModal from './components/modals/GedcomImportModal.vue';
 import UpdateConfirmModal from './components/modals/UpdateConfirmModal.vue';
+import ResearchAssistantView from './components/research/ResearchAssistantView.vue';
 import { usePersons } from './composables/usePersons';
 import { useShortestPath } from './composables/useShortestPath';
 import { useAppUpdater } from './composables/useAppUpdater';
+import { useResearchAssistant } from './composables/useResearchAssistant';
 
 const { t, locale } = useI18n();
 
@@ -34,7 +36,7 @@ const {
   dismissConfirmModal,
 } = useAppUpdater();
 
-const currentView = ref<'table' | 'tree' | 'design' | 'export'>('table');
+const currentView = ref<'table' | 'tree' | 'design' | 'export' | 'research'>('table');
 const currentTreeRootId = ref<string | null>(null);
 const freeInitialRootId = ref<string | null>(null);
 const showSettings = ref<boolean>(false);
@@ -224,9 +226,70 @@ async function openUserGuide() {
   }
 }
 
+const {
+  stats: researchStats,
+  isLoading: isResearchLoading,
+  error: researchError,
+  scopeType: researchScopeType,
+  selectedGapType: selectedResearchGapType,
+  selectedStatus: selectedResearchStatus,
+  searchQuery: researchSearchQuery,
+  sortBy: researchSortBy,
+  filteredTasks: filteredResearchTasks,
+  loadTasks: loadResearchTasks,
+  updateTask: updateResearchTask,
+} = useResearchAssistant(
+  () => activeProbandTab.value,
+  () => selectedPerson.value?.id || null
+);
+
+function onResearchNavigateTree(personId: string) {
+  const p = persons.value.find(item => item.id === personId);
+  if (p) {
+    selectedPerson.value = p;
+  }
+  currentView.value = 'tree';
+  isDetailsOpen.value = true;
+}
+
+function onResearchNavigateTable(personId: string) {
+  const p = persons.value.find(item => item.id === personId);
+  if (p) {
+    selectedPerson.value = p;
+    tableQuickSearch.value = `${p.given_name || ''} ${p.surname || ''}`.trim();
+  }
+  currentView.value = 'table';
+  isDetailsOpen.value = true;
+}
+
+const selectedResearchTaskId = ref<string | null>(null);
+
+const activePersonResearchGaps = computed(() => {
+  if (!selectedPerson.value) return [];
+  return filteredResearchTasks.value.filter(t => t.person_id === selectedPerson.value!.id);
+});
+
+function onResearchOpenDetails(personId: string, taskId?: string) {
+  const p = persons.value.find(item => item.id === personId);
+  if (p) {
+    selectedPerson.value = p;
+    selectedResearchTaskId.value = taskId || null;
+    isDetailsOpen.value = true;
+  }
+}
+
 watch(currentView, newView => {
   if (newView === 'design' || newView === 'export') {
     isDetailsOpen.value = false;
+  }
+  if (newView === 'research') {
+    loadResearchTasks();
+  }
+});
+
+watch([activeTree, persons], () => {
+  if (currentView.value === 'research') {
+    loadResearchTasks();
   }
 });
 
@@ -293,6 +356,9 @@ onMounted(() => {
         </button>
         <button @click="currentView = 'export'" :class="{ active: currentView === 'export' }">
           📦 {{ t('view_export') }}
+        </button>
+        <button @click="currentView = 'research'" :class="{ active: currentView === 'research' }">
+          🔬 {{ t('view_research') }}
         </button>
       </nav>
 
@@ -528,6 +594,34 @@ onMounted(() => {
         @select-proband="pid => setProbandTab(pid)"
       />
 
+      <!-- 5. Forschungsassistent & Lücken-Finder -->
+      <ResearchAssistantView
+        v-if="currentView === 'research'"
+        :tasks="filteredResearchTasks"
+        :stats="researchStats"
+        :is-loading="isResearchLoading"
+        :error="researchError"
+        :persons="persons"
+        :root-ancestors="rootAncestors"
+        :active-proband-id="activeProbandTab"
+        :selected-person-id="selectedPerson?.id || null"
+        v-model:scope-type="researchScopeType"
+        v-model:selected-gap-type="selectedResearchGapType"
+        v-model:selected-status="selectedResearchStatus"
+        v-model:search-query="researchSearchQuery"
+        v-model:sort-by="researchSortBy"
+        @update:active-proband-id="pid => setProbandTab(pid)"
+        @update:selected-person-id="pid => {
+          const found = persons.find(p => p.id === pid);
+          if (found) selectedPerson = found;
+        }"
+        @refresh="loadResearchTasks"
+        @update-task="updateResearchTask"
+        @navigate-tree="onResearchNavigateTree"
+        @navigate-table="onResearchNavigateTable"
+        @open-details="onResearchOpenDetails"
+      />
+
       <!-- Rechte Spalte: Detail-Drawer (nur in Tabelle & Stammbaum-Ansicht) -->
       <PersonDetailsDrawer
         :current-view="currentView"
@@ -536,6 +630,8 @@ onMounted(() => {
         :person-details="personDetails"
         :active-detail-columns="activeDetailColumns"
         :all-persons="persons"
+        :active-research-gaps="activePersonResearchGaps"
+        :selected-research-task-id="selectedResearchTaskId"
         :is-editing="isEditing"
         :is-loading="isLoading"
         :has-invalid-edited-person="hasInvalidEditedPerson"

@@ -75,6 +75,10 @@ Die folgende Matrix bildet die lückenlose Verbindung zwischen den fachlichen An
 | **[REQ-EXP-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-003-autarke-interaktive-html-chronik)** | Autarke HTML-Chronik | [SPEC-EXP-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-003---req-exp-003) | Frontend Generator / UI-Pane / Tauri Security | [`src/utils/htmlExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/htmlExport.ts), [`src/assets/vendor/d3.v7.min.ts`](file:///c:/dev/Froning/app/LineageGraph/src/assets/vendor/d3.v7.min.ts), [`src/components/export/HtmlExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/HtmlExportPane.vue), [`src-tauri/tauri.conf.json`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/tauri.conf.json) |
 | **[REQ-EXP-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-004-hochaufl%C3%B6sender-bild---vektorexport-des-stammbaums)** | Bild-/Vektorexport (SVG/PNG) | [SPEC-EXP-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-004---req-exp-004) | Frontend Canvas Export / UI-Pane | [`src/utils/designExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/designExport.ts), [`src/components/export/DesignImageExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/DesignImageExportPane.vue) |
 | **[REQ-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-005-automatisierte-latextikz-buchchronik)** | LaTeX/TikZ-Buchchronik | [SPEC-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-005---req-exp-005) | Backend Tera & Process / Frontend UI | [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs), [`src/utils/latexExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/latexExport.ts), [`src/components/export/LatexExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/LatexExportPane.vue) |
+| **[REQ-RES-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-001-regelbasierte-l%C3%BCckenerkennung---heuristiken)** | Regelbasierte Lückenerkennung & Heuristiken | [SPEC-RES-001](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-001---req-res-001) | Backend Research Engine / Composable | [`src-tauri/src/research.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/research.rs), [`src/composables/useResearchAssistant.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useResearchAssistant.ts), [`src/types/research.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/research.ts) |
+| **[REQ-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-002-kontextuelle-recherche-handlungsempfehlungen---archiv-links)** | Kontextuelle Handlungsempfehlungen & Archiv-Links | [SPEC-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-002---req-res-002) | Backend Links Engine / Frontend View | [`src-tauri/src/research.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/research.rs), [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue) |
+| **[REQ-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-003-priorisierungs-scoring---persistente-aufgabenverwaltung)** | Priorisierungs-Scoring & Aufgabenverwaltung | [SPEC-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-003---req-res-003) | Backend SQLite & Scoring / Frontend Navigation | [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs), [`src-tauri/src/research.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/research.rs), [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue), [`src/App.vue`](file:///c:/dev/Froning/app/LineageGraph/src/App.vue) |
+| **[REQ-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-004-konfigurierbare-recherche-portale---personenzentriertes-forschungsdossier)** | Konfigurierbare Portale & Dossier-Usability | [SPEC-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-004---req-res-004) | Settings & Portals Composable / UI Dossier | [`src/types/research.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/research.ts), [`src/composables/useResearchPortals.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useResearchPortals.ts), [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue), [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue) |
 
 ---
 
@@ -241,6 +245,7 @@ erDiagram
     INDIVIDUALS ||--o{ PROBAND_HENRY_CODES : "besitzt Code in Linie"
     INDIVIDUALS ||--o{ EVENTS : "hat Ereignisse"
     FAMILIES ||--o{ EVENTS : "hat Familienereignisse"
+    INDIVIDUALS ||--o{ RESEARCH_TASKS : "hat Recherche-Lücken"
 
     INDIVIDUALS {
         TEXT id PK "Eindeutige ID (z.B. I1 oder I-UUID)"
@@ -310,6 +315,18 @@ erDiagram
         TEXT name "Template-Name"
         TEXT created_at "Erstellungsdatum"
         TEXT config_data "Konfigurations-JSON"
+    }
+
+    RESEARCH_TASKS {
+        TEXT id PK "Aufgaben-ID"
+        TEXT person_id FK "Referenz auf INDIVIDUALS"
+        TEXT gap_type "Lückentyp (MISSING_PARENTS, MISSING_DEATH, etc.)"
+        TEXT context_json "Kontextdetails (JSON)"
+        TEXT status "Status (open, in_progress, completed, ignored)"
+        INTEGER priority_score "Berechneter Relevanz-Score (0-100)"
+        TEXT notes "Genealogen-Notizen"
+        TEXT created_at "Erstellungsdatum"
+        TEXT updated_at "Aktualisierungsdatum"
     }
 ```
 

@@ -396,3 +396,45 @@ graph TD
   3. Speichern benutzerdefinierter Buch-Vorlagen in der Datenbank.
 - **Technische Spezifikation:** Siehe [SPEC-EXP-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-005---req-exp-005)
 
+### 2.8 Forschungsassistent & Genealogischer Lücken-Finder (RES)
+
+#### REQ-RES-001: Regelbasierte Lückenerkennung & Heuristiken
+- **Titel & Kurzbeschreibung:** Automatische Identifikation unvollständiger Ahnenlinien (fehlende Elternteile/Stammeltern), unvollständiger Lebensdaten (fehlender Sterbeeintrag bei Personen mit Geburtsjahr > 110 Jahre), fehlender Orte (Geburt/Tod) und auffälliger Geschwisterabstände (> 3,5 Jahre).
+- **Fachlicher Zweck / Business Value:** Genealogen erhalten sofortigen Einblick in die dringendsten Forschungsdesiderate und Brüche ihrer Datenbank, ohne manuell Hunderte Personen durchforsten zu müssen.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Erkennung der Kategorien `MISSING_PARENTS` (beide Eltern oder Einzelelternteil fehlt), `MISSING_DEATH` (Geburtsjahr vorhanden, kein Tod, Alter > Schwellenwert), `MISSING_PLACE` (Datum vorhanden, aber Ort fehlt) und `CHILD_GAP` (Geburtsabstand zwischen zwei Kindern > Schwellenwert).
+  2. Anpassbare Schwellenwerte für `max_age_years` (Standard 110) und `child_gap_years` (Standard 3,5) in den Programmeinstellungen.
+  3. Flexibler Analyse-Scope: Vollständiger Stammbaum, Ahnenlinie des Probanden, Nachkommenlinie oder Einzelfigur.
+- **Technische Spezifikation:** Siehe [SPEC-RES-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-001---req-res-001)
+
+#### REQ-RES-002: Kontextuelle Recherche-Handlungsempfehlungen & Archiv-Links
+- **Titel & Kurzbeschreibung:** Generierung methodischer Handlungsempfehlungen mit historisch-archivischem Kontext (z. B. Standesamtsgrenze ab 1874/1876 in Deutschland) und 1-Klick-Rechercheaufrufen in Online-Archiven (FamilySearch, Matricula Online, Archion, Meyers Gazetteer).
+- **Fachlicher Zweck / Business Value:** Konkrete Handlungsanweisungen leiten Genealogen zielgerichtet in die richtigen Archive und sparen Zeit bei der Onlinesuche.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Jede Lücke enthält eine präzise formulierte Handlungsempfehlung (`advice`) und bei Datums-/Ortsbezug einen Archiv-Tipp (`archive_hint`).
+  2. Direkte Generierung suchfertig parametrisierter Weblinks für FamilySearch, Matricula, Archion und Meyers Gazetteer.
+  3. Öffnen externer Links über Tauri-Opener im Standard-Webbrowser des Benutzers.
+- **Technische Spezifikation:** Siehe [SPEC-RES-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-002---req-res-002)
+
+#### REQ-RES-003: Priorisierungs-Scoring & Persistente Aufgabenverwaltung
+- **Titel & Kurzbeschreibung:** Relevanzgewichteter Prioritäts-Score (Dringend, Hoch, Mittel, Gering) mit persistentem Aufgaben-Tracking (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`) und Notizverwaltung in SQLite.
+- **Fachlicher Zweck / Business Value:** Strukturierte Organisation des Forschungsfortschritts mit hybridem Erledigungsstatus (automatische Schließung bei Datenänderung und manuelle Pflege).
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Automatische Score-Ermittlung (direkte Ahnenlinie des Probanden wird höher gewichtet als Nebenlinien; vorhandene Kontextdaten erhöhen die Lösbarkeit).
+  2. Status- und Notizenpersistenz in der projekteigenen SQLite-Tabelle `research_tasks` mit Kaskadierung bei Personenlöschung.
+  3. Hybride Statuserkennung: Nachträglich im Stammbaum ergänzte Daten markieren die Lücke automatisch als erledigt.
+  4. 1-Klick-Navigation zur Person in den Stammbaum, die Tabelle oder den Detail-Drawer.
+- **Technische Spezifikation:** Siehe [SPEC-RES-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-003---req-res-003)
+
+#### REQ-RES-004: Konfigurierbare Recherche-Portale & Personenzentriertes Forschungsdossier
+- **Titel & Kurzbeschreibung:** Dynamisch konfigurierbare Liste genealogischer Medien und Portale mit Kennzeichnung von Spezialisierung und Kostenart sowie personenzentrierte Darstellung im Forschungsassistenten als kompaktes Dossier mit schlanker Lücken-Checkliste und zentraler Rechercheleiste.
+- **Fachlicher Zweck / Business Value:** Reduktion kognitiver Überlastung und Redundanz bei mehreren Lücken einer Person; Vermeidung von Fehlaufrufen kostenpflichtiger Portale ohne aktives Abonnement; ganzheitliche Forschungsführung pro Person/Familienzweig.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. In den Einstellungen (`Recherche-Portale & Archive`) kann der Benutzer individuelle Portale (FamilySearch, Matricula Online, Archion, Ancestry, MyHeritage, CompGen GEDBAS, Meyers Gazetteer, Find a Grave, Geneanet) aktivieren/deaktivieren.
+  2. Jedes Portal wird mit Name, Icon, Spezialisierungs-Kurzbeschreibung und Kostenart (Kostenlos, Kostenlos mit Registrierung, Kostenpflichtiges Abo, Freemium) transparent dargestellt.
+  3. Im Forschungsassistenten werden Portale einmalig pro Person in einer prominenten Recherche-Leiste angezeigt, statt mehrfach redundant bei jeder Teillücke.
+  4. Lücken einer Person werden als kompakte Checklistenzeilen mit 1-Klick-Statuswahl (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`), dezenten Archiv-Badges und aufklappbarem Empfehlungs-/Notiz-Akkordeon geführt.
+  5. Bereitstellung eines Batch-Buttons („Alle als erledigt“) sowie eines Schnellfilters „Erledigte ausblenden“.
+- **Technische Spezifikation:** Siehe [SPEC-RES-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-004---req-res-004)
+
+

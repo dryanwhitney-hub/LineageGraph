@@ -99,6 +99,21 @@ fn setup_schema(conn: Connection) -> Result<Connection> {
             created_at TEXT NOT NULL,
             config_data TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS research_tasks (
+            id TEXT PRIMARY KEY,
+            person_id TEXT NOT NULL,
+            gap_type TEXT NOT NULL,
+            context_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            priority_score INTEGER NOT NULL DEFAULT 50,
+            notes TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY (person_id) REFERENCES individuals(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_research_tasks_person ON research_tasks(person_id);
+        CREATE INDEX IF NOT EXISTS idx_research_tasks_status ON research_tasks(status);
     ")?;
 
     // Migration für Individuals-Tabelle (Lebensdaten)

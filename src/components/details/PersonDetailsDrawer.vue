@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import ShortestPathModal from '../modals/ShortestPathModal.vue';
+import type { ResearchTaskDto } from '../../types/research';
 import {
   isValidGedcomXref,
   type Person,
@@ -11,7 +12,7 @@ import {
 } from '../../composables/usePersons';
 
 const props = defineProps<{
-  currentView: 'table' | 'tree' | 'design' | 'export';
+  currentView: 'table' | 'tree' | 'design' | 'export' | 'research';
   isDetailsOpen: boolean;
   selectedPerson: Person | null;
   personDetails: PersonDetails | null;
@@ -39,6 +40,8 @@ const props = defineProps<{
   getPersonAttr: (person: Person, key: string) => any;
   setPersonAttr: (person: Person, key: string, value: string) => void;
   getRelCode: (personId: string | null) => string | null;
+  activeResearchGaps?: ResearchTaskDto[];
+  selectedResearchTaskId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -61,6 +64,127 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 const activeIdField = ref<string | null>(null);
+
+// Forschungsassistent Lücken-Tracking & Highlights
+const localSelectedTaskId = ref<string | null>(props.selectedResearchTaskId || null);
+watch(
+  () => props.selectedResearchTaskId,
+  val => {
+    localSelectedTaskId.value = val || null;
+  }
+);
+
+function onGapPillClick(gap: ResearchTaskDto) {
+  localSelectedTaskId.value = localSelectedTaskId.value === gap.id ? null : gap.id;
+}
+
+const focusedTask = computed(() => {
+  if (!props.activeResearchGaps || props.activeResearchGaps.length === 0) return null;
+  if (localSelectedTaskId.value) {
+    const found = props.activeResearchGaps.find(g => g.id === localSelectedTaskId.value);
+    if (found) return found;
+  }
+  return props.activeResearchGaps[0] || null;
+});
+
+function getGapTypeName(type: string) {
+  switch (type) {
+    case 'MISSING_PARENTS':
+      return t('research.typeMissingParents', 'Eltern');
+    case 'MISSING_DEATH':
+      return t('research.typeMissingDeath', 'Tod');
+    case 'MISSING_PLACE':
+      return t('research.typeMissingPlace', 'Orte');
+    case 'CHILD_GAP':
+      return t('research.typeChildGap', 'Kinderlücke');
+    default:
+      return type;
+  }
+}
+
+function isFieldMissingGap(colKey: string): boolean {
+  if (!props.activeResearchGaps || props.activeResearchGaps.length === 0 || !props.selectedPerson) return false;
+  if (colKey === 'death_date') {
+    return props.activeResearchGaps.some(g => g.gap_type === 'MISSING_DEATH');
+  }
+  if (colKey === 'death_place') {
+    const val = props.getPersonAttr(props.selectedPerson, 'death_place');
+    if (!val || String(val).trim() === '') {
+      return props.activeResearchGaps.some(g => g.gap_type === 'MISSING_DEATH' || g.gap_type === 'MISSING_PLACE');
+    }
+  }
+  if (colKey === 'birth_place') {
+    const val = props.getPersonAttr(props.selectedPerson, 'birth_place');
+    if (!val || String(val).trim() === '') {
+      return props.activeResearchGaps.some(g => g.gap_type === 'MISSING_PLACE');
+    }
+  }
+  return false;
+}
+
+function isFieldFocusedGap(colKey: string): boolean {
+  if (!focusedTask.value) return false;
+  if (colKey === 'death_date' || colKey === 'death_place') {
+    return focusedTask.value.gap_type === 'MISSING_DEATH';
+  }
+  if (colKey === 'birth_place') {
+    return focusedTask.value.gap_type === 'MISSING_PLACE';
+  }
+  return false;
+}
+
+function getFieldGapBadge(colKey: string): string | null {
+  if (colKey === 'death_date') {
+    if (props.activeResearchGaps?.some(g => g.gap_type === 'MISSING_DEATH')) {
+      return t('research.gapMissingDeathBadge', 'Lücke: Sterbedatum fehlt (> 110 J.)');
+    }
+  }
+  if (colKey === 'death_place') {
+    const val = props.selectedPerson ? props.getPersonAttr(props.selectedPerson, 'death_place') : null;
+    if ((!val || String(val).trim() === '') && props.activeResearchGaps?.some(g => g.gap_type === 'MISSING_PLACE' || g.gap_type === 'MISSING_DEATH')) {
+      return t('research.gapMissingDeathPlaceBadge', 'Lücke: Sterbeort fehlt');
+    }
+  }
+  if (colKey === 'birth_place') {
+    const val = props.selectedPerson ? props.getPersonAttr(props.selectedPerson, 'birth_place') : null;
+    if ((!val || String(val).trim() === '') && props.activeResearchGaps?.some(g => g.gap_type === 'MISSING_PLACE')) {
+      return t('research.gapMissingBirthPlaceBadge', 'Lücke: Geburtsort fehlt');
+    }
+  }
+  return null;
+}
+
+const hasMissingParentsGap = computed(() => {
+  return props.activeResearchGaps?.some(g => g.gap_type === 'MISSING_PARENTS') ?? false;
+});
+
+const isParentGapFocused = computed(() => {
+  return focusedTask.value?.gap_type === 'MISSING_PARENTS';
+});
+
+const isFatherMissing = computed(() => {
+  if (!hasMissingParentsGap.value) return false;
+  if (props.isEditing) return !props.selectedFatherId;
+  const parents = props.personDetails?.parents || [];
+  return !parents.some(p => {
+    const found = (props.allPersons || props.malePersons).find(m => m.id === p.id);
+    return found ? found.sex === 'M' : props.malePersons.some(m => m.id === p.id);
+  });
+});
+
+const isMotherMissing = computed(() => {
+  if (!hasMissingParentsGap.value) return false;
+  if (props.isEditing) return !props.selectedMotherId;
+  const parents = props.personDetails?.parents || [];
+  return !parents.some(p => {
+    const found = (props.allPersons || props.femalePersons).find(f => f.id === p.id);
+    return found ? found.sex === 'F' : props.femalePersons.some(f => f.id === p.id);
+  });
+});
+
+const childGapTask = computed(() => {
+  return props.activeResearchGaps?.find(g => g.gap_type === 'CHILD_GAP');
+});
 
 const fatherSearchQuery = ref<string>('');
 const motherSearchQuery = ref<string>('');
@@ -256,6 +380,32 @@ function handleRemoveChild(childId: string) {
         </button>
       </div>
 
+      <!-- Forschungsassistent Lücken-Banner mit Schnellfokus & Ratschlag -->
+      <div v-if="activeResearchGaps && activeResearchGaps.length > 0" class="drawer-research-banner">
+        <div class="banner-title-row">
+          <span class="banner-icon">🔬</span>
+          <strong class="banner-title">{{ t('research.drawerBannerTitle', 'Genealogische Lücken') }} ({{ activeResearchGaps.length }}):</strong>
+        </div>
+        <div class="banner-tags-row">
+          <span
+            v-for="gap in activeResearchGaps"
+            :key="gap.id"
+            class="banner-gap-pill"
+            :class="{
+              'is-active-pill': gap.id === localSelectedTaskId,
+              ['type-' + gap.gap_type.toLowerCase()]: true
+            }"
+            @click="onGapPillClick(gap)"
+            :title="gap.description"
+          >
+            {{ getGapTypeName(gap.gap_type) }}
+          </span>
+        </div>
+        <div v-if="focusedTask" class="banner-advice-snippet">
+          <strong>💡 {{ focusedTask.title }}:</strong> {{ focusedTask.advice }}
+        </div>
+      </div>
+
       <div class="details-scroll-area">
         <div v-if="saveErrorAlert || parentEditError || marriageEditError || relationActionError" class="parent-error-alert">
           ⚠️ {{ saveErrorAlert || parentEditError || marriageEditError || relationActionError }}
@@ -265,7 +415,14 @@ function handleRemoveChild(childId: string) {
           <h3>{{ t('section_life') }}</h3>
           <table class="detail-table">
             <tbody>
-              <tr v-for="col in activeDetailColumns" :key="'det-' + col.key">
+              <tr
+                v-for="col in activeDetailColumns"
+                :key="'det-' + col.key"
+                :class="{
+                  'row-highlight-gap': isFieldMissingGap(col.key),
+                  'row-focused-gap': isFieldFocusedGap(col.key)
+                }"
+              >
                 <td class="attr-label-cell">
                   {{ getColLabel(col) }}
                   <span v-if="col.key === 'id'" style="color: #dc2626;"> *</span>
@@ -282,6 +439,9 @@ function handleRemoveChild(childId: string) {
                       <code class="xref-code">{{ selectedPerson.id }}</code>
                     </span>
                     <span v-else>{{ getPersonAttr(selectedPerson, col.key) || '-' }}</span>
+                    <span v-if="getFieldGapBadge(col.key)" class="gap-field-badge">
+                      {{ getFieldGapBadge(col.key) }}
+                    </span>
                   </template>
                   <template v-else-if="editedPersons.get(selectedPerson.id)">
                     <select
@@ -378,8 +538,17 @@ function handleRemoveChild(childId: string) {
           <!-- Edit-Modus: Eltern über suchbares Auswahlfeld zuweisen -->
           <div v-if="isEditing" class="edit-parents-box" @click.stop>
             <!-- Vater -->
-            <div class="picker-field">
-              <label>{{ t('father') }}:</label>
+            <div
+              class="picker-field"
+              :class="{
+                'picker-field-gap': isFatherMissing,
+                'picker-field-focused': isParentGapFocused && isFatherMissing
+              }"
+            >
+              <label>
+                {{ t('father') }}:
+                <span v-if="isFatherMissing" class="gap-field-badge">⚠️ {{ t('research.missingFatherBadge', 'Lücke: Vater fehlt') }}</span>
+              </label>
               <div class="searchable-picker">
                 <button
                   type="button"
@@ -420,8 +589,17 @@ function handleRemoveChild(childId: string) {
             </div>
 
             <!-- Mutter -->
-            <div class="picker-field">
-              <label>{{ t('mother') }}:</label>
+            <div
+              class="picker-field"
+              :class="{
+                'picker-field-gap': isMotherMissing,
+                'picker-field-focused': isParentGapFocused && isMotherMissing
+              }"
+            >
+              <label>
+                {{ t('mother') }}:
+                <span v-if="isMotherMissing" class="gap-field-badge">⚠️ {{ t('research.missingMotherBadge', 'Lücke: Mutter fehlt') }}</span>
+              </label>
               <div class="searchable-picker">
                 <button
                   type="button"
@@ -462,28 +640,60 @@ function handleRemoveChild(childId: string) {
             </div>
           </div>
 
-          <!-- Lese-Modus: Eltern auflisten (klickbar zum Springen) -->
-          <ul class="relation-cards" v-else-if="personDetails.parents.length > 0">
-            <li
-              v-for="p in personDetails.parents"
-              :key="p.id"
-              class="rel-card clickable-rel"
-              @click="emit('jump-to', p.id)"
-              :title="t('jump_to_spouse_tooltip')"
-            >
-              <div class="rel-card-top">
-                <span class="rel-name">{{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }}</span>
-                <span class="badge clickable-henry" v-if="getRelCode(p.id)">
-                  {{ getRelCode(p.id) }} ↪
-                </span>
-                <span class="badge clickable-henry" v-else>↪</span>
+          <!-- Lese-Modus: Eltern auflisten & fehlende Elternteile sichtbar als Lücke hervorheben -->
+          <div v-else>
+            <ul class="relation-cards" v-if="personDetails.parents.length > 0">
+              <li
+                v-for="p in personDetails.parents"
+                :key="p.id"
+                class="rel-card clickable-rel"
+                @click="emit('jump-to', p.id)"
+                :title="t('jump_to_spouse_tooltip')"
+              >
+                <div class="rel-card-top">
+                  <span class="rel-name">{{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }}</span>
+                  <span class="badge clickable-henry" v-if="getRelCode(p.id)">
+                    {{ getRelCode(p.id) }} ↪
+                  </span>
+                  <span class="badge clickable-henry" v-else>↪</span>
+                </div>
+                <div class="marriage-info">
+                  * {{ p.birth_date || '?' }}<span v-if="p.death_date"> · † {{ p.death_date }}</span>
+                </div>
+              </li>
+            </ul>
+
+            <!-- Fehlende Elternteile sichtbar hervorheben! -->
+            <div v-if="hasMissingParentsGap" class="missing-parents-gap-box">
+              <div
+                v-if="isFatherMissing"
+                class="gap-missing-parent-slot"
+                :class="{ 'is-focused-gap': isParentGapFocused }"
+              >
+                <div class="gap-missing-header">
+                  <span class="gap-missing-icon">⚠️</span>
+                  <strong class="gap-missing-title">{{ t('research.missingFather', 'Vater nicht dokumentiert') }}</strong>
+                  <span class="gap-field-badge">{{ t('research.missingGapBadge', 'Lücke: Elternlinie') }}</span>
+                </div>
+                <p class="gap-missing-hint">{{ t('research.missingFatherHint', 'Ahnenlinie endet hier. Keine Daten zum Vater hinterlegt.') }}</p>
               </div>
-              <div class="marriage-info">
-                * {{ p.birth_date || '?' }}<span v-if="p.death_date"> · † {{ p.death_date }}</span>
+
+              <div
+                v-if="isMotherMissing"
+                class="gap-missing-parent-slot"
+                :class="{ 'is-focused-gap': isParentGapFocused }"
+              >
+                <div class="gap-missing-header">
+                  <span class="gap-missing-icon">⚠️</span>
+                  <strong class="gap-missing-title">{{ t('research.missingMother', 'Mutter nicht dokumentiert') }}</strong>
+                  <span class="gap-field-badge">{{ t('research.missingGapBadge', 'Lücke: Elternlinie') }}</span>
+                </div>
+                <p class="gap-missing-hint">{{ t('research.missingMotherHint', 'Ahnenlinie endet hier. Keine Daten zur Mutter hinterlegt.') }}</p>
               </div>
-            </li>
-          </ul>
-          <p v-else class="sub-empty">-</p>
+            </div>
+
+            <p v-else-if="personDetails.parents.length === 0" class="sub-empty">-</p>
+          </div>
 
           <h4>{{ t('spouses') }}</h4>
           <ul class="relation-cards" v-if="personDetails.spouses.length > 0">
@@ -593,6 +803,21 @@ function handleRemoveChild(childId: string) {
           </div>
 
           <h4>{{ t('children') }} ({{ personDetails.children.length }})</h4>
+
+          <!-- Auffällige Kinderlücke hervorheben -->
+          <div
+            v-if="childGapTask"
+            class="gap-missing-callout"
+            :class="{ 'is-focused-gap': focusedTask?.gap_type === 'CHILD_GAP' }"
+          >
+            <div class="gap-callout-header">
+              <span class="gap-callout-icon">👶</span>
+              <strong>{{ t('research.childGapDetected', 'Auffällige Kinderlücke') }}:</strong>
+              <span class="gap-field-badge">{{ t('research.typeChildGap', 'Kinderlücke') }}</span>
+            </div>
+            <p class="gap-callout-desc">{{ childGapTask.description }}</p>
+          </div>
+
           <ul class="relation-cards" v-if="personDetails.children.length > 0">
             <li
               v-for="c in personDetails.children"
@@ -1297,6 +1522,176 @@ function handleRemoveChild(childId: string) {
 .xref-badge-invalid {
   color: #fbbf24;
   font-weight: bold;
+}
+
+/* Forschungsassistent Gap Highlights */
+.drawer-research-banner {
+  background: #f0fdf4;
+  border-bottom: 1px solid #bbf7d0;
+  padding: 10px 16px;
+  flex-shrink: 0;
+}
+.banner-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #166534;
+  margin-bottom: 6px;
+}
+.banner-icon {
+  font-size: 0.95rem;
+}
+.banner-tags-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.banner-gap-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 12px;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  color: #334155;
+  transition: all 0.15s ease;
+}
+.banner-gap-pill:hover {
+  border-color: #3b82f6;
+  color: #2563eb;
+}
+.banner-gap-pill.is-active-pill {
+  background: #2563eb !important;
+  color: #ffffff !important;
+  border-color: #2563eb !important;
+}
+.banner-gap-pill.type-missing_parents {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fca5a5;
+}
+.banner-gap-pill.type-missing_death {
+  background: #fef3c7;
+  color: #92400e;
+  border-color: #fde68a;
+}
+.banner-gap-pill.type-missing_place {
+  background: #e0f2fe;
+  color: #0369a1;
+  border-color: #bae6fd;
+}
+.banner-gap-pill.type-child_gap {
+  background: #f3e8ff;
+  color: #6b21a8;
+  border-color: #d8b4fe;
+}
+.banner-advice-snippet {
+  margin-top: 8px;
+  font-size: 0.75rem;
+  color: #166534;
+  line-height: 1.35;
+  background: #ffffff;
+  padding: 6px 10px;
+  border-radius: 4px;
+  border: 1px solid #dcfce7;
+}
+
+/* Table Gap Highlights */
+.detail-table tr.row-highlight-gap {
+  background-color: #fffbeb !important;
+  border-left: 3px solid #f59e0b;
+}
+.detail-table tr.row-focused-gap {
+  background-color: #fef3c7 !important;
+  border-left: 4px solid #d97706;
+}
+.gap-field-badge {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fde68a;
+  border-radius: 4px;
+  padding: 1px 6px;
+  vertical-align: middle;
+}
+.gap-field-badge.edit-badge {
+  margin-top: 4px;
+  margin-left: 0;
+}
+
+/* Parents Gap Highlights */
+.picker-field.picker-field-gap {
+  background: #fffbeb;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px dashed #f59e0b;
+}
+.picker-field.picker-field-focused {
+  background: #fef3c7;
+  border: 2px solid #d97706;
+}
+.missing-parents-gap-box {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.gap-missing-parent-slot {
+  border: 2px dashed #f59e0b;
+  background: #fffbeb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  transition: all 0.2s ease;
+}
+.gap-missing-parent-slot.is-focused-gap {
+  border: 2px solid #d97706;
+  background: #fef3c7;
+  box-shadow: 0 0 8px rgba(217, 119, 6, 0.2);
+}
+.gap-missing-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #92400e;
+  font-size: 0.82rem;
+}
+.gap-missing-title {
+  color: #92400e;
+}
+.gap-missing-hint {
+  font-size: 0.74rem;
+  color: #b45309;
+  margin: 3px 0 0 0;
+}
+
+/* Children Gap Highlight */
+.gap-missing-callout {
+  border: 1px solid #fde68a;
+  background: #fffbeb;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
+.gap-missing-callout.is-focused-gap {
+  border: 2px solid #d97706;
+  background: #fef3c7;
+}
+.gap-callout-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  color: #92400e;
+}
+.gap-callout-desc {
+  font-size: 0.76rem;
+  color: #b45309;
+  margin: 4px 0 0 0;
 }
 </style>
 

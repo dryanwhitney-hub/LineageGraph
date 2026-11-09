@@ -497,6 +497,61 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * `escape_latex` liefert `Müller \& Co. / 100\% Chef\_Ehe`.
   * Kein LaTeX-Kompilierungsabbruch; standardkonformes Dokument wird erzeugt.
 
+### 2.8 Domäne: Forschungsassistent & Genealogischer Lücken-Finder (RES)
+
+#### TC-RES-001: Regelbasierte Lückenerkennung (Eltern, Tod, Orte, Geschwisterlücke)
+- **Traceability:** [REQ-RES-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-001-regelbasierte-l%C3%BCckenerkennung---heuristiken) -> [SPEC-RES-001](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-001---req-res-001)
+- **Test-Typ:** Unit Test (Rust `research::tests::test_analyze_gaps_in_memory`)
+- **Test-Ziel:** Verifikation, dass alle vier genealogischen Lückentypen deterministisch und unter Berücksichtigung konfigurierbarer Schwellenwerte identifiziert werden.
+- **Preconditions:** Datensatz mit Testpersonen: I1 (keine Eltern, Geburt 1820 ohne Tod), I2 (Kind von I1, Geburt 1850 ohne Geburtsort, Tod 1920), I3 (Kind von I1, Geburt 1856, Abstand zu I2 = 6,5 Jahre).
+- **Testschritte:**
+  1. `analyze_gaps` mit Scope `all` und Schwellenwerten (110 Jahre, 3.5 Jahre) aufrufen.
+  2. Identifizierte Aufgaben nach Lückentypen filtern und prüfen.
+- **Erwartetes Ergebnis:**
+  * I1 erzeugt `MISSING_PARENTS` und `MISSING_DEATH`.
+  * I2 erzeugt `MISSING_PLACE` (fehlender Geburtsort).
+  * Familie von I1 erzeugt `CHILD_GAP` zwischen I2 und I3 mit errechnetem Abstand 6,5 Jahre.
+
+#### TC-RES-002: Kontextuelle Recherche-Links & Parameter-Kodierung
+- **Traceability:** [REQ-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-002-kontextuelle-recherche-handlungsempfehlungen---archiv-links) -> [SPEC-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-002---req-res-002)
+- **Test-Typ:** Unit Test (Rust `research::tests::test_external_links_generation`)
+- **Test-Ziel:** Verifikation der standardkonformen URL-Generierung für FamilySearch, Matricula, Archion und Meyers Gazetteer inklusive Umlaut- und Sonderzeichenkodierung.
+- **Preconditions:** Personendaten: "Johann Müller", Geburtsjahr 1850, Ort "Münster".
+- **Testschritte:**
+  1. `generate_archive_links(Some("Johann"), Some("Müller"), Some(1850), Some("Münster"))` ausführen.
+- **Erwartetes Ergebnis:**
+  * FamilySearch-URL enthält kodierte Parameter für Vorname, Nachname und Datumsfenster (1848 bis 1852).
+  * Matricula-, Archion- und Meyers-URLs sind wohlgeformt mit Ortsfilter auf "Münster".
+
+#### TC-RES-003: Relevanz-Scoring, Status-Persistenz & Kaskadierung
+- **Traceability:** [REQ-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-003-priorisierungs-scoring---persistente-aufgabenverwaltung) -> [SPEC-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-003---req-res-003)
+- **Test-Typ:** Unit & Integration Test (Rust & SQLite)
+- **Test-Ziel:** Prüfung der Prioritäts-Scoring-Logik (`urgent`, `high`, `medium`, `low`) und der persistenten Aufgabenverwaltung in der SQLite-Tabelle `research_tasks`.
+- **Preconditions:** SQLite-Datenbank mit `research_tasks`-Schema.
+- **Testschritte:**
+  1. `calculate_priority_score` für direkte Ahnenlinie vs. Nebenlinie aufrufen.
+  2. Aufgabe via `upsert_task_status` mit Status `in_progress` und Notizen anlegen.
+  3. Gleiche Aufgabe mit geändertem Status `completed` aktualisieren (`ON CONFLICT`).
+  4. Zugehörige Person löschen und kaskadierende Bereinigung der Aufgabe verifizieren.
+- **Erwartetes Ergebnis:**
+  * Ahnenlinien erhalten höheren Score (`urgent` / `high`) als Nebenlinien.
+  * Status und Notizen werden idempotent persistiert.
+  * `ON DELETE CASCADE` entfernt Aufgaben beim Löschen der Person rückstandslos.
+
+#### TC-RES-004: Konfigurierbare Recherche-Portale & Personenzentriertes Dossier
+- **Traceability:** [REQ-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-004-konfigurierbare-recherche-portale---personenzentriertes-forschungsdossier) -> [SPEC-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-004---req-res-004)
+- **Test-Typ:** Frontend Component & Composable Test (TypeScript / Vue 3)
+- **Test-Ziel:** Verifikation der Portal-Konfiguration (Aktivierung/Deaktivierung, Spezialisierungs- und Kostenstufen-Kennzeichnung), korrekte dynamische URL-Generierung und personenzentrierte Dossier-Interaktion (1-Klick-Statuswechsel, Akkordeon, Batch-Abschluss).
+- **Preconditions:** LineageGraph Frontend mit `useResearchPortals` und `ResearchAssistantView.vue`.
+- **Testschritte:**
+  1. Portal-Konfiguration in den Einstellungen öffnen; kostenpflichtiges Portal (z. B. Archion) aktivieren und Standard-Portal (z. B. FamilySearch) prüfen.
+  2. Im Forschungsassistenten Person mit mehreren Lücken auswählen; prüfen, dass Recherche-Portale einmalig im Dossier-Header erscheinen.
+  3. Recherche-Link betätigen und prüfen, dass dynamisch generierte URL Namens-, Datums- und Ortsparameter korrekt encodiert.
+  4. Lücken-Status per Dropdown/Pill einzeln umschalten (`Offen` -> `Erledigt`).
+  5. Batch-Button `Alle als erledigt` betätigen und prüfen, dass alle offenen Lücken der Person auf `completed` gesetzt werden.
+- **Erwartetes Ergebnis:**
+  * Dynamische Portal-Steuerung ohne doppelte Links; flüssige 1-Klick-Statusverwaltung im kompakten Personendossier.
+
 ---
 
 ## Teil 3: End-to-End Traceability-Matrix (Anforderung -> Spezifikation -> Test)
@@ -534,4 +589,8 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 | **EXP** | [REQ-EXP-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-003-autarke-interaktive-html-chronik) | [SPEC-EXP-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-003---req-exp-003) | **TC-EXP-003** | Integration Test (HTML Generator) | 100 % |
 | **EXP** | [REQ-EXP-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-004-hochaufl%C3%B6sender-bild---vektorexport-des-stammbaums) | [SPEC-EXP-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-004---req-exp-004) | **TC-EXP-004** | Component Test (Canvas Export) | 100 % |
 | **EXP** | [REQ-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-005-automatisierte-latextikz-buchchronik) | [SPEC-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-005---req-exp-005) | **TC-EXP-005** | Unit & Integration Test (LaTeX/Tera) | 100 % |
+| **RES** | [REQ-RES-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-001-regelbasierte-l%C3%BCckenerkennung---heuristiken) | [SPEC-RES-001](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-001---req-res-001) | **TC-RES-001** | Unit Test (Rust Research Engine) | 100 % |
+| **RES** | [REQ-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-002-kontextuelle-recherche-handlungsempfehlungen---archiv-links) | [SPEC-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-002---req-res-002) | **TC-RES-002** | Unit Test (Rust URL Encoding) | 100 % |
+| **RES** | [REQ-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-003-priorisierungs-scoring---persistente-aufgabenverwaltung) | [SPEC-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-003---req-res-003) | **TC-RES-003** | Unit & Integration Test (Rust/SQLite) | 100 % |
+| **RES** | [REQ-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-004-konfigurierbare-recherche-portale---personenzentriertes-forschungsdossier) | [SPEC-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-res-004---req-res-004) | **TC-RES-004** | Component & Composable Test (Vue/TS) | 100 % |
 

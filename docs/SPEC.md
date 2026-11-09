@@ -319,3 +319,59 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
 - **Technische Umsetzung:**
   `escape_latex` maskiert alle Sonderzeichen (`&`, `%`, `$`, `#`, `_`, `{`, `}`, `~`, `^`, `\`). `tera` rendert `chronik.tex`. Unter Windows/Linux führt `export_latex_pdf` den Prozess `pdflatex -interaction=nonstopmode chronik.tex` in einem temporären Arbeitsverzeichnis aus und liefert den Pfad der erzeugten PDF zurück. Über `save_latex_export_bundle` kann der vollständige TeX-Quellcode inklusive Grafiken für die manuelle Weiterverarbeitung exportiert werden.
 
+### 3.8 Forschungsassistent & Genealogischer Lücken-Finder (RES)
+
+#### SPEC-RES-001 -> REQ-RES-001
+- **Fachliche Anforderung:** Regelbasierte Lückenerkennung & Heuristiken ([REQ-RES-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-001-regelbasierte-l%C3%BCckenerkennung---heuristiken))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/research.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/research.rs) (`analyze_gaps`, `extract_year`, `parse_date_fractional_year`)
+  - Tauri Command: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`analyze_research_gaps`, `get_research_statistics`)
+  - Types: [`src/types/research.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/research.ts)
+  - Composable: [`src/composables/useResearchAssistant.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useResearchAssistant.ts)
+- **Technische Umsetzung:**
+  `analyze_gaps` iteriert über den scoped Personensatz und führt vier deterministische Heuristiken aus:
+  1. `MISSING_PARENTS`: Prüfung auf `father_id.is_none()` und `mother_id.is_none()` (Ahnenende/Stammeltern) bzw. Fehlen eines Einzelvaters/einer Einzelmutter.
+  2. `MISSING_DEATH`: Prüfung, ob `death_date` fehlt und die Geburt länger als `max_age_years` (Default: 110 Jahre) zurückliegt.
+  3. `MISSING_PLACE`: Prüfung, ob `birth_date` vorliegt aber `birth_place` fehlt, oder `death_date` vorliegt aber `death_place` fehlt.
+  4. `CHILD_GAP`: Prüfung sequentieller Geschwisterabstände via `parse_date_fractional_year`; Spannen `>= child_gap_years` (Default: 3,5 Jahre) werden erfasst.
+
+#### SPEC-RES-002 -> REQ-RES-002
+- **Fachliche Anforderung:** Kontextuelle Recherche-Handlungsempfehlungen & Archiv-Links ([REQ-RES-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-002-kontextuelle-recherche-handlungsempfehlungen---archiv-links))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/research.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/research.rs) (`generate_archive_links`, `url_encode`)
+  - UI-Komponente: [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue)
+- **Technische Umsetzung:**
+  `generate_archive_links` baut URL-kodierte Zielaufrufe auf:
+  - FamilySearch: URL mit `q.givenName`, `q.surname`, `q.birthLikePlace` und Datumsfenster `[year-2, year+2]`.
+  - Matricula Online: Gezielte Ortssuche nach katholischen Kirchenbüchern via `https://data.matricula-online.eu/de/suche/?place=...`.
+  - Archion: Ortssuche nach evangelischen Kirchenbüchern via `https://www.archion.de/de/suche/?q=...`.
+  - Meyers Gazetteer: Historische Ortssuche zur Pfarreizuordnung via `https://www.meyersgaz.org/place/search?search=...`.
+  In `ResearchAssistantView.vue` öffnen die Buttons externe Links über den nativen Tauri-Opener (`@tauri-apps/plugin-opener`). Kontextuelle Hinweise differenzieren historische Zäsuren (z. B. Standesamtseinführung ab 1874/1876 vs. Pfarrkirchenbücher).
+
+#### SPEC-RES-003 -> REQ-RES-003
+- **Fachliche Anforderung:** Priorisierungs-Scoring & Persistente Aufgabenverwaltung ([REQ-RES-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-003-priorisierungs-scoring---persistente-aufgabenverwaltung))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - SQLite Schema: [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs) (`research_tasks` Tabelle und Indizes)
+  - Rust Backend: [`src-tauri/src/research.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/research.rs) (`calculate_priority_score`, `upsert_task_status`, `load_persisted_tasks`)
+  - Tauri Command: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`update_research_task_status`)
+  - Frontend View & Navigation: [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue), [`src/App.vue`](file:///c:/dev/Froning/app/LineageGraph/src/App.vue)
+- **Technische Umsetzung:**
+  - **Scoring:** Basisscore nach Lückentyp (MISSING_PARENTS: 70, CHILD_GAP: 55, MISSING_DEATH: 50, MISSING_PLACE: 40) mit Boost für direkte Ahnenlinie des aktiven Probanden (+20) und Vorhandensein von Referenzdaten (+10). Scorebereiche: `>= 85` (Dringend), `65-84` (Hoch), `45-64` (Mittel), `< 45` (Gering).
+  - **Persistenz & Kaskadierung:** Tabelle `research_tasks` mit Fremdschlüssel `FOREIGN KEY(person_id) REFERENCES individuals(id) ON DELETE CASCADE` und `ON CONFLICT(id) DO UPDATE`.
+  - **Hybride Erledigung:** Automatische Zuordnung zu `completed`, wenn eine persistierte Aufgabe bei erneutem Scan nicht mehr in den neu ermittelten Lücken auftaucht, kombiniert mit manuellem Status-Umschalter und Freitextnotizen.
+
+#### SPEC-RES-004 -> REQ-RES-004
+- **Fachliche Anforderung:** Konfigurierbare Recherche-Portale & Personenzentriertes Forschungsdossier ([REQ-RES-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-res-004-konfigurierbare-recherche-portale---personenzentriertes-forschungsdossier))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Types: [`src/types/research.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/research.ts) (`ResearchPortalConfig`, `PortalAccessType`, `ResearchSettings`)
+  - Composable: [`src/composables/useResearchPortals.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useResearchPortals.ts) (`generatePortalUrl`, `loadStoredPortals`, `savePortals`, `resetToDefaults`)
+  - Einstellungen: [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue) (Reiter `Forschungsassistent` -> Portal-Bibliothek mit Spezialisierungs- und Kostenart-Badges)
+  - UI-Dossier & Lücken-Matrix: [`src/components/research/ResearchAssistantView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/research/ResearchAssistantView.vue)
+- **Technische Umsetzung:**
+  - **Portal-Konfiguration:** 9 vorkonfigurierte Portale (`familysearch`, `matricula`, `archion`, `ancestry`, `myheritage`, `compgen_gedbas`, `meyers`, `findagrave`, `geneanet`) mit Spezialisierungen und Kostenstufen (`free`, `free_registration`, `subscription`, `freemium`). Kostenpflichtige Portale sind per Default inaktiv und können vom Nutzer mit 1 Klick aktiviert werden.
+  - **URL-Interpolation:** `generatePortalUrl` ersetzt Platzhalter `{given}`, `{surname}`, `{place}`, `{birth_place}`, `{death_place}`, `{birth_year}`, `{death_year}`, `{birth_from}`, `{birth_to}` URL-kodiert und bereinigt leere Parameter.
+  - **Personenzentriertes Dossier:** Zentralisierte Recherche-Leiste einmalig pro Personenkopf; kompakte Lücken-Checkliste mit 1-Klick Status-Pill-Dropdown (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`), Akkordeon-Aufklappung für ausführliche Handlungsempfehlungen und per-Task-Notizen; Batch-Aktion `Alle als erledigt markieren` und Filter `Erledigte ausblenden`.
+
+  - **Navigation:** 1-Klick-Sprünge zur Person in den Stammbaum-Canvas (`navigate-tree`), die Tabellenansicht (`navigate-table`) und den Personendetail-Drawer (`open-details`).
+
+

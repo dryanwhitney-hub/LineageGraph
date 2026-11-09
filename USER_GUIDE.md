@@ -48,6 +48,11 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
     - [2.6.4 Stammbaum-Bilder exportieren (PNG / JPG / SVG)](#264-stammbaum-bilder-exportieren-png--jpg--svg)
     - [2.6.5 Druckfertige Buchchroniken mit LaTeX erzeugen](#265-druckfertige-buchchroniken-mit-latex-erzeugen)
       - [2.6.5.1 LaTeX-Dateien (.tex) öffnen und als PDF setzen (z. B. mit MiKTeX & TeXstudio)](#2651-latex-dateien-tex-öffnen-und-als-pdf-setzen-z-b-mit-miktex--texstudio)
+  - [2.7 Forschungsassistent & Lücken-Finder](#27-forschungsassistent--lücken-finder)
+    - [2.7.1 Automatische Lückenerkennung & genealogische Heuristiken](#271-automatische-lückenerkennung--genealogische-heuristiken)
+    - [2.7.2 Kontextuelle Recherche-Empfehlungen & Online-Archiv-Suche](#272-kontextuelle-recherche-empfehlungen--online-archiv-suche)
+    - [2.7.3 Priorisierung, differenzierter Aufgabenstatus & persönliche Genealogen-Notizen](#273-priorisierung-differenzierter-aufgabenstatus--persönliche-genealogen-notizen)
+    - [2.7.4 Schwellenwerte & Recherche-Portale konfigurieren (Einstellungen)](#274-schwellenwerte--recherche-portale-konfigurieren-einstellungen)
 - [Kapitel 3: Praktische Tipps, Fehlersicherheiten & Best Practices](#kapitel-3-praktische-tipps-fehlersicherheiten--best-practices)
   - [3.1 Das zweistufige Sicherheitskonzept gegen Datenverlust](#31-das-zweistufige-sicherheitskonzept-gegen-datenverlust)
   - [3.2 Warum der Schutz vor Verwandtschaftsschleifen unverzichtbar ist](#32-warum-der-schutz-vor-verwandtschaftsschleifen-unverzichtbar-ist)
@@ -721,6 +726,106 @@ Um eine `.tex`-Datei auf Ihrem Computer zu öffnen, anzusehen, individuell anzup
 ##### Was ist das Ergebnis?
 * Im selben Ordner, in dem Ihre `.tex`-Datei liegt, wird eine gleichnamige, druckfertige **`.pdf`**-Datei (z. B. `Familienchronik.pdf`) erzeugt.
 * Sie erhalten ein ansprechendes Buchwerk mit professionellem Buchsatz, gestochen scharfen Schriften, sauber aufgelösten genealogischen Sonderzeichen (`*`, `†`, `≈`, `⚭`, `⚮`) und perfekter Generationenhierarchie – bereit für den Heimdruck, den Copyshop oder eine Buchbinderei.
+
+---
+
+## 2.7 Forschungsassistent & Lücken-Finder
+
+### 2.7.1 Automatische Lückenerkennung & genealogische Heuristiken
+#### Was macht die Funktion?
+Der **Forschungsassistent** durchleuchtet Ihren gesamten Stammbaum auf Lücken und Brüche in den Überlieferungslinien. Anstatt Tausende Datensätze manuell auf fehlende Vorfahren oder unvollständige Urkunden prüfen zu müssen, filtert der Assistent gezielt vier Kernkategorien heraus:
+1. **Fehlende Elternlinie (`MISSING_PARENTS`):** Endpunkte von Ahnenlinien (Stammeltern, bei denen weder Vater noch Mutter bekannt sind) oder Personen mit nur einem bekannten Elternteil.
+2. **Fehlender Sterbeeintrag (`MISSING_DEATH`):** Personen, deren Geburt länger als das konfigurierte Höchstalter (Standard: 110 Jahre) zurückliegt, bei denen jedoch noch kein Sterbedatum erfasst ist.
+3. **Fehlende Lebensorte (`MISSING_PLACE`):** Personen mit bekanntem Geburts- oder Sterbedatum, bei denen der entsprechende Ort fehlt.
+4. **Auffällige Kinderlücken (`CHILD_GAP`):** Zeitliche Spannen zwischen zwei aufeinanderfolgenden Geschwistern von mehr als 3,5 Jahren (oder zwischen Heirat und erstem Kind), was historisch oft auf unentdeckte, früh verstorbene Kleinkinder oder Totgeburten hindeutet.
+
+#### Wie bediene ich sie?
+1. Klicken Sie in der oberen Hauptnavigationsleiste auf den Reiter **`🔬 Forschung`**.
+2. Das Dashboard zeigt Ihnen oben auf einen Blick die Gesamtzahl aller erkannten Lücken sowie eine Aufschlüsselung nach Status (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`).
+3. Mit den oberen Schnellfiltern können Sie den **Bereich** flexibel einschränken:
+   * **Gesamter Stammbaum:** Durchsucht die gesamte Datenbank.
+   * **Vorfahren / Nachkommen des Probanden:** Es erscheint direkt daneben ein Auswahlfeld **`🌳 Proband:`**, mit dem Sie den aktiven Stammahn/Probanden mit einem Klick umschalten können.
+   * **Bezug zu einer gewählten Person:** Sie können jede beliebige Person im Stammbaum als Anker wählen:
+     * *Nur gewählte Person:* Analysiert nur die Daten dieser Einzelfigur.
+     * *Vorfahren der gewählten Person:* Durchleuchtet alle aufsteigenden Ahnenlinien ausgehend von dieser Person.
+     * *Nachkommen der gewählten Person:* Durchleuchtet alle absteigenden Generationen dieser Person.
+   * **Darstellungsmodus umschalten:** Über die Schalter **`👥 Nach Personen gruppiert`** und **`📑 Einzelliste`** entscheiden Sie, ob alle Lücken einer Person gebündelt in einer Übersichtskarte oder als fortlaufende Einzelaufgabenliste dargestellt werden.
+
+#### Was ist das Ergebnis?
+Sie erhalten eine übersichtliche, nach Relevanz geordnete Liste konkreter Forschungsaufgaben. Im gruppierten Modus sehen Sie alle Lücken zu einer Person auf einen Blick und können jedes Finding (Eltern, Tod, Orte, Kinder) völlig unabhängig voneinander steuern.
+
+---
+
+### 2.7.2 Kontextuelle Recherche-Empfehlungen & konfigurierbare Online-Archiv-Suche
+#### Was macht die Funktion?
+Jede identifizierte Lücke enthält maßgeschneiderte, fachlich fundierte Handlungsempfehlungen sowie historische Hinweise (z. B. ob nach Einführung der Standesämter 1874/1876 in Standesamtsregistern oder zuvor in kirchlichen Tauf-, Trau- und Sterbebüchern geforscht werden muss).
+
+Um Redundanz und visuelle Überfrachtung zu vermeiden, werden Recherche-Buttons **einmalig pro Person** in einer zentralen Recherche-Leiste am Kopf des Personen-Forschungsdossiers zusammengefasst. LineageGraph generiert suchfertige Zielaufrufe für alle in den Einstellungen vom Benutzer aktivierten Portale:
+* **FamilySearch:** Öffnet die weltweite Personensuche mit bereits vorausgefülltem Vor- und Nachnamen, Herkunftsort und passendem Zeitfenster (+/- 5 Jahre).
+* **Matricula Online:** Durchsucht historische katholische Kirchenbücher nach dem Pfarr- bzw. Herkunftsort der Person.
+* **Archion:** Durchsucht digitalisierte evangelische Kirchenbücher der deutschen Landeskirchen.
+* **Ancestry:** Durchsucht Standesamtsurkunden, Passagierlisten und Personenarchive der weltgrößten Datenbank.
+* **MyHeritage:** Durchsucht internationale historische Dokumente und Zeitungsarchive.
+* **CompGen GEDBAS:** Durchsucht Forscherdatenbanken und Ortsfamilienbücher des Vereins für Computergenealogie e.V.
+* **Meyers Gazetteer & GOV:** Öffnet das historische Orts- und Pfarreiverzeichnis des Deutschen Reichs (1871–1918) zur Bestimmung zuständiger Standesämter und Kirchspiele.
+* **Find a Grave:** Durchsucht Grabstein- und Friedhofsfotografien weltweit.
+* **Geneanet:** Durchsucht mitteleuropäische und französische genealogische Bestände.
+
+#### Wie bediene ich sie?
+* Klicken Sie in der Leiste **„🌐 Recherchieren in:“** auf das gewünschte Portal.
+* Das Portal öffnet sich direkt in Ihrem Standard-Webbrowser mit den passenden Suchbegriffen der gewählten Person.
+* Welche Portale in dieser Leiste erscheinen, bestimmen Sie ganz nach Ihren Abonnements in den Einstellungen.
+
+---
+
+### 2.7.3 Personenzentriertes Forschungsdossier, Lücken-Matrix & Batch-Aktionen
+#### Was macht die Funktion?
+Genealogen forschen meist ganzheitlich an einer Person oder Familie: Ein gefundener Kirchenbucheintrag (z. B. Taufeintrag) beantwortet oft gleichzeitig das genaue Geburtsdatum, den Geburtsort und die Namen beider Eltern.
+
+LineageGraph fasst alle Lücken einer Person in einem **Personen-Forschungsdossier** zusammen:
+* **Health / Completeness Meter:** Zeigt sofort, wie viele Lücken noch offen oder in Recherche sind (z. B. `⚠️ 2 offen / 3 Lücken` bzw. `✓ Alle Lücken geschlossen`).
+* **Kompakte Lücken-Matrix / Checkliste:** Jede Lücke wird als schlanke, übersichtliche Zeile geführt:
+  * Lückentyp-Badge (`Eltern`, `Tod`, `Orte`, `Kinderlücke`)
+  * Prägnanter Kurztext (z. B. *„Beide Elternteile fehlen“*, *„Lücke von 4.1 Jahren zwischen Anna und Karl“*)
+  * Diskreter Archivhinweis (z. B. *„🏛️ Standesamt ab 1874“*)
+  * **Interaktiver 1-Klick-Statuswähler:** Wechseln Sie den Status direkt in der Zeile (`Offen`, `In Recherche`, `Erledigt`, `Ignoriert`). Erledigte Zeilen werden dezent durchgestrichen und abgeblendet.
+  * **Akkordeon-Aufklappung:** Ein Klick auf die Zeile klappt die detaillierte Handlungsempfehlung und das persönliche Notizfeld auf.
+* **Batch-Aktion „✓ Alle als erledigt“:** Mit einem einzigen Klick markieren Sie alle offenen Lücken dieser Person als erledigt, wenn Sie den entscheidenden Quelleneintrag gefunden haben.
+* **Filter „Erledigte ausblenden“:** Blendet bereits gelöste oder ignorierte Lücken aus, damit Sie sich voll auf offene Forschungsbaustellen konzentrieren können.
+
+#### Wie bediene ich sie?
+1. **Status einzelner Lücken ändern:** Wählen Sie in der jeweiligen Zeile der Lücken-Matrix den neuen Status.
+2. **Details einsehen & Notizen erfassen:** Klicken Sie auf die Zeile, um das Akkordeon aufzuklappen. Tragen Sie Ihre Forschungsnotiz ein und klicken Sie auf **`Speichern`**.
+3. **Alle Lücken einer Person abhaken:** Klicken Sie im Header des Dossiers auf **`✓ Alle als erledigt`**.
+4. **Fokusfilter aktivieren:** Setzen Sie das Häkchen bei **`Erledigte ausblenden`**, um nur unvollständige Dossiers zu sehen.
+5. **Direkt zur Person springen:** Nutzen Sie die Aktions-Buttons:
+   * **`🌳 Baum`:** Fokussiert die Person im Stammbaum-Canvas.
+   * **`📋 Tabelle`:** Filtert die Person in der Datentabelle.
+   * **`🔍 Details`:** Öffnet den rechten Detail-Inspektor.
+   * **`🎯 Nur diese` / `🌿 Vorfahren` / `🌱 Nachkommen`:** Grenzen Sie den Analyse-Bereich blitzschnell ein.
+
+---
+
+### 2.7.4 Schwellenwerte & Recherche-Portale konfigurieren (Einstellungen)
+#### Was macht die Funktion?
+In den Programmeinstellungen können Sie sowohl die genealogischen Schwellenwerte als auch die Liste der aktiven Recherche-Portale anpassen.
+
+#### Wie bediene ich sie?
+1. Klicken Sie oben rechts auf **`⚙️ Einstellungen`**.
+2. Wählen Sie im linken Menü den Reiter **`🔬 Forschungsassistent`**.
+3. **Schwellenwerte anpassen:**
+   * **Maximales Alter für vermuteten Tod:** Standard 110 Jahre.
+   * **Mindestabstand für Kinderlücke:** Standard 3,5 Jahre.
+4. **Recherche-Portale verwalten:**
+   * Aktivieren oder deaktivieren Sie die Kontrollkästchen für die einzelnen Archive.
+   * Transparente Badges informieren über das jeweilige Kostenmodell:
+     * 🟢 **Kostenlos (Open Access):** Frei nutzbar ohne Anmeldung (z. B. Matricula Online, CompGen, Meyers Gazetteer).
+     * 🟡 **Kostenlos (Konto erforderlich):** Kostenfreie Registrierung notwendig (z. B. FamilySearch).
+     * 🔴 **Abo erforderlich:** Kostenpflichtiges Abonnement notwendig (z. B. Archion, Ancestry, MyHeritage).
+     * 🔵 **Freemium:** Grundfunktionen kostenlos, Spezialbestände kostenpflichtig (z. B. Geneanet).
+   * **Button `↺ Standard`:** Setzt die Portalauswahl auf die Werkseinstellungen zurück.
+
+---
 
 ---
 

@@ -1,8 +1,8 @@
 # Dokumentations-Hub & System-Index: LineageGraph (Froning Familienbuch)
 
 **System:** LineageGraph (*stammbaum*)  
-**Dokument-Version:** 3.0.0  
-**Datum:** 5. November 2026  
+**Dokument-Version:** 3.1.0  
+**Datum:** 9. November 2026  
 **Technologie-Stack:** Desktop-Applikation (Tauri v2 + Vue 3 + TypeScript + Rust 2024 + SQLite)
 
 ---
@@ -44,11 +44,11 @@ Die Dokumentation von LineageGraph ist in fünf aufeinander abgestimmte Teildoku
 
 1. **[USER_GUIDE.md – Anwenderhandbuch](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md)**
    * Vollständiges, verständliches Handbuch für Endnutzer und Genealogen ohne technischen Jargon.
-   * Schritt-für-Schritt-Anleitungen für alle 28 Funktionen (Nutzen, Bedienung, Ergebnis).
-   * Praxistipps zu Datensicherheit (2-Stufen-Löschung), Rekursionsvermeidung, Update-Verwaltung und Merge-Konfliktlösung.
+   * Schritt-für-Schritt-Anleitungen für alle 30 Funktionen (Nutzen, Bedienung, Ergebnis).
+   * Praxistipps zu Datensicherheit (2-Stufen-Löschung), Rekursionsvermeidung, Update-Verwaltung, Merge-Konfliktlösung und strukturierter Lückenrecherche.
 
 2. **[REQ.md – Fachliches Anforderungsdokument (Requirements Specification)](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md)**
-   * Enthält alle 28 fachlichen Anforderungen gegliedert nach 7 Domänen (`TRM`, `DAT`, `ALG`, `UI`, `DSG`, `IMP`, `EXP`).
+   * Enthält alle 32 fachlichen Anforderungen gegliedert nach 8 Domänen (`TRM`, `DAT`, `ALG`, `UI`, `DSG`, `IMP`, `EXP`, `RES`).
    * Definiert für jede Anforderung: `REQ-ID`, Titel & Kurzbeschreibung, Fachlicher Zweck / Business Value sowie verbindliche Akzeptanzkriterien und Geschäftsregeln.
    * Verlinkt direkt auf die entsprechenden technischen Spezifikationen in `SPEC.md`.
 
@@ -60,7 +60,7 @@ Die Dokumentation von LineageGraph ist in fünf aufeinander abgestimmte Teildoku
 4. **[Architecture.md – Systemarchitektur & Traceability-Matrix](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)**
    * Vollständige **Traceability-Matrix** (`REQ-ID` | `Fachliche Anforderung` | `SPEC-ID` | `Schicht` | `Betroffene Quellcodedateien`).
    * Detailliertes **Architekturschaubild (Mermaid.js)** mit der Trennung von Vue 3 Frontend, Tauri IPC-Bridge, Rust-Backend und lokaler SQLite-Speicherung.
-   * **Entity-Relationship-Diagramm (ERD)** des relationalen Datenmodells (`individuals`, `families`, `parent_child`, `root_ancestors`, `proband_henry_codes`, `design_layouts`, `events`, `latex_export_templates`).
+   * **Entity-Relationship-Diagramm (ERD)** des relationalen Datenmodells (`individuals`, `families`, `parent_child`, `root_ancestors`, `proband_henry_codes`, `design_layouts`, `events`, `latex_export_templates`, `research_tasks`).
 
 5. **[TEST_CASES.md – Test- und Qualitäts-Dokument](file:///c:/dev/Froning/app/LineageGraph/docs/TEST_CASES.md)**
    * Vollständiges Test- und Qualitätssicherungskonzept für Rust-Unit-Tests, Vue-Component-Tests und Tauri-IPC-Integrationstests.
@@ -80,4 +80,5 @@ Die Dokumentation von LineageGraph ist in fünf aufeinander abgestimmte Teildoku
 | **Design Studio & Layout** | `DSG` | Hierarchisches Pedigree-Layout, Bottom-Up Track Assignment & patrilineare Implex-Linienführung, Kartengestaltung, Hintergrund-Blob-Speicher, Undo/Redo, Hierarchische Stamm-/Zweig-Komposition | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#25-stammbaum-design-studio-dsg) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#25-dom%C3%A4ne-stammbaum-design-studio-dsg) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#24-stammbaum-design-studio) |
 | **Import & Merge-System** | `IMP` | Atomarer GEDCOM-Vollimport, RAM-Staging & Konfidenz-Matching, differentieller 3-Wege-Merge mit Konfliktlösung | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#26-import--differentieller-datenabgleich-imp) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#26-dom%C3%A4ne-import--differentieller-datenabgleich-imp) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#25-gedcom-import--3-wege-datenabgleich) |
 | **Export & Publikation** | `EXP` | Scoped GEDCOM-Export, strukturierter CSV-Export mit BOM, autarke Single-File-HTML-Chronik, SVG/PNG-Export, LaTeX/PDF | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#27-multi-format-export--chronik-erstellung-exp) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#27-dom%C3%A4ne-multi-format-export--chronik-erstellung-exp) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#26-export-center--chronik-erstellung) |
+| **Forschungsassistent & Lücken-Finder** | `RES` | Regelbasierte Lückenerkennung (Eltern, Tod, Orte, Geschwisterabstände), kontextuelle Archiv-Tipps & 1-Klick-Links (FamilySearch, Matricula, Archion, Meyers), Relevanz-Scoring & Aufgabenverwaltung | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#28-forschungsassistent--genealogischer-l%C3%BCcken-finder-res) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#38-forschungsassistent--genealogischer-l%C3%BCcken-finder-res) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#27-forschungsassistent--l%C3%BCcken-finder) |
 

@@ -5,13 +5,14 @@ import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { computeCardHeight, formatLocalizedDate, type DesignCardConfig } from '../../types/design';
 import { useAppUpdater } from '../../composables/useAppUpdater';
+import { useResearchPortals } from '../../composables/useResearchPortals';
 import type {
   Person,
   ColumnConfig,
   RootAncestorConfig,
 } from '../../composables/usePersons';
 
-export type SettingsTab = 'general' | 'table_view' | 'tree_view' | 'design_mode' | 'about';
+export type SettingsTab = 'general' | 'table_view' | 'tree_view' | 'design_mode' | 'research' | 'about';
 
 export interface DesignConfigState {
   horizontalLaneGap: number;
@@ -70,7 +71,62 @@ const {
 
 onMounted(() => {
   loadCurrentVersion();
+  loadResearchSettings();
 });
+
+const researchMaxAge = ref<number>(110);
+const researchChildGap = ref<number>(3.5);
+
+const {
+  portals: researchPortals,
+  togglePortal,
+  resetToDefaults: resetResearchPortals,
+} = useResearchPortals();
+
+function loadResearchSettings() {
+  try {
+    const raw = localStorage.getItem('lineagegraph_research_settings');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed.max_age_years === 'number') researchMaxAge.value = parsed.max_age_years;
+      if (typeof parsed.child_gap_years === 'number') researchChildGap.value = parsed.child_gap_years;
+    }
+  } catch (e) {
+    console.warn('Could not read research settings', e);
+  }
+}
+
+function updateResearchSettings() {
+  try {
+    let current: any = {};
+    const raw = localStorage.getItem('lineagegraph_research_settings');
+    if (raw) {
+      try {
+        current = JSON.parse(raw);
+      } catch {}
+    }
+    current.max_age_years = Number(researchMaxAge.value) || 110;
+    current.child_gap_years = Number(researchChildGap.value) || 3.5;
+    localStorage.setItem('lineagegraph_research_settings', JSON.stringify(current));
+  } catch (e) {
+    console.warn('Could not save research settings', e);
+  }
+}
+
+function getAccessTypeLabel(type: string): string {
+  switch (type) {
+    case 'free':
+      return t('research.accessFree', '🟢 Kostenlos');
+    case 'free_registration':
+      return t('research.accessFreeReg', '🟡 Kostenlos (Konto)');
+    case 'subscription':
+      return t('research.accessSubscription', '🔴 Abo erforderlich');
+    case 'freemium':
+      return t('research.accessFreemium', '🔵 Freemium');
+    default:
+      return type;
+  }
+}
 
 async function openExternalUrl(url: string) {
   try {
@@ -133,6 +189,13 @@ function onTreeSelectChange(event: Event) {
             @click="emit('update:activeTab', 'design_mode')"
           >
             📐 {{ t('settings_tab_design') || 'Stammbaum Design Mode' }}
+          </button>
+          <button
+            class="settings-nav-item"
+            :class="{ active: activeTab === 'research' }"
+            @click="emit('update:activeTab', 'research')"
+          >
+            🔬 {{ t('settings_tab_research') || 'Forschungsassistent' }}
           </button>
           <button
             class="settings-nav-item settings-nav-item-bottom"
@@ -979,7 +1042,116 @@ function onTreeSelectChange(event: Event) {
             </div>
           </div>
 
-          <!-- 4. Über LineageGraph & App-Aktualisierung -->
+          <!-- 4. Forschungsassistent Einstellungen -->
+          <div v-if="activeTab === 'research'" class="settings-tab-pane">
+            <div class="settings-section">
+              <h3>🔬 {{ t('research.settingsTitle', 'Forschungsassistent & Heuristiken') }}</h3>
+              <p style="color: #64748b; font-size: 0.85rem; margin-bottom: 20px;">
+                {{ t('research.settingsDesc', 'Konfiguriere die Schwellenwerte für die automatische Erkennung von genealogischen Lücken.') }}
+              </p>
+
+              <div class="form-group" style="margin-bottom: 24px;">
+                <label style="display: block; font-weight: 600; margin-bottom: 6px;">
+                  {{ t('research.maxAgeLabel', 'Maximales Alter für vermuteten Tod (Jahre)') }}:
+                </label>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <input
+                    type="number"
+                    min="70"
+                    max="130"
+                    v-model.number="researchMaxAge"
+                    @change="updateResearchSettings"
+                    class="form-control"
+                    style="max-width: 140px;"
+                  />
+                  <span style="font-size: 0.82rem; color: #64748b;">
+                    {{ t('research.maxAgeHint', 'Liegt die Geburt länger zurück und fehlt das Sterbedatum, wird eine Lücke gemeldet (Standard: 110 Jahre).') }}
+                  </span>
+                </div>
+              </div>
+
+              <div class="form-group" style="margin-bottom: 24px;">
+                <label style="display: block; font-weight: 600; margin-bottom: 6px;">
+                  {{ t('research.childGapLabel', 'Mindestabstand für Kinderlücke (Jahre)') }}:
+                </label>
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="1.5"
+                    max="10.0"
+                    v-model.number="researchChildGap"
+                    @change="updateResearchSettings"
+                    class="form-control"
+                    style="max-width: 140px;"
+                  />
+                  <span style="font-size: 0.82rem; color: #64748b;">
+                    {{ t('research.childGapHint', 'Spannen zwischen Geschwistern ab diesem Schwellenwert werden als auffällige Kinderlücke gelistet (Standard: 3.5 Jahre).') }}
+                  </span>
+                </div>
+              </div>
+
+              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0 24px 0;" />
+
+              <!-- Konfigurierbare Recherche-Portale & Bibliotheken -->
+              <div class="portals-config-section">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px;">
+                  <div>
+                    <h4 style="margin: 0 0 6px 0; color: #1e293b; font-size: 1rem; display: flex; align-items: center; gap: 8px;">
+                      <span>🌐</span> {{ t('research.portalsSectionTitle', 'Genealogische Archive & Recherche-Portale') }}
+                    </h4>
+                    <p style="color: #64748b; font-size: 0.83rem; margin: 0;">
+                      {{ t('research.portalsSectionDesc', 'Wähle aus, welche Archive im Forschungsassistenten zur 1-Klick-Recherche eingebunden werden sollen. Deaktiviere Portale, für die du kein Abonnement besitzt.') }}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn-reset-portals"
+                    @click="resetResearchPortals"
+                    :title="t('research.resetPortalsTitle', 'Auf Standardauswahl zurücksetzen')"
+                  >
+                    ↺ {{ t('research.resetPortals', 'Standard') }}
+                  </button>
+                </div>
+
+                <div class="portals-list-grid">
+                  <div
+                    v-for="portal in researchPortals"
+                    :key="portal.id"
+                    class="portal-setting-card"
+                    :class="{ 'is-enabled': portal.enabled }"
+                    @click="togglePortal(portal.id)"
+                  >
+                    <div class="portal-card-header">
+                      <div class="portal-header-left">
+                        <input
+                          type="checkbox"
+                          :checked="portal.enabled"
+                          @click.stop="togglePortal(portal.id)"
+                          class="portal-checkbox"
+                        />
+                        <span class="portal-icon">{{ portal.icon || '🌐' }}</span>
+                        <strong class="portal-name">{{ portal.name }}</strong>
+                      </div>
+                      <span
+                        class="portal-access-badge"
+                        :class="'badge-' + portal.access_type"
+                      >
+                        {{ getAccessTypeLabel(portal.access_type) }}
+                      </span>
+                    </div>
+
+                    <div class="portal-category-text">{{ portal.category }}</div>
+                    <p class="portal-desc-text">
+                      {{ locale === 'de' ? portal.description_de : portal.description_en }}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5. Über LineageGraph & App-Aktualisierung -->
           <div v-if="activeTab === 'about'" class="settings-tab-pane about-tab-pane">
             <div class="about-container">
               <div class="about-hero">
@@ -2006,6 +2178,107 @@ button:disabled {
   background: #fef2f2;
   border: 1px solid #fecaca;
   color: #991b1b;
+}
+
+/* Portal Configuration in Research Tab */
+.btn-reset-portals {
+  padding: 4px 10px;
+  font-size: 0.78rem;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+.btn-reset-portals:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+.portals-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+.portal-setting-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+}
+.portal-setting-card:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+.portal-setting-card.is-enabled {
+  border-color: #3b82f6;
+  background: #f0f7ff;
+}
+.portal-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.portal-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.portal-checkbox {
+  cursor: pointer;
+}
+.portal-icon {
+  font-size: 1.05rem;
+}
+.portal-name {
+  font-size: 0.88rem;
+  color: #1e293b;
+}
+.portal-access-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+.badge-free {
+  background: #dcfce7;
+  color: #15803d;
+}
+.badge-free_registration {
+  background: #fef9c3;
+  color: #854d0e;
+}
+.badge-subscription {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+.badge-freemium {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+.portal-category-text {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: #64748b;
+  margin-left: 26px;
+  margin-bottom: 4px;
+}
+.portal-desc-text {
+  font-size: 0.76rem;
+  color: #475569;
+  line-height: 1.35;
+  margin: 0;
+  margin-left: 26px;
 }
 </style>
 

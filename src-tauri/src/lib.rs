@@ -3,6 +3,7 @@ pub mod parser;
 pub mod gedcom_export;
 pub mod gedcom_import_merge;
 pub mod csv_export;
+pub mod research;
 
 use petgraph::algo::astar;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -2767,6 +2768,53 @@ async fn open_user_guide() -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+#[tauri::command]
+fn analyze_research_gaps(
+    state: State<AppState>,
+    scope: research::ResearchScope,
+    settings: research::ResearchSettings,
+) -> Result<Vec<research::ResearchTaskDto>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let all_persons = get_all_persons_internal(&conn)?;
+    research::analyze_gaps(&conn, &all_persons, &scope, &settings)
+}
+
+#[tauri::command]
+fn update_research_task_status(
+    state: State<AppState>,
+    task_id: String,
+    person_id: String,
+    gap_type: String,
+    context_json: String,
+    status: String,
+    notes: Option<String>,
+    priority_score: i32,
+) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    research::upsert_task_status(
+        &conn,
+        &task_id,
+        &person_id,
+        &gap_type,
+        &context_json,
+        &status,
+        notes.as_deref(),
+        priority_score,
+    )
+}
+
+#[tauri::command]
+fn get_research_statistics(
+    state: State<AppState>,
+    scope: research::ResearchScope,
+    settings: research::ResearchSettings,
+) -> Result<research::ResearchStatsDto, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let all_persons = get_all_persons_internal(&conn)?;
+    let tasks = research::analyze_gaps(&conn, &all_persons, &scope, &settings)?;
+    Ok(research::calculate_statistics(&tasks))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2841,7 +2889,10 @@ pub fn run() {
             preview_csv_export,
             export_csv_to_file,
             check_internet_connection,
-            open_user_guide
+            open_user_guide,
+            analyze_research_gaps,
+            update_research_task_status,
+            get_research_statistics
         ])
         .run(tauri::generate_context!())
         .expect("Tauri Error");
