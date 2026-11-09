@@ -4,7 +4,7 @@
 **Dokument-Version:** 3.0.0  
 **Status:** Freigegebener Ist-Stand  
 **Datum:** 5. November 2026  
-**Referenzierte Dokumente:** [SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md), [Architecture.md](file:///c:/dev/Froning/app/LineageGraph/Architecture.md)
+**Referenzierte Dokumente:** [SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md), [Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)
 
 ---
 
@@ -12,7 +12,7 @@
 
 Dieses Dokument definiert alle fachlichen Anforderungen an das System **LineageGraph** (*stammbaum*). Es beschreibt den Funktionsumfang, den geschäftlichen Nutzen (Business Value) sowie die verbindlichen Akzeptanzkriterien und Geschäftsregeln.
 
-Jede Anforderung besitzt eine eindeutige Kennung (`REQ-<DOMÄNE>-<NR>`), die lückenlos in der technischen Spezifikation ([SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md)) und der Traceability-Matrix ([Architecture.md](file:///c:/dev/Froning/app/LineageGraph/Architecture.md)) referenziert wird.
+Jede Anforderung besitzt eine eindeutige Kennung (`REQ-<DOMÄNE>-<NR>`), die lückenlos in der technischen Spezifikation ([SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md)) und der Traceability-Matrix ([Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)) referenziert wird.
 
 ```mermaid
 graph TD
@@ -80,7 +80,7 @@ graph TD
   2. Die Benutzeroberfläche muss eine Auswahlliste aller verfügbaren Stammbäume anbieten.
   3. Beim Wechsel des aktiven Stammbaums muss der SQLite-Verbindungspool im Backend transparent umgehängt werden, ohne dass die Desktop-Applikation neu gestartet werden muss.
   4. Nach dem Umschalten müssen alle Frontend-Zustände (Personenliste, Probanden, Filter, Historie) synchron aktualisiert werden.
-- **Technische Spezifikation:** Siehe [SPEC-TRM-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-001---req-trm-001)
+- **Technische Spezifikation:** Siehe [SPEC-TRM-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-001---req-trm-001)
 
 #### REQ-TRM-002: Zweistufige Sicherheitslöschung mit Prozess-Schutz
 - **Titel & Kurzbeschreibung:** Physisches, rückstandsfreies Löschen eines Stammbaums mit zweistufiger Sicherheitsabfrage und Betriebssystem-Sperrschutz.
@@ -91,7 +91,7 @@ graph TD
   3. Vor dem Entfernen muss die aktive SQLite-Verbindung geflusht (WAL-Checkpoint), geschlossen und auf eine In-Memory-Instanz umgeleitet werden, um Windows-Filelocks (`ERROR_SHARING_VIOLATION`) aufzuheben.
   4. Alle zugehörigen Dateiartefakte (`.db`, `.db-wal`, `.db-shm`, `.db-journal`, `.sqlite*`) müssen physisch gelöscht werden; bei Sperrung greift eine Retry-Schleife mit exponentiellem Backoff.
   5. Andere Stammbäume dürfen unter keinen Umständen tangiert werden.
-- **Technische Spezifikation:** Siehe [SPEC-TRM-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-002---req-trm-002)
+- **Technische Spezifikation:** Siehe [SPEC-TRM-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-002---req-trm-002)
 
 #### REQ-TRM-003: Automatischer Fallback & Leerzustands-Behandlung
 - **Titel & Kurzbeschreibung:** Zustandshandling beim Löschen des letzten aktiven Stammbaums sowie Neuanlage beim GEDCOM-Import.
@@ -100,7 +100,7 @@ graph TD
   1. Verbleiben nach einem Löschvorgang weitere Stammbäume, wird automatisch der lexikografisch nächste geöffnet.
   2. War der gelöschte Stammbaum der letzte, wechselt die Anwendung in einen konsistenten Leerzustand: `activeTree = ''`, Deaktivierung des Lösch-Buttons, Anzeige von Hinweisen.
   3. Erfolgt ein GEDCOM-Import im Leerzustand, muss automatisch ein neuer Stammbaum basierend auf dem Dateinamen erzeugt werden.
-- **Technische Spezifikation:** Siehe [SPEC-TRM-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-003---req-trm-003)
+- **Technische Spezifikation:** Siehe [SPEC-TRM-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-003---req-trm-003)
 
 #### REQ-TRM-004: App-Aktualisierung & Versionsprüfung
 - **Titel & Kurzbeschreibung:** Integrierte Prüfung auf neue Softwareversionen beim Anwendungsstart sowie manuelle Aktualisierungsabfrage in den Programmeinstellungen mit Bestätigungsdialog.
@@ -111,7 +111,7 @@ graph TD
   3. Im Einstellungsfenster (`⚙️ Einstellungen` -> dedizierter Bereich `ℹ️ Über LineageGraph`) sowie in der oberen Kopfleiste muss der Anwender jederzeit das Anwenderhandbuch (`USER_GUIDE.md`) aufrufen, manuell nach neuen Versionen suchen sowie App-Metadaten (Logo, Entwickler & Kontakt, Version, Technologie, Lizenz, 100% lokale Datenspeicherung) einsehen können.
   4. Liegt eine neuere Version vor (sowohl beim Start als auch bei manueller Suche), muss ein Bestätigungsdialog eingeblendet werden, der Versionsnummer, optionale Release Notes und Optionen zum sofortigen Installieren (`✨ Jetzt aktualisieren`) oder Verschieben (`Später erinnern`) anbietet.
   5. Erst nach expliziter Bestätigung durch den Anwender wird das Installationspaket heruntergeladen und die Installation eingeleitet.
-- **Technische Spezifikation:** Siehe [SPEC-TRM-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-trm-004---req-trm-004)
+- **Technische Spezifikation:** Siehe [SPEC-TRM-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-004---req-trm-004)
 
 ---
 
@@ -124,7 +124,7 @@ graph TD
   1. Unterstützt Anlage als Einzelperson, Kind eines Paares, Elternteil oder Partner einer Person.
   2. Die neue ID wird über das Backend als höchste existierende numerische Folge im Format `@I<Nr>@` (z. B. `I1`, `I245`) ermittelt.
   3. Erfassung von Vorname, Nachname, Geschlecht (`M`, `F`, `U`), Geburtsdatum, Geburtsort, Sterbedatum und Sterbeort.
-- **Technische Spezifikation:** Siehe [SPEC-DAT-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-001---req-dat-001)
+- **Technische Spezifikation:** Siehe [SPEC-DAT-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-001---req-dat-001)
 
 #### REQ-DAT-002: Tabellarische Batch-Editierung & Validierungs-Engine
 - **Titel & Kurzbeschreibung:** Direkte Inline-Bearbeitung von Personendaten im Tabellenmodus mit Validierungsprüfung und atomarer Speicherung.
@@ -134,7 +134,7 @@ graph TD
   2. IDs müssen zwingend valide GEDCOM-XREFs sein (Regex: `^@?[A-Za-z0-9_:-]+@?$`).
   3. Bei ID-Änderung werden alle relationalen Fremdschlüssel (`families`, `parent_child`, `events`, `root_ancestors`, `proband_henry_codes`, `design_layouts`) konsistent kaskadierend umbenannt.
   4. Die Speicherung aller Änderungen erfolgt atomar in einer einzigen Datenbanktransaktion.
-- **Technische Spezifikation:** Siehe [SPEC-DAT-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-002---req-dat-002)
+- **Technische Spezifikation:** Siehe [SPEC-DAT-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-002---req-dat-002)
 
 #### REQ-DAT-003: Eltern-Kind-Verknüpfung mit Zyklus- & Rekursionserkennung
 - **Titel & Kurzbeschreibung:** Zuweisung und Modifikation von Vater und Mutter mit Vorab-Prüfung gegen genealogische Schleifen.
@@ -144,7 +144,7 @@ graph TD
   2. Selbstreferenzen (`Kind == Elternteil`) werden sofort abgewiesen.
   3. Bei Erkennung einer Rekursion wird die Operation mit einer Fehlermeldung abgebrochen und die Datenbank verbleibt unverändert.
   4. Nach erfolgreicher Modifikation werden die Henry-Codes aller aktiven Probanden automatisch neu berechnet.
-- **Technische Spezifikation:** Siehe [SPEC-DAT-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-003---req-dat-003)
+- **Technische Spezifikation:** Siehe [SPEC-DAT-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-003---req-dat-003)
 
 #### REQ-DAT-004: Partnerschafts- und Ehedaten-Management
 - **Titel & Kurzbeschreibung:** Verknüpfung, Bearbeitung und Auflösung von Ehen und Lebenspartnerschaften inklusive Scheidungsstatus.
@@ -154,7 +154,7 @@ graph TD
   2. Partner können interaktiv neu miteinander verknüpft werden; dabei wird ein neuer Familiendatensatz angelegt.
   3. Eine Familie kann aufgelöst werden (`unlink_family`), wodurch die Partner-Verknüpfung gelöscht wird, während die Personen erhalten bleiben.
   4. Kinder können direkt zu einer Familie hinzugefügt oder entfernt werden.
-- **Technische Spezifikation:** Siehe [SPEC-DAT-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-004---req-dat-004)
+- **Technische Spezifikation:** Siehe [SPEC-DAT-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-004---req-dat-004)
 
 #### REQ-DAT-005: Audit- & Revisionsfelder (GEDCOM CHAN / UID)
 - **Titel & Kurzbeschreibung:** Automatische Nachführung von Änderungszeitstempeln und eindeutigen Identifikatoren bei Modifikationen.
@@ -162,7 +162,7 @@ graph TD
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Bei Neuanlage einer Person ohne UID wird automatisch eine UUID v4 im Feld `_UID` persistiert.
   2. Jede Bearbeitung aktualisiert das Tag `CHAN` mit aktuellem Datum und Uhrzeit im Format `DD MMM YYYY / HH:MM:SS`.
-- **Technische Spezifikation:** Siehe [SPEC-DAT-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dat-005---req-dat-005)
+- **Technische Spezifikation:** Siehe [SPEC-DAT-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-005---req-dat-005)
 
 ---
 
@@ -175,7 +175,7 @@ graph TD
   1. Beliebig viele Personen können als Stammahn in `root_ancestors` deklariert werden.
   2. Jeder Proband besitzt ein frei wählbares Startkürzel (z. B. `1`, `2`, `A`, `F-1`).
   3. Die Benutzeroberfläche stellt Probanden als Umschalt-Tabs in der oberen Navigationsleiste dar.
-- **Technische Spezifikation:** Siehe [SPEC-ALG-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-alg-001---req-alg-001)
+- **Technische Spezifikation:** Siehe [SPEC-ALG-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-alg-001---req-alg-001)
 
 #### REQ-ALG-002: Chronologische & Patrilineare/Matrilineare Henry-Code-Berechnung
 - **Titel & Kurzbeschreibung:** Automatische Vergabe von Henry-Codes entlang der Abstammungslinie mit Zyklenvermeidung und chronologischer Geschwistersortierung.
@@ -186,7 +186,7 @@ graph TD
   3. Geschwister innerhalb einer Familie werden chronologisch nach ihrem Geburtsdatum (Jahr, Monat, Tag) sortiert, bevor der Code-Suffix vergeben wird.
   4. Code-Suffixe: Kinder 1–9 erhalten `1`–`9`, Kind 10 erhält `A`, Kind 11 `B` bis Kind 20 `K`; ab 21 `X<Nr>`.
   5. Bereits besuchte Personen werden nicht erneut traversiert (strikter Zyklenschutz).
-- **Technische Spezifikation:** Siehe [SPEC-ALG-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-alg-002---req-alg-002)
+- **Technische Spezifikation:** Siehe [SPEC-ALG-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-alg-002---req-alg-002)
 
 #### REQ-ALG-003: Kürzester Verwandtschaftspfad (A*- & BFS-Graphsuche)
 - **Titel & Kurzbeschreibung:** Berechnung und Visualisierung des kürzesten Verwandtschaftspfades zwischen zwei beliebigen Personen im Stammbaum.
@@ -195,7 +195,7 @@ graph TD
   1. Graph-Traversierung über Eltern-, Kind- und optional Partnerbeziehungen.
   2. Backend: A*-Algorithmus über `petgraph` zur deterministischen Pfadberechnung.
   3. Frontend: Breitensuche mit interaktiver Klick-Navigation und farblicher Hervorhebung im Canvas-Stammbaum.
-- **Technische Spezifikation:** Siehe [SPEC-ALG-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-alg-003---req-alg-003)
+- **Technische Spezifikation:** Siehe [SPEC-ALG-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-alg-003---req-alg-003)
 
 ---
 
@@ -209,7 +209,7 @@ graph TD
   2. Globale Schnellsuche (`tableQuickSearch`) sowie Sammel-Schaltfläche zum Zurücksetzen aller aktiven Spaltenfilter; Datumsfilter (exakt, vor, nach) sind in kompakten Popovern im Spaltenkopf gekapselt.
   3. In den Einstellungen werden Sichtbarkeit und Reihenfolge über eine direkt sichtbare 2-Spalten-Matrix (`In Tabelle` | `In Details` | `Reihenfolge`) gesteuert.
   4. Klick auf Spaltenkopf schaltet zwischen aufsteigender, absteigender und Standard-Sortierung um.
-- **Technische Spezifikation:** Siehe [SPEC-UI-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-001---req-ui-001)
+- **Technische Spezifikation:** Siehe [SPEC-UI-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-001---req-ui-001)
 
 #### REQ-UI-002: Infinite Canvas Stammbaum-Visualisierung
 - **Titel & Kurzbeschreibung:** Interaktiver grafischer Stammbaum mit stufenlosem Zoom, Panning und Clusterung von Seitenästen.
@@ -218,7 +218,7 @@ graph TD
   1. Zoomfaktor von 20 % bis 250 % stufenlos steuerbar via Mausrad oder Kontrollleiste.
   2. Seitenäste (Ehepartner, Eltern) können ein- und ausgeklappt werden.
   3. Schaltfläche zum Nachladen von Eltern an der Baumwurzel sowie Schnell-Zentrierung auf den Stammahn.
-- **Technische Spezifikation:** Siehe [SPEC-UI-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-002---req-ui-002)
+- **Technische Spezifikation:** Siehe [SPEC-UI-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-002---req-ui-002)
 
 #### REQ-UI-003: Slide-Over Detail-Drawer & Verwandtschafts-Inspector
 - **Titel & Kurzbeschreibung:** Einklappbare rechte Inspector-Seitenleiste (exklusiv in Tabellen- und Stammbaum-Ansicht) mit vollständiger Übersicht aller Attribute, Eltern, Partner, Kinder, Notizen und GEDCOM-Rohdaten.
@@ -228,7 +228,7 @@ graph TD
   2. Schnellsprung (`@jump-to`) durch Klick auf Verwandte (Eltern, Partner, Kinder) im Lesemodus.
   3. Im Editiermodus stehen durchsuchbare Schnellauswahl-Picker (`.searchable-picker`) für Vater, Mutter, Ehepartner und Kinder sowie **ein einziger zentraler Speichern-Button** (`Alle Änderungen speichern`) im angepinnten Drawer-Footer bereit, der Lebensdaten, Eltern und Ehen atomar speichert.
   4. Anzeige strukturierter GEDCOM-Tags und Freitextnotizen.
-- **Technische Spezifikation:** Siehe [SPEC-UI-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-003---req-ui-003)
+- **Technische Spezifikation:** Siehe [SPEC-UI-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-003---req-ui-003)
 
 #### REQ-UI-004: Freie Schnellabfrage (Free Query Modal)
 - **Titel & Kurzbeschreibung:** Tastaturbedienbares Schnell-Suchfenster zur kombinierten Suche nach Name, Vorname, Geburtsdaten und ID.
@@ -236,7 +236,7 @@ graph TD
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Live-Filterung während der Eingabe.
   2. Klick auf ein Suchergebnis selektiert die Person und zentriert die Visualisierung.
-- **Technische Spezifikation:** Siehe [SPEC-UI-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-004---req-ui-004)
+- **Technische Spezifikation:** Siehe [SPEC-UI-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-004---req-ui-004)
 
 #### REQ-UI-005: Vollständige Internationalisierung (DE / EN)
 - **Titel & Kurzbeschreibung:** Umschaltbare Mehrsprachigkeit für Deutsch und Englisch über alle UI-Elemente und Fehlermeldungen.
@@ -244,7 +244,7 @@ graph TD
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Umschaltung in den Einstellungen mit sofortiger Auswirkung ohne Neuladen.
   2. Vollständige Übersetzung aller Tabellentexte, Dialoge, Badges und Tooltips.
-- **Technische Spezifikation:** Siehe [SPEC-UI-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-ui-005---req-ui-005)
+- **Technische Spezifikation:** Siehe [SPEC-UI-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-005---req-ui-005)
 
 ---
 
@@ -257,7 +257,7 @@ graph TD
   1. Gruppierung von Geschwistern und Partnern in gemeinsamen horizontalen Bändern.
   2. Automatische Sub-Lane-Berechnung zur Vermeidung von Überlappungen bei dichten Familienzweigen.
   3. Konfigurierbare Mindestabstände zwischen Zweigen und Personen.
-- **Technische Spezifikation:** Siehe [SPEC-DSG-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-001---req-dsg-001)
+- **Technische Spezifikation:** Siehe [SPEC-DSG-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-001---req-dsg-001)
 
 #### REQ-DSG-002: Orthogonale Linienführung, Bottom-Up Track Assignment & Linienbrücken (Line Bridges)
 - **Titel & Kurzbeschreibung:** Rechtwinklige SVG-Verbindungslinien nach dem „Track Assignment für Bottom-Up-Layouts"-Verfahren mit patrilinearer Implex-Auflösung und bogenförmigen Brücken bei Kreuzungen.
@@ -270,7 +270,7 @@ graph TD
      - Alle Verbindungen eines Korridors werden absteigend nach ihrer horizontalen Spannweite `abs(x_start - x_end)` sortiert, sodass weiter nach außen greifende Verbindungen weiter unten (näher am Elternknoten) platziert werden.
      - Greedy Track-Zuweisung von oben nach unten (`Track 0` direkt unter den Kind-Knoten, `Track 1` darunter Richtung Eltern-Knoten): Eine Verbindung `C` erhält den kleinsten Track-Index `T`, in dem weder eine horizontale Intervall-Überlappung in Track `T` (**Bedingung A**) noch eine Kreuzung der vertikalen Kind-Zuleitungen mit horizontalen Intervallen in den darüberliegenden Tracks `0` bis `T-1` (**Bedingung B**) auftritt.
   4. Unvermeidbare Schnittpunkte zwischen horizontalen und vertikalen Segmenten werden als Halbkreis-Bogen (`bridgeRadius`) gerendert.
-- **Technische Spezifikation:** Siehe [SPEC-DSG-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-002---req-dsg-002)
+- **Technische Spezifikation:** Siehe [SPEC-DSG-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-002---req-dsg-002)
 
 #### REQ-DSG-003: Voll konfigurierbare Personenkarten mit Live-Preview-Popover
 - **Titel & Kurzbeschreibung:** Detaillierte Gestaltung von Kartenbreite, Typografie, Rahmenfarben, Schatten und angezeigten Datenfeldern über ein optisch zurückgestelltes Live-Preview-Popover in der Studio-Toolbar.
@@ -279,7 +279,7 @@ graph TD
   1. Farben für männliche, weibliche und neutrale Personen getrennt konfigurierbar; Kachel-Kopfbereiche bleiben frei von Mini-Aktionsbuttons.
   2. Optionale Einblendung von Geburts-/Sterbedatum, Lebensspanne, Henry-Code und Generation direkt im Popover `⚙️ Kachel- & Layout-Optionen` mit unmittelbarer Live-Vorschau auf der Canvas.
   3. Alle kontextabhängigen Karten- und Gruppenaktionen sind an einem einzigen schwebenden HUD (`group-floating-controls`) über der selektierten Karte/Gruppe gebündelt.
-- **Technische Spezifikation:** Siehe [SPEC-DSG-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-003---req-dsg-003)
+- **Technische Spezifikation:** Siehe [SPEC-DSG-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-003---req-dsg-003)
 
 #### REQ-DSG-004: Hintergrundgestaltung & Bild-Persistierung
 - **Titel & Kurzbeschreibung:** Hinterlegen von Farben, Verläufen oder Wappen/Kartenbildern mit Deckkraft- und Skalierungsregelung.
@@ -288,7 +288,7 @@ graph TD
   1. Import lokaler Bilddateien (PNG, JPG, SVG).
   2. Dauerhafte Speicherung der Bild-Binärdaten in der SQLite-Datenbank (`design_layouts`).
   3. Frei justierbare Deckkraft (Opacity), Skalierung und Positionierung.
-- **Technische Spezifikation:** Siehe [SPEC-DSG-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-004---req-dsg-004)
+- **Technische Spezifikation:** Siehe [SPEC-DSG-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-004---req-dsg-004)
 
 #### REQ-DSG-005: Layout-Persistenz, Dateiverwaltung & Undo/Redo-Verlauf
 - **Titel & Kurzbeschreibung:** Speichern beliebig vieler benannter Design-Layouts pro Proband in SQLite, Anlegen neuer Designs, Öffnen und Exportieren externer JSON-Dateien sowie lückenlose Rückgängig-Funktion.
@@ -300,7 +300,7 @@ graph TD
   4. Direktes Öffnen externer Design-Dateien (`.json`) über den nativen Dateidialog (`read_design_file`) aus dem Lade-Dialog.
   5. Exportieren des aktuellen Zustands oder gespeicherter Einträge als eigenständige `.json`-Datei (`save_design_file`).
   6. Undo/Redo-Stack für Verschiebungen, Einklappungen und Stilanpassungen.
-- **Technische Spezifikation:** Siehe [SPEC-DSG-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-005---req-dsg-005)
+- **Technische Spezifikation:** Siehe [SPEC-DSG-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-005---req-dsg-005)
 
 #### REQ-DSG-006: Hierarchische Stamm- und Zweig-Layouts (Subtree Composition)
 - **Titel & Kurzbeschreibung:** Modulares, getrenntes Gestalten und Speichern von Nachkommenzweigen (Teilstämmen) sowie dynamische, schreibgeschützte Einbettung inklusive lokaler Hintergrundbilder im übergeordneten Master-Stammbaum.
@@ -313,7 +313,7 @@ graph TD
   5. **Schreibschutz im Master (Isolation):** Eingebettete Zweig-Karten und Gruppen sind im Master-Layout schreibgeschützt (kein Verschieben, Einklappen, Trennen oder Andocken; visuelle Kennzeichnung mit Schloss-Symbol und dezentem Rahmen).
   6. **Nahtlose Navigation & Bearbeitung:** Aus dem Master-Layout heraus kann per Klick auf „Zweig bearbeiten“ direkt in das Subtree-Design gewechselt werden (unter automatischem Backup des Master-Zustands), und über „Zurück zum Master“ wird ohne Datenverlust zurückgekehrt.
   7. **Automatische Isolierung & Verdrängung (Outward Push):** Sobald zu einem Stammeintrag ein Zweig definiert ist, wird die Person automatisch aus einer bestehenden Geschwistergruppe in eine eigenständige Gruppe isoliert. Eingebettete Zweige ermitteln ihre horizontalen Grenzen über alle belegten Generationsebenen und schieben links und rechts liegende Einträge im Master automatisch nach außen, sodass keine Überlappungen mit Nachbarzweigen entstehen.
-- **Technische Spezifikation:** Siehe [SPEC-DSG-006 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-dsg-006---req-dsg-006)
+- **Technische Spezifikation:** Siehe [SPEC-DSG-006 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-006---req-dsg-006)
 
 ---
 
@@ -326,7 +326,7 @@ graph TD
   1. Unterstützung von GEDCOM 5.5 und 5.5.1 (Level-Tags `INDI`, `FAM`, `CHIL`, `FAMC`, `FAMS`, `MARR`, `DIV`).
   2. Vor dem Import werden Altdaten des aktiven Stammbaums atomar in einer Transaktion bereinigt.
   3. Vollständige Extraktion aller Ereignisse und Rohdaten in das `json_data`-Feld.
-- **Technische Spezifikation:** Siehe [SPEC-IMP-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-imp-001---req-imp-001)
+- **Technische Spezifikation:** Siehe [SPEC-IMP-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-imp-001---req-imp-001)
 
 #### REQ-IMP-002: Intelligentes GEDCOM-Staging & Matching
 - **Titel & Kurzbeschreibung:** Vorab-Analyse einer GEDCOM-Datei gegen den bestehenden Datenbestand ohne sofortiges Schreiben.
@@ -334,7 +334,7 @@ graph TD
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Berechnung eines Konfidenz-Scores basierend auf XREF-Gleichheit, Namensähnlichkeit und Übereinstimmung von Geburts-/Sterbedaten.
   2. Klassifikation der Personen in "Zugeordnet" (Mapped) und "Neue Personen".
-- **Technische Spezifikation:** Siehe [SPEC-IMP-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-imp-002---req-imp-002)
+- **Technische Spezifikation:** Siehe [SPEC-IMP-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-imp-002---req-imp-002)
 
 #### REQ-IMP-003: Differentieller 3-Wege-Merge mit Konfliktlösung
 - **Titel & Kurzbeschreibung:** Feldweises Vergleichen und interaktives Auswählen von Übernahme-Werten (Datenbank vs. Importdatei).
@@ -343,7 +343,7 @@ graph TD
   1. Visualisierung von Feldern als "Identisch", "Ergänzung" oder "Konflikt".
   2. Benutzer kann pro Feld entscheiden, ob der DB-Wert oder der Import-Wert übernommen wird.
   3. Kaskadierende Pflege von Familien- und Eltern-Kind-Verbindungen.
-- **Technische Spezifikation:** Siehe [SPEC-IMP-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-imp-003---req-imp-003)
+- **Technische Spezifikation:** Siehe [SPEC-IMP-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-imp-003---req-imp-003)
 
 ---
 
@@ -356,7 +356,7 @@ graph TD
   1. Scopes: `All`, `Descendants`, `Ancestors`, `SpecificList`.
   2. Option zur Einbeziehung von Ehepartnern.
   3. Standardkonforme Kopfzeile (`HEAD`) mit aktuellem Datumsstempel und Kodierung.
-- **Technische Spezifikation:** Siehe [SPEC-EXP-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-001---req-exp-001)
+- **Technische Spezifikation:** Siehe [SPEC-EXP-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-001---req-exp-001)
 
 #### REQ-EXP-002: Strukturierter CSV-Export
 - **Titel & Kurzbeschreibung:** Tabellarischer Export mit anpassbaren Trennzeichen, optionalem UTF-8-BOM für Microsoft Excel und umschaltbarer Tabellen-/Rohtext-Vorschau.
@@ -365,7 +365,7 @@ graph TD
   1. Einstellbare Trennzeichen: Komma, Semikolon, Tabulator.
   2. Optionaler Byte-Order-Mark (`\u{FEFF}`) für native UTF-8-Erkennung in Excel.
   3. Vollständige Namensauflösung für Vater und Mutter statt bloßer IDs sowie Umschalter zwischen gerenderter Tabellen-Vorschau und `.csv`-Rohtext.
-- **Technische Spezifikation:** Siehe [SPEC-EXP-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-002---req-exp-002)
+- **Technische Spezifikation:** Siehe [SPEC-EXP-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-002---req-exp-002)
 
 #### REQ-EXP-003: Autarke interaktive HTML-Chronik
 - **Titel & Kurzbeschreibung:** Generierung einer eigenständigen, installationsfreien Single-File-HTML-Datei mit Suchfunktion, Stammbäumen und interaktivem Detail-Drawer.
@@ -377,7 +377,7 @@ graph TD
   4. Vollständige Plattformunabhängigkeit: Natives Öffnen und Ausführen ohne funktionale Einbußen lokal auf Desktop, Android- und iOS-Geräten (inklusive iOS Dateien-App/Quick Look, WhatsApp-Viewer, Offline-Dateien) sowie auf Webservern.
   5. Touch- & Viewport-Optimierung: Viewport mit `viewport-fit=cover`, Mindestgröße von 44x44px für Steuerelemente und transparente SVG-Knoten-Hitboxen (`r=22`), Dynamic Viewport Units (`100dvh`), Safe-Area-Insets (`env(safe-area-inset-*)`) und `touch-action: none` auf dem SVG-Container gegen Gestenkonflikte. Auf mobilen Bildschirmen bleibt das Suchfeld stets vollflächig sichtbar und Vorschlagslisten öffnen unbeschnitten über dem Canvas, während Werkzeug-Aktionen in einem Touch-Kontextmenü (`[☰ Menü]`) gebündelt werden.
   6. Resilientes State Management & Dateninjektion: Datenhaltung über isoliertes `<script type="application/json" id="tree-data-json">` und abgesicherter Speicher-Zugriff (`safeStorage` mit In-Memory-Fallback) zur Prävention von `SecurityError`-Abbrüchen in iOS-Sandboxes.
-- **Technische Spezifikation:** Siehe [SPEC-EXP-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-003---req-exp-003)
+- **Technische Spezifikation:** Siehe [SPEC-EXP-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-003---req-exp-003)
 
 #### REQ-EXP-004: Hochauflösender Bild- & Vektorexport des Stammbaums
 - **Titel & Kurzbeschreibung:** Export des visualisierten Design-Stammbaums als SVG, hochauflösendes PNG oder PDF.
@@ -385,7 +385,7 @@ graph TD
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Frei wählbarer Skalierungsfaktor (z. B. 2x, 3x) für gestochen scharfe Rastergrafiken.
   2. Vektorbasierter SVG-Export für verlustfreie Weiterverarbeitung in Vektorgrafikprogrammen.
-- **Technische Spezifikation:** Siehe [SPEC-EXP-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-004---req-exp-004)
+- **Technische Spezifikation:** Siehe [SPEC-EXP-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-004---req-exp-004)
 
 #### REQ-EXP-005: Automatisierte LaTeX/TikZ-Buchchronik
 - **Titel & Kurzbeschreibung:** Rendern eines mehrseitigen genealogischen Buchwerks via Tera-Templates und automatisierte PDF-Kompilierung via `pdflatex`.
@@ -394,5 +394,5 @@ graph TD
   1. Strukturierte Gliederung nach Generationen mit Ahnenbäumen via TikZ/Forest.
   2. Vollständige LaTeX-Sonderzeichenmaskierung zur Verhinderung von Satzfehlern oder Injection.
   3. Speichern benutzerdefinierter Buch-Vorlagen in der Datenbank.
-- **Technische Spezifikation:** Siehe [SPEC-EXP-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md#spec-exp-005---req-exp-005)
+- **Technische Spezifikation:** Siehe [SPEC-EXP-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-005---req-exp-005)
 

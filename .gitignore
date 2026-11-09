@@ -24,3 +24,7 @@ dist-ssr
 *.sw?
 
 src-tauri/target_check
+
+# Internal documentation
+HOWTO_RELEASE_UPDATES.md
+

@@ -14,10 +14,10 @@ Die gesamte Dokumentation ist modular strukturiert und über den zentralen **[IN
 
 - **[INDEX.md](file:///c:/dev/Froning/app/LineageGraph/INDEX.md):** Zentraler Dokumentations- und Navigations-Hub
 - **[USER_GUIDE.md](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md):** Umfassendes Anwenderhandbuch für Endnutzer & Genealogen
-- **[REQ.md](file:///c:/dev/Froning/app/LineageGraph/REQ.md):** Fachliches Anforderungsdokument (Requirements Specification)
-- **[SPEC.md](file:///c:/dev/Froning/app/LineageGraph/SPEC.md):** Technische Spezifikation & Komponenten-Mapping
-- **[Architecture.md](file:///c:/dev/Froning/app/LineageGraph/Architecture.md):** C4/Komponenten-Architekturschaubild & Traceability-Matrix
-- **[TEST_CASES.md](file:///c:/dev/Froning/app/LineageGraph/TEST_CASES.md):** Test- und Qualitäts-Dokument (Unit-, Component- & Integrationstests)
+- **[REQ.md](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md):** Fachliches Anforderungsdokument (Requirements Specification)
+- **[SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md):** Technische Spezifikation & Komponenten-Mapping
+- **[Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md):** C4/Komponenten-Architekturschaubild & Traceability-Matrix
+- **[TEST_CASES.md](file:///c:/dev/Froning/app/LineageGraph/docs/TEST_CASES.md):** Test- und Qualitäts-Dokument (Unit-, Component- & Integrationstests)
 
 ---
 
