@@ -165,7 +165,7 @@ export interface UseShortestPathOptions {
   selectedPerson: Ref<Person | null>;
   activeProbandTab: Ref<string | null>;
   getActiveStartCode: () => string;
-  currentView: Ref<'table' | 'tree' | 'design' | 'export' | 'research'>;
+  currentView: Ref<'table' | 'tree' | 'design' | 'export' | 'research' | 'stats'>;
   currentTreeRootId: Ref<string | null>;
   freeInitialRootId: Ref<string | null>;
   pan: Ref<{ x: number; y: number }>;

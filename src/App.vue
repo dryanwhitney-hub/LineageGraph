@@ -16,6 +16,7 @@ import SettingsModal, { type SettingsTab } from './components/modals/SettingsMod
 import GedcomImportModal from './components/modals/GedcomImportModal.vue';
 import UpdateConfirmModal from './components/modals/UpdateConfirmModal.vue';
 import ResearchAssistantView from './components/research/ResearchAssistantView.vue';
+import StatisticsView from './components/stats/StatisticsView.vue';
 import { usePersons, type Person, type PersonMergeFieldsDto } from './composables/usePersons';
 import type { IsolatedBranchDto } from './types/research';
 import { useShortestPath } from './composables/useShortestPath';
@@ -39,7 +40,7 @@ const {
   dismissConfirmModal,
 } = useAppUpdater();
 
-const currentView = ref<'table' | 'tree' | 'design' | 'export' | 'research'>('table');
+const currentView = ref<'table' | 'tree' | 'design' | 'export' | 'research' | 'stats'>('table');
 const currentTreeRootId = ref<string | null>(null);
 const freeInitialRootId = ref<string | null>(null);
 const showSettings = ref<boolean>(false);
@@ -478,24 +479,6 @@ onMounted(() => {
         </div>
       </div>
 
-      <nav class="view-toggle">
-        <button @click="currentView = 'table'" :class="{ active: currentView === 'table' }">
-          📋 {{ t('view_table') }}
-        </button>
-        <button @click="currentView = 'tree'" :class="{ active: currentView === 'tree' }">
-          🌳 {{ t('view_tree') }}
-        </button>
-        <button @click="currentView = 'design'" :class="{ active: currentView === 'design' }">
-          📐 {{ t('view_design') }}
-        </button>
-        <button @click="currentView = 'export'" :class="{ active: currentView === 'export' }">
-          📦 {{ t('view_export') }}
-        </button>
-        <button @click="currentView = 'research'" :class="{ active: currentView === 'research' }">
-          🔬 {{ t('view_research') }}
-        </button>
-      </nav>
-
       <div class="utility-bar">
         <span v-if="statusMessage" class="status-pill">{{ statusMessage }}</span>
         <button class="util-btn" @click="showSettings = true; loadRootAncestors()">
@@ -511,6 +494,59 @@ onMounted(() => {
       </div>
     </header>
 
+    <div class="app-body">
+      <aside class="nav-rail" :aria-label="t('view_navigation_aria')">
+        <button
+          @click="currentView = 'table'"
+          :class="{ active: currentView === 'table' }"
+          :title="t('view_table')"
+        >
+          <span class="rail-icon">📋</span>
+          <span class="rail-label">{{ t('view_table') }}</span>
+        </button>
+        <button
+          @click="currentView = 'tree'"
+          :class="{ active: currentView === 'tree' }"
+          :title="t('view_tree')"
+        >
+          <span class="rail-icon">🌳</span>
+          <span class="rail-label">{{ t('view_tree') }}</span>
+        </button>
+        <button
+          @click="currentView = 'design'"
+          :class="{ active: currentView === 'design' }"
+          :title="t('view_design')"
+        >
+          <span class="rail-icon">📐</span>
+          <span class="rail-label">{{ t('view_design') }}</span>
+        </button>
+        <button
+          @click="currentView = 'export'"
+          :class="{ active: currentView === 'export' }"
+          :title="t('view_export')"
+        >
+          <span class="rail-icon">📦</span>
+          <span class="rail-label">{{ t('view_export') }}</span>
+        </button>
+        <button
+          @click="currentView = 'research'"
+          :class="{ active: currentView === 'research' }"
+          :title="t('view_research')"
+        >
+          <span class="rail-icon">🔬</span>
+          <span class="rail-label">{{ t('view_research') }}</span>
+        </button>
+        <button
+          @click="currentView = 'stats'"
+          :class="{ active: currentView === 'stats' }"
+          :title="t('view_stats')"
+        >
+          <span class="rail-icon">📊</span>
+          <span class="rail-label">{{ t('view_stats') }}</span>
+        </button>
+      </aside>
+
+      <div class="app-main-column">
     <!-- Zeile 2: Kontextsensitive Arbeitsleiste (nur in Tabelle & Stammbaum-Ansicht) -->
     <div class="context-subbar" v-if="currentView === 'table' || currentView === 'tree'">
       <div class="subbar-left">
@@ -837,6 +873,20 @@ onMounted(() => {
         @request-merge-persons="(targetId, sourceId) => handleRequestMergeTwoPersons(targetId, sourceId)"
       />
 
+      <!-- 6. Statistik-Ansicht -->
+      <StatisticsView
+        v-if="currentView === 'stats'"
+        :persons="persons"
+        :root-ancestors="rootAncestors"
+        :active-proband-id="activeProbandTab"
+        @select-person="p => { selectedPerson = p; isDetailsOpen = true; }"
+        @open-in-table="p => {
+          selectedPerson = p;
+          isDetailsOpen = true;
+          currentView = 'table';
+        }"
+      />
+
       <!-- Rechte Spalte: Detail-Drawer (nur in Tabelle & Stammbaum-Ansicht) -->
       <PersonDetailsDrawer
         :current-view="currentView"
@@ -882,6 +932,8 @@ onMounted(() => {
         @delete-person="pid => handleRequestDeletePerson(pid)"
         @merge-person="pid => handleOpenMergeForPerson(pid)"
       />
+      </div>
+      </div>
     </div>
   </main>
 </template>
@@ -985,40 +1037,77 @@ html, body, #app {
   color: #f8fafc;
 }
 
-/* Segmented View Navigation */
-.view-toggle {
+/* App Body & Left Icon Sidebar Rail */
+.app-body {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 0.25rem;
-  background: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 8px;
-  padding: 3px;
+  overflow: hidden;
 }
 
-.view-toggle button {
+.nav-rail {
+  width: 70px;
+  flex-shrink: 0;
+  background: #0f172a;
+  border-right: 1px solid #1e293b;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.35rem;
+  padding: 0.65rem 0.4rem;
+  overflow-y: auto;
+}
+
+.nav-rail button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.22rem;
   background: transparent;
   color: #94a3b8;
   border: none;
-  padding: 0.36rem 0.85rem;
-  font-size: 0.82rem;
-  font-weight: 600;
-  border-radius: 6px;
+  padding: 0.55rem 0.25rem;
+  border-radius: 8px;
   cursor: pointer;
   transition: all 0.15s ease;
+}
+
+.nav-rail button .rail-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.nav-rail button .rail-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  line-height: 1.1;
+  text-align: center;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.view-toggle button:hover:not(.active) {
+.nav-rail button:hover:not(.active) {
   color: #f1f5f9;
-  background: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.08);
 }
 
-.view-toggle button.active {
+.nav-rail button.active {
   background: #2563eb;
   color: #ffffff;
   font-weight: 700;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+}
+
+.app-main-column {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 /* Utility Bar */

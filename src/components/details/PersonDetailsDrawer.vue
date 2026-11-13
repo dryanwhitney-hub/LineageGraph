@@ -12,7 +12,7 @@ import {
 } from '../../composables/usePersons';
 
 const props = defineProps<{
-  currentView: 'table' | 'tree' | 'design' | 'export' | 'research';
+  currentView: 'table' | 'tree' | 'design' | 'export' | 'research' | 'stats';
   isDetailsOpen: boolean;
   selectedPerson: Person | null;
   personDetails: PersonDetails | null;
