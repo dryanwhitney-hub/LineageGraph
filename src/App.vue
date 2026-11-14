@@ -17,6 +17,7 @@ import AddPersonModal from './components/modals/AddPersonModal.vue';
 import SettingsModal, { type SettingsTab } from './components/modals/SettingsModal.vue';
 import GedcomImportModal from './components/modals/GedcomImportModal.vue';
 import UpdateConfirmModal from './components/modals/UpdateConfirmModal.vue';
+import WhatsNewModal from './components/modals/WhatsNewModal.vue';
 import ResearchAssistantView from './components/research/ResearchAssistantView.vue';
 import StatisticsView from './components/stats/StatisticsView.vue';
 import { usePersons, type Person, type PersonMergeFieldsDto } from './composables/usePersons';
@@ -37,9 +38,15 @@ const {
   statusMessage: updaterStatusMessage,
   statusType: updaterStatusType,
   showConfirmModal,
+  showWhatsNewModal,
+  whatsNewVersion,
+  whatsNewNotes,
+  whatsNewDate,
   checkForUpdates,
   confirmInstall,
   dismissConfirmModal,
+  checkPostUpdateWhatsNew,
+  dismissWhatsNewModal,
 } = useAppUpdater();
 
 type AppView = 'table' | 'tree' | 'design' | 'export' | 'research' | 'stats';
@@ -681,6 +688,7 @@ watch([isEditing, currentView], () => {
 onMounted(async () => {
   await initTrees();
   await runSyncPoll(true);
+  await checkPostUpdateWhatsNew();
   checkForUpdates(false);
   syncTimerId = window.setInterval(() => {
     if (!document.hidden) {
@@ -954,6 +962,15 @@ onUnmounted(() => {
       :errorMessage="updaterStatusType === 'error' ? updaterStatusMessage : null"
       @confirm="confirmInstall"
       @cancel="dismissConfirmModal"
+    />
+
+    <!-- Modal: Neu in dieser Version (Post-Update Release Notes) -->
+    <WhatsNewModal
+      :visible="showWhatsNewModal"
+      :version="whatsNewVersion"
+      :releaseNotes="whatsNewNotes"
+      :releaseDate="whatsNewDate"
+      @close="dismissWhatsNewModal"
     />
 
     <!-- Modal: Person oder Zweig entfernen -->

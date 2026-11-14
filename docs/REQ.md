@@ -1,9 +1,9 @@
 # Fachliches Anforderungsdokument (Requirements Specification - REQ)
 
 **System:** LineageGraph (Froning Familienbuch)  
-**Dokument-Version:** 3.0.0  
+**Dokument-Version:** 3.1.0  
 **Status:** Freigegebener Ist-Stand  
-**Datum:** 5. November 2026  
+**Datum:** 14. November 2026  
 **Referenzierte Dokumente:** [SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md), [Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)
 
 ---
@@ -31,6 +31,8 @@ graph TD
     CAT_TRM --> REQ_TRM_002["REQ-TRM-002: 2-Stufen-Sicherheitslöschung"]:::req
     CAT_TRM --> REQ_TRM_003["REQ-TRM-003: Leerzustand & Fallback"]:::req
     CAT_TRM --> REQ_TRM_004["REQ-TRM-004: App-Aktualisierung & Versionsprüfung"]:::req
+    CAT_TRM --> REQ_TRM_005["REQ-TRM-005: Speicherort & Peer-Sync"]:::req
+    CAT_TRM --> REQ_TRM_006["REQ-TRM-006: Baum-Backups & Wiederherstellung"]:::req
 
     CAT_DAT --> REQ_DAT_001["REQ-DAT-001: Personen-Erfassung & XREF-Gen"]:::req
     CAT_DAT --> REQ_DAT_002["REQ-DAT-002: Batch-Editierung & Validierung"]:::req
@@ -39,6 +41,7 @@ graph TD
     CAT_DAT --> REQ_DAT_005["REQ-DAT-005: Audit-Felder (CHAN / UID)"]:::req
     CAT_DAT --> REQ_DAT_006["REQ-DAT-006: Einzel- & Zweig-Löschung mit Backup"]:::req
     CAT_DAT --> REQ_DAT_007["REQ-DAT-007: Selektiver Personen-Merge"]:::req
+    CAT_DAT --> REQ_DAT_008["REQ-DAT-008: Datums-Normalisierung & Formatierung"]:::req
 
     CAT_ALG --> REQ_ALG_001["REQ-ALG-001: Multi-Probanden-Verwaltung"]:::req
     CAT_ALG --> REQ_ALG_002["REQ-ALG-002: Henry-Code-Berechnung"]:::req
@@ -48,7 +51,8 @@ graph TD
     CAT_UI --> REQ_UI_002["REQ-UI-002: Infinite-Canvas-Stammbaum"]:::req
     CAT_UI --> REQ_UI_003["REQ-UI-003: Detail-Drawer & Verwandtschafts-Inspector"]:::req
     CAT_UI --> REQ_UI_004["REQ-UI-004: Freie Schnellabfrage (Free Query)"]:::req
-    CAT_UI --> REQ_UI_005["REQ-UI-005: Zweisprachigkeit (DE / EN)"]:::req
+    CAT_UI --> REQ_UI_005["REQ-UI-005: Mehrsprachigkeit (DE/EN/FR/PT)"]:::req
+    CAT_UI --> REQ_UI_006["REQ-UI-006: Statistik- & Analyse-Ansicht"]:::req
 
     CAT_DSG --> REQ_DSG_001["REQ-DSG-001: Automatisches Pedigree-Layout"]:::req
     CAT_DSG --> REQ_DSG_002["REQ-DSG-002: Orthogonale Linienbrücken"]:::req
@@ -56,6 +60,7 @@ graph TD
     CAT_DSG --> REQ_DSG_004["REQ-DSG-004: Hintergrundgestaltung & Bild-Persistenz"]:::req
     CAT_DSG --> REQ_DSG_005["REQ-DSG-005: Layout-Historie & Undo/Redo"]:::req
     CAT_DSG --> REQ_DSG_006["REQ-DSG-006: Hierarchische Stamm-/Zweig-Layouts"]:::req
+    CAT_DSG --> REQ_DSG_007["REQ-DSG-007: Verschlüsselter Projekt-Export/-Import"]:::req
 
     CAT_IMP --> REQ_IMP_001["REQ-IMP-001: Atomarer GEDCOM-Vollimport"]:::req
     CAT_IMP --> REQ_IMP_002["REQ-IMP-002: GEDCOM-Staging & Matching"]:::req
@@ -114,6 +119,24 @@ graph TD
   4. Liegt eine neuere Version vor (sowohl beim Start als auch bei manueller Suche), muss ein Bestätigungsdialog eingeblendet werden, der Versionsnummer, optionale Release Notes und Optionen zum sofortigen Installieren (`✨ Jetzt aktualisieren`) oder Verschieben (`Später erinnern`) anbietet.
   5. Erst nach expliziter Bestätigung durch den Anwender wird das Installationspaket heruntergeladen und die Installation eingeleitet.
 - **Technische Spezifikation:** Siehe [SPEC-TRM-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-004---req-trm-004)
+
+#### REQ-TRM-005: Konfigurierbarer Speicherort & Peer-Synchronisation
+- **Titel & Kurzbeschreibung:** Verlagerung des Datenbank-Verzeichnisses (z. B. auf ein Netzlaufwerk oder Cloud-Sync-Ordner) inklusive Vorab-Inspektion, automatischer Netzwerk-Erkennung und Multi-User-Peer-Polling.
+- **Fachlicher Zweck / Business Value:** Ermöglicht das gemeinsame Arbeiten an Familienstammbäumen über geteilte Verzeichnisse oder lokale Netzwerke mit transparenter Sichtbarkeit aktiver Sitzungen und automatischem Reload bei externen Änderungen.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Anwender können das Zielverzeichnis in den Einstellungen (`⚙️ Einstellungen` -> `Speicherort`) inspizieren (`inspect_storage_directory`), bevor sie den Speicherort wechseln (`change_storage_directory`).
+  2. Ist der konfigurierte benutzerdefinierte Pfad nicht erreichbar, fällt die Anwendung sicher auf das lokale Standardverzeichnis zurück und signalisiert dies über `is_fallback_active` und `storage_warning`.
+  3. Über `poll_storage_sync_state` werden Änderungen an Stammbäumen (`genealogy_fingerprint`), Design-Dokumenten (`design_doc_timestamps`) sowie aktive Peer-Sitzungen (mit konfigurierbarem Anzeigenamen) erkannt und beim Beenden über `close_peer_session` sauber abgemeldet.
+- **Technische Spezifikation:** Siehe [SPEC-TRM-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-005---req-trm-005)
+
+#### REQ-TRM-006: Lokale Baum-Backups & Komplettsicherung
+- **Titel & Kurzbeschreibung:** Erstellen, Auflisten, Wiederherstellen und Löschen von Sicherungskopien einzelner Stammbäume sowie Export einer Komplettsicherung aller Datenbanken.
+- **Fachlicher Zweck / Business Value:** Bietet Endanwendern direkte, selbstständige Datensicherung und Punkt-Wiederherstellung ohne manuelles Hantieren mit SQLite-Dateien im Dateisystem.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Für den aktiven Stammbaum können jederzeit manuelle Backups angelegt (`create_tree_backup`), aufgelistet (`list_tree_backups`), wiederhergestellt (`restore_tree_backup`) und gelöscht (`delete_tree_backup`) werden.
+  2. Beim Wiederherstellen eines Backups wird die aktive SQLite-Verbindung sicher geschlossen, die Datei zurückgespielt und der Zustand im Frontend neu geladen.
+  3. Über `backup_all_databases` lassen sich sämtliche Stammbaum-Datenbanken des aktuellen Speicherorts gesammelt in ein gewähltes Zielverzeichnis sichern.
+- **Technische Spezifikation:** Siehe [SPEC-TRM-006 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-006---req-trm-006)
 
 ---
 
@@ -186,6 +209,15 @@ graph TD
   4. Checklisten-Auswahl zu übernehmender Ereignisse (`events`) und automatische Generierung einer Revisionsnotiz zur Dokumentation der Quell-ID und verworfener Werte.
   5. Atomare Transaktion mit automatischer `.bak`-Datenbanksicherung und Neuberechnung der Henry-Codes.
 - **Technische Spezifikation:** Siehe [SPEC-DAT-007 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-007---req-dat-007)
+
+#### REQ-DAT-008: Mehrsprachige Datums-Normalisierung & Konfigurierbare Formatierung
+- **Titel & Kurzbeschreibung:** Tolerante Erfassung und mehrsprachiges Parsing von Datumsangaben im Frontend und Backend, kanonische Speicherung im GEDCOM-5.5.1-Format sowie benutzerdefinierte Anzeigeformatierung.
+- **Fachlicher Zweck / Business Value:** Verhindert inkonsistente Datumsstrings bei internationaler Nutzung, stellt volle GEDCOM-Konformität bei Import/Export sicher und erlaubt jedem Anwender sein bevorzugtes Datumsformat.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Eingaben in Datumsfeldern (`DateInput.vue`) akzeptieren lokalisierte Monatsnamen (DE, EN, FR, PT), numerische Formate (`DD.MM.YYYY`, `YYYY-MM-DD`, `DD/MM/YYYY`, `MM/DD/YYYY`) sowie GEDCOM-Qualifier (`ABT`, `CAL`, `EST`, `BEF`, `AFT`, `BET ... AND ...`, `FROM ... TO ...`, `INT`, Phrasen in Klammern).
+  2. Beim Verlassen des Eingabefelds sowie bei GEDCOM-Import/-Export und Datenbank-Speicherung werden gültige Datumsausdrücke in das kanonische GEDCOM-Format (englische 3-Buchstaben-Monate in Großbuchstaben, z. B. `14 NOV 2026`) normalisiert (`gedcom_date.rs`, `useDateFormat.ts`).
+  3. In den Einstellungen kann der Anwender zwischen automatischer Sprachanpassung (`locale`) und expliziten Formaten (`dd.mm.yyyy`, `yyyy-mm-dd`, `dd/mm/yyyy`, `mm/dd/yyyy`, `dd_mmm_yyyy`, `gedcom`) wählen.
+- **Technische Spezifikation:** Siehe [SPEC-DAT-008 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-008---req-dat-008)
 
 ---
 
@@ -261,82 +293,98 @@ graph TD
   2. Klick auf ein Suchergebnis selektiert die Person und zentriert die Visualisierung.
 - **Technische Spezifikation:** Siehe [SPEC-UI-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-004---req-ui-004)
 
-#### REQ-UI-005: Vollständige Internationalisierung (DE / EN)
-- **Titel & Kurzbeschreibung:** Umschaltbare Mehrsprachigkeit für Deutsch und Englisch über alle UI-Elemente und Fehlermeldungen.
-- **Fachlicher Zweck / Business Value:** Zugänglichkeit für internationale Forscher und Familienmitglieder.
+#### REQ-UI-005: Vollständige Internationalisierung (DE / EN / FR / PT)
+- **Titel & Kurzbeschreibung:** Umschaltbare Mehrsprachigkeit für Deutsch, Englisch, Französisch und Portugiesisch über alle UI-Elemente, Datumsanzeigen, Exporte und Fehlermeldungen.
+- **Fachlicher Zweck / Business Value:** Zugänglichkeit für internationale Forscher und Familienmitglieder im deutschen, englischen, französischen und portugiesischen Sprachraum.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Umschaltung in den Einstellungen mit sofortiger Auswirkung ohne Neuladen.
-  2. Vollständige Übersetzung aller Tabellentexte, Dialoge, Badges und Tooltips.
+  1. Zentrale Sprach-Registry (`src/locales/registry.ts`) mit Unterstützung für `de`, `en`, `fr` und `pt` inklusive BCP-47-Tag und LaTeX-Babel-Mapping.
+  2. Umschaltung in den Einstellungen oder über den `LanguageSelector` mit sofortiger Auswirkung ohne Neuladen und Persistierung in `localStorage`.
+  3. Vollständige Übersetzung aller Tabellentexte, Dialoge, Badges und Tooltips sowie automatisierte Schlüssel-Konsistenzprüfung beim Build (`npm run check:locales`).
 - **Technische Spezifikation:** Siehe [SPEC-UI-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-005---req-ui-005)
+
+#### REQ-UI-006: Genealogische Statistik- & Analyse-Ansicht
+- **Titel & Kurzbeschreibung:** Interaktive Auswertungs-Ansicht mit D3.js-Visualisierungen zu Demografie, Familienstrukturen, Namen & Orten sowie Datenqualität & Implex-Analyse.
+- **Fachlicher Zweck / Business Value:** Liefert Familienforschern quantitative Einblicke in Lebenserwartung, Kinderzahlen, Namens-/Ortsverteilung und Datenlücken mit direktem Rücksprung zu den betroffenen Personen.
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Globale Filterleiste nach Proband (`probandId`), Geschlecht (`all` / `M` / `F`), Zeitraum (`yearFrom` / `yearTo`), exakten Daten (`onlyExactDates`) und Familiengruppierung (`couple` / `person`).
+  2. Vier strukturierte Analyse-Tabs: **Demografie** (`DemographicsTab.vue`), **Familien** (`FamiliesTab.vue`), **Namen & Orte** (`NamesPlacesTab.vue`) und **Qualität & Struktur** (`QualityStructureTab.vue`, inkl. Implex-/Ahnenschwund-Analyse).
+  3. Interaktive D3-Diagramme (`D3BarChart`, `D3GroupedBarChart`, `D3LineChart`) mit Klick-Drilldown in eine Personenliste, aus der direkt der Detail-Drawer oder die Datentabelle geöffnet werden kann.
+- **Technische Spezifikation:** Siehe [SPEC-UI-006 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-006---req-ui-006)
 
 ---
 
 ### 2.5 Stammbaum Design Studio (DSG)
 
-#### REQ-DSG-001: Automatisches hierarchisches Pedigree-Layout
-- **Titel & Kurzbeschreibung:** Berechnung ästhetischer, kollisionsfreier Layouts mit Generationen-Schichten und anpassbaren Abständen.
+#### REQ-DSG-001: Automatisches hierarchisches Pedigree-Layout & Wuchsrichtung
+- **Titel & Kurzbeschreibung:** Berechnung ästhetischer, kollisionsfreier Kontur-Layouts mit konfigurierbarer Wuchsrichtung (`bottom_up` / `top_down`) und Abstammungspolicy (`patrilinear` / `matrilinear` / `oldest_branch`).
 - **Fachlicher Zweck / Business Value:** Erstellung druckreifer Stammbaum-Diagramme ohne mühsames manuelles Anordnen einzelner Karten.
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Gruppierung von Geschwistern und Partnern in gemeinsamen horizontalen Bändern.
-  2. Automatische Sub-Lane-Berechnung zur Vermeidung von Überlappungen bei dichten Familienzweigen.
-  3. Konfigurierbare Mindestabstände zwischen Zweigen und Personen.
+  2. Automatische Kontur- und Sub-Lane-Berechnung (`contourLayoutEngine.ts`) zur Vermeidung von Überlappungen bei dichten Familienzweigen.
+  3. Konfigurierbare Wuchsrichtung (`bottom_up` oder `top_down`), Abstammungspolicy (`patrilinear`, `matrilinear`, `oldest_branch`) sowie anpassbare Abstände.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-001 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-001---req-dsg-001)
 
-#### REQ-DSG-002: Orthogonale Linienführung, Bottom-Up Track Assignment & Linienbrücken (Line Bridges)
-- **Titel & Kurzbeschreibung:** Rechtwinklige SVG-Verbindungslinien nach dem „Track Assignment für Bottom-Up-Layouts"-Verfahren mit patrilinearer Implex-Auflösung und bogenförmigen Brücken bei Kreuzungen.
+#### REQ-DSG-002: Orthogonale & organische Linienführung, Track Assignment & Linienbrücken
+- **Titel & Kurzbeschreibung:** Rechtwinklige (`orthogonal_bus`) oder geschwungene (`organic_bezier`) SVG-Verbindungslinien mit Track Assignment, Implex-Auflösung, Wegpunkt-Korrekturen und optionalen Linienbrücken.
 - **Fachlicher Zweck / Business Value:** Klare, kreuzungsminimierte Nachverfolgbarkeit von Abstammungslinien zwischen Elterneinträgen und Kindern bzw. Gruppierungen von Kindern im Design Mode sowie im Bild-/Vektorexport.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Verbunden werden Elterneinträge (unten) mit ihren Kindern bzw. zusammenhängenden Gruppierungen von Kindern (oben) über orthogonale Segmente (`Start/Eltern unten -> hoch -> horizontal -> hoch -> Ziel/Kinder oben`).
-  2. Bei Implex-Fällen (beide Elternteile sind im Baum enthalten) wird strikt eine patrilineare Darstellung verfolgt (Vater hat Vorrang vor Mutter; die Mutter wird nur dann verbunden, wenn der Vater nicht im Baum enthalten ist).
-  3. **Track Assignment für Bottom-Up-Layouts:**
+  1. Verbunden werden Elterneinträge mit ihren Kindern bzw. zusammenhängenden Gruppierungen von Kindern wahlweise über orthogonale Bus-Segmente (`orthogonal_bus`) oder organische Bezier-Kurven (`organic_bezier`).
+  2. Bei Implex-Fällen wird gemäß der gewählten `lineagePolicy` (Standard: `patrilinear`) bzw. der expliziten `implexActiveParentId`-Regel genau ein aktiver Elternstrang geroutet.
+  3. **Track Assignment:**
      - Jede horizontale Verbindung `C` definiert das gepolsterte Intervall `[min(x_start, x_end) - PADDING, max(x_start, x_end) + PADDING]`.
-     - Alle Verbindungen eines Korridors werden absteigend nach ihrer horizontalen Spannweite `abs(x_start - x_end)` sortiert, sodass weiter nach außen greifende Verbindungen weiter unten (näher am Elternknoten) platziert werden.
-     - Greedy Track-Zuweisung von oben nach unten (`Track 0` direkt unter den Kind-Knoten, `Track 1` darunter Richtung Eltern-Knoten): Eine Verbindung `C` erhält den kleinsten Track-Index `T`, in dem weder eine horizontale Intervall-Überlappung in Track `T` (**Bedingung A**) noch eine Kreuzung der vertikalen Kind-Zuleitungen mit horizontalen Intervallen in den darüberliegenden Tracks `0` bis `T-1` (**Bedingung B**) auftritt.
-  4. Unvermeidbare Schnittpunkte zwischen horizontalen und vertikalen Segmenten werden als Halbkreis-Bogen (`bridgeRadius`) gerendert.
+     - Alle Verbindungen eines Korridors werden absteigend nach ihrer horizontalen Spannweite `abs(x_start - x_end)` sortiert.
+     - Greedy Track-Zuweisung verhindert horizontale Intervall-Überlappungen (**Bedingung A**) und Kreuzungen vertikaler Kind-Zuleitungen (**Bedingung B**). Manuelle Feinjustierungen werden als `EdgeWaypointRule` persistiert.
+  4. Unvermeidbare Schnittpunkte zwischen horizontalen und vertikalen Segmenten werden bei aktiviertem `enableLineBridges` als Halbkreis-Bogen (`bridgeRadius`) gerendert.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-002 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-002---req-dsg-002)
 
-#### REQ-DSG-003: Voll konfigurierbare Personenkarten mit Live-Preview-Popover
-- **Titel & Kurzbeschreibung:** Detaillierte Gestaltung von Kartenbreite, Typografie, Rahmenfarben, Schatten und angezeigten Datenfeldern über ein optisch zurückgestelltes Live-Preview-Popover in der Studio-Toolbar.
+#### REQ-DSG-003: Voll konfigurierbare Personenkarten & Dichteprofile
+- **Titel & Kurzbeschreibung:** Detaillierte Gestaltung von Kartenbreite, Dichteprofilen (`detail`, `standard`, `compact_years`, `narrow`), Typografie, Rahmenfarben, Schatten und angezeigten Datenfeldern.
 - **Fachlicher Zweck / Business Value:** Anpassung des visuellen Erscheinungsbildes mit sofortiger Live-Vorschau am echten Schaubild, ohne die Arbeitsfläche des Design Studios zu überfrachten.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Farben für männliche, weibliche und neutrale Personen getrennt konfigurierbar; Kachel-Kopfbereiche bleiben frei von Mini-Aktionsbuttons.
-  2. Optionale Einblendung von Geburts-/Sterbedatum, Lebensspanne, Henry-Code und Generation direkt im Popover `⚙️ Kachel- & Layout-Optionen` mit unmittelbarer Live-Vorschau auf der Canvas.
-  3. Alle kontextabhängigen Karten- und Gruppenaktionen sind an einem einzigen schwebenden HUD (`group-floating-controls`) über der selektierten Karte/Gruppe gebündelt.
+  1. Farben für männliche, weibliche und neutrale Personen getrennt konfigurierbar; Auswahl aus vier vorkonfigurierten Dichteprofilen (`detail`, `standard`, `compact_years`, `narrow`).
+  2. Optionale Einblendung von Geburts-/Sterbedatum, Lebensspanne, Henry-Code und Generation direkt über das Studio-Panel mit unmittelbarer Live-Vorschau auf der Canvas.
+  3. Alle kontextabhängigen Karten- und Gruppenaktionen sind an einem einzigen schwebenden HUD über der selektierten Karte/Gruppe gebündelt.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-003---req-dsg-003)
 
-#### REQ-DSG-004: Hintergrundgestaltung & Bild-Persistierung
-- **Titel & Kurzbeschreibung:** Hinterlegen von Farben, Verläufen oder Wappen/Kartenbildern mit Deckkraft- und Skalierungsregelung.
-- **Fachlicher Zweck / Business Value:** Hochwertige optische Untermalung für Familienfeste und Chroniken.
+#### REQ-DSG-004: Hintergrundgestaltung & Medien-Asset-Persistierung
+- **Titel & Kurzbeschreibung:** Hinterlegen von Farben, Verläufen oder Wappen/Kartenbildern mit Deckkraft- und Skalierungsregelung sowie dedizierter Medien-Verwaltung.
+- **Fachlicher Zweck / Business Value:** Hochwertige optische Untermalung für Familienfeste und Chroniken ohne Duplizierung großer Bilddateien.
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Import lokaler Bilddateien (PNG, JPG, SVG).
-  2. Dauerhafte Speicherung der Bild-Binärdaten in der SQLite-Datenbank (`design_layouts`).
+  2. Dauerhafte, deduplizierte Speicherung der Bilddaten in der SQLite-Tabelle `media_assets` mit Referenzierung über `bg_asset_id` am Design-Dokument.
   3. Frei justierbare Deckkraft (Opacity), Skalierung und Positionierung.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-004---req-dsg-004)
 
-#### REQ-DSG-005: Layout-Persistenz, Dateiverwaltung & Undo/Redo-Verlauf
-- **Titel & Kurzbeschreibung:** Speichern beliebig vieler benannter Design-Layouts pro Proband in SQLite, Anlegen neuer Designs, Öffnen und Exportieren externer JSON-Dateien sowie lückenlose Rückgängig-Funktion.
-- **Fachlicher Zweck / Business Value:** Sicheres Experimentieren mit visuellen Anordnungen ohne Datenverlust, nahtloser Austausch und Archivierung von Stammbaum-Layouts.
+#### REQ-DSG-005: Dokumenten-Persistenz (v2), Dateiverwaltung & Undo/Redo-Verlauf
+- **Titel & Kurzbeschreibung:** Speichern beliebig vieler strukturierter Design-Dokumente (`design_documents` mit Regel-Tabellen) pro Proband in SQLite, Anlegen neuer Designs, Öffnen/Exportieren externer JSON-Dateien sowie lückenlose Rückgängig-Funktion.
+- **Fachlicher Zweck / Business Value:** Sicheres Experimentieren mit visuellen Anordnungen ohne Datenverlust, strukturierte Regelverwaltung und nahtloser Austausch.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Speichern und Laden von Layouts pro Proband in der Tabelle `design_layouts`.
-  2. Möglichkeit zum Anlegen eines neuen Entwurfs ("Neues Design") über das schwebende Aktions-Overlay unten rechts mit freier Stammahnen-Auswahl und Warnhinweis bei ungespeicherten Änderungen.
-  3. Beim Umschalten auf einen anderen Stammahnen (über das Stammahnen-Dropdown oder die Neuanlage) werden ausschließlich Layouts dieses spezifischen Stammahnen geladen bzw. ein initialer Zustand erzeugt; fremde Speicherstände anderer Stammahnen werden niemals fälschlich geladen.
-  4. Direktes Öffnen externer Design-Dateien (`.json`) über den nativen Dateidialog (`read_design_file`) aus dem Lade-Dialog.
-  5. Exportieren des aktuellen Zustands oder gespeicherter Einträge als eigenständige `.json`-Datei (`save_design_file`).
-  6. Undo/Redo-Stack für Verschiebungen, Einklappungen und Stilanpassungen.
+  1. Speichern und Laden strukturierter Design-Dokumente in `design_documents` inklusive `design_person_rules`, `design_group_rules`, `design_subtree_mounts` und `design_edge_waypoints` (mit Legacy-Kompatibilität zu `design_layouts`).
+  2. Möglichkeit zum Anlegen eines neuen Entwurfs ("Neues Design") mit freier Stammahnen-Auswahl und Warnhinweis bei ungespeicherten Änderungen.
+  3. Beim Umschalten auf einen anderen Stammahnen werden ausschließlich Dokumente dieses spezifischen Stammahnen geladen bzw. ein initialer Zustand erzeugt.
+  4. Direktes Öffnen und Exportieren externer Design-Dateien (`.json`) über den nativen Dateidialog (`read_design_file`, `save_design_file`).
+  5. Undo/Redo-Stack im `useDesignStudioStore` für Regel-, Verschiebungs- und Stilanpassungen.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-005---req-dsg-005)
 
 #### REQ-DSG-006: Hierarchische Stamm- und Zweig-Layouts (Subtree Composition)
-- **Titel & Kurzbeschreibung:** Modulares, getrenntes Gestalten und Speichern von Nachkommenzweigen (Teilstämmen) sowie dynamische, schreibgeschützte Einbettung inklusive lokaler Hintergrundbilder im übergeordneten Master-Stammbaum.
-- **Fachlicher Zweck / Business Value:** Ermöglicht die dezentrale oder schrittweise Bearbeitung großer Stammbäume, indem komplexe Familienzweige isoliert entworfen und im Gesamtbaum konsistent wiederverwendet werden können, ohne das Master-Layout zu überfrachten.
+- **Titel & Kurzbeschreibung:** Modulares, getrenntes Gestalten und Speichern von Nachkommenzweigen (`document_kind = 'subtree'`) sowie dynamische Einbettung im übergeordneten Master-Stammbaum als `inline`- oder `capsule`-Darstellung.
+- **Fachlicher Zweck / Business Value:** Ermöglicht die dezentrale oder schrittweise Bearbeitung großer Stammbäume, indem komplexe Familienzweige isoliert entworfen und im Gesamtbaum konsistent wiederverwendet werden können.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. **Zweig-Layouts (Subtree):** Ein Teilstamm zu einem beliebigen Nachkommen kann als eigenständiges Subtree-Design (`layout_type = 'subtree'`) mit eigenem Wurzelanker (`anchor_person_id`), individuellem Layout und lokalem Hintergrundbild/Wappen separat gespeichert und verwaltet werden.
-  2. **Verknüpfung im Master-Layout:** Im übergeordneten Master-Layout kann einer Person mit Nachkommen ein gespeichertes Zweig-Layout zugeordnet oder direkt ein neuer Zweig für diese Person angelegt werden.
-  3. **Dynamische Einbettung:** Anstelle der standardmäßigen Master-Gruppierung der Nachkommen wird das Teilstamm-Layout an der relativen Canvas-Position des Ankerknotens dynamisch eingehängt (`visibleGroupAndMemberMap`), wobei die Canvas-Höhe und Level-Bänder automatisch skaliert werden.
-  4. **Lokale Wappen/Hintergründe:** Etwaige im Teilstamm hinterlegte Hintergrundbilder werden mit relativer Skalierung, Transparenz und berechnetem Offset am Zweiganker auf der Canvas gerendert.
-  5. **Schreibschutz im Master (Isolation):** Eingebettete Zweig-Karten und Gruppen sind im Master-Layout schreibgeschützt (kein Verschieben, Einklappen, Trennen oder Andocken; visuelle Kennzeichnung mit Schloss-Symbol und dezentem Rahmen).
-  6. **Nahtlose Navigation & Bearbeitung:** Aus dem Master-Layout heraus kann per Klick auf „Zweig bearbeiten“ direkt in das Subtree-Design gewechselt werden (unter automatischem Backup des Master-Zustands), und über „Zurück zum Master“ wird ohne Datenverlust zurückgekehrt.
-  7. **Automatische Isolierung & Verdrängung (Outward Push):** Sobald zu einem Stammeintrag ein Zweig definiert ist, wird die Person automatisch aus einer bestehenden Geschwistergruppe in eine eigenständige Gruppe isoliert. Eingebettete Zweige ermitteln ihre horizontalen Grenzen über alle belegten Generationsebenen und schieben links und rechts liegende Einträge im Master automatisch nach außen, sodass keine Überlappungen mit Nachbarzweigen entstehen.
+  1. **Zweig-Layouts (Subtree):** Ein Teilstamm zu einem beliebigen Nachkommen kann als eigenständiges Subtree-Design (`document_kind = 'subtree'`) mit eigenem Wurzelanker (`anchor_person_id`), individuellem Layout und lokalem Hintergrundbild separat gespeichert und verwaltet werden.
+  2. **Verknüpfung im Master-Layout:** Über `design_subtree_mounts` kann einer Person mit Nachkommen ein gespeichertes Zweig-Layout wahlweise im Modus `inline` (direkt eingebettet) oder `capsule` (kompakte Kapsel) zugeordnet werden.
+  3. **Dynamische Einbettung & Outward Push:** Die Szene berechnet (`sceneGraphBuilder.ts`, `contourLayoutEngine.ts`) die Geometrie des eingebetteten Zweigs und verdrängt Nachbarzweige kollisionsfrei nach außen.
+  4. **Lokale Wappen/Hintergründe:** Etwaige im Teilstamm hinterlegte Hintergrundbilder (`bg_asset_id`) werden am Zweiganker auf der Canvas gerendert.
+  5. **Schreibschutz im Master (Isolation):** Eingebettete Zweig-Karten sind im Master-Layout schreibgeschützt; ein Klick auf „Zweig bearbeiten“ wechselt nahtlos in das Subtree-Dokument.
 - **Technische Spezifikation:** Siehe [SPEC-DSG-006 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-006---req-dsg-006)
+
+#### REQ-DSG-007: Verschlüsselter Projekt-Export & -Import (.lgproj)
+- **Titel & Kurzbeschreibung:** Passwortgeschützter Export und Import vollständiger Design-Projektbündel (Master-Dokument, verknüpfte Subtree-Dokumente, eingebettete Medien-Assets und Personendaten-Referenzen) als verschlüsselte `.lgproj`-Datei.
+- **Fachlicher Zweck / Business Value:** Ermöglicht den sicheren Austausch kompletter, gestalteter Stammbaum-Projekte inklusive Wappen/Bildern über unsichere Kanäle (E-Mail, Cloud).
+- **Akzeptanzkriterien & Geschäftsregeln:**
+  1. Der Anwender vergibt beim Export ein Passwort; die Nutzdaten werden mit **AES-256-GCM** verschlüsselt, wobei der Schlüssel per **PBKDF2-HMAC-SHA256** (100.000 Iterationen) und zufälligem Salt abgeleitet wird.
+  2. Die Binärdatei beginnt mit dem Magic-Header `LGPROJ01` und enthält Salt, Nonce und Chiffretext.
+  3. Beim Import (`import_encrypted_project`) wird das Passwort abgefragt, die Entschlüsselung verifiziert und das Design-Bundle (inklusive Medien-Assets) atomar in die Datenbank des aktiven Stammbaums übernommen.
+- **Technische Spezifikation:** Siehe [SPEC-DSG-007 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-007---req-dsg-007)
 
 ---
 
@@ -400,6 +448,7 @@ graph TD
   4. Vollständige Plattformunabhängigkeit: Natives Öffnen und Ausführen ohne funktionale Einbußen lokal auf Desktop, Android- und iOS-Geräten (inklusive iOS Dateien-App/Quick Look, WhatsApp-Viewer, Offline-Dateien) sowie auf Webservern.
   5. Touch- & Viewport-Optimierung: Viewport mit `viewport-fit=cover`, Mindestgröße von 44x44px für Steuerelemente und transparente SVG-Knoten-Hitboxen (`r=22`), Dynamic Viewport Units (`100dvh`), Safe-Area-Insets (`env(safe-area-inset-*)`) und `touch-action: none` auf dem SVG-Container gegen Gestenkonflikte. Auf mobilen Bildschirmen bleibt das Suchfeld stets vollflächig sichtbar und Vorschlagslisten öffnen unbeschnitten über dem Canvas, während Werkzeug-Aktionen in einem Touch-Kontextmenü (`[☰ Menü]`) gebündelt werden.
   6. Resilientes State Management & Dateninjektion: Datenhaltung über isoliertes `<script type="application/json" id="tree-data-json">` und abgesicherter Speicher-Zugriff (`safeStorage` mit In-Memory-Fallback) zur Prävention von `SecurityError`-Abbrüchen in iOS-Sandboxes.
+  7. Mehrsprachige Export-Generierung (`de`, `en`, `fr`, `pt`) über `ExportLanguageSelect.vue` und `tLocale`, inklusive umschaltbarer Desktop- und Mobile-Vorschau (Portrait/Landscape) direkt im Export-Panel (`HtmlExportPane.vue`).
 - **Technische Spezifikation:** Siehe [SPEC-EXP-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-003---req-exp-003)
 
 #### REQ-EXP-004: Hochauflösender Bild- & Vektorexport des Stammbaums

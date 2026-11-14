@@ -1,9 +1,9 @@
 # Test- und Qualitäts-Dokument (TEST_CASES.md)
 
 **System:** LineageGraph (Froning Familienbuch)  
-**Dokument-Version:** 3.0.0  
+**Dokument-Version:** 3.1.0  
 **Status:** Freigegebenes Qualitäts- und Testdokument  
-**Datum:** 5. November 2026  
+**Datum:** 14. November 2026  
 **Referenzierte Dokumente:** [REQ.md](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md), [SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md), [Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)
 
 ---
@@ -110,6 +110,36 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * Die manuelle Suche in den Einstellungen gibt verständliche Statusmeldungen (`Die Anwendung ist auf dem neuesten Stand.`, `Keine Internetverbindung verfügbar.` etc.) aus.
   * Die Installation wird **niemals** ungefragt gestartet; das Bestätigungsmodal fordert zwingend die explizite Nutzerentscheidung ein.
 
+#### TC-TRM-005: Konfigurierbarer Speicherort, Fallback & Peer-Synchronisation
+- **Traceability:** [REQ-TRM-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-005-konfigurierbarer-speicherort--peer-synchronisation) -> [SPEC-TRM-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-005---req-trm-005)
+- **Test-Typ:** Integration Test (Tauri IPC / Storage / Sync)
+- **Test-Ziel:** Verifikation der Vorab-Inspektion, des Speicherortwechsels, des Fallback-Verhaltens bei nicht erreichbarem Zielpfad sowie des Peer-Sync-Pollings.
+- **Preconditions:** Anwendung mit aktivem Stammbaum im Standardverzeichnis; zweiter beschreibbarer Zielordner vorhanden.
+- **Testschritte:**
+  1. In `SettingsModal.vue` -> `Speicherort` den Zielordner über `inspect_storage_directory` prüfen.
+  2. Speicherort über `change_storage_directory` wechseln und prüfen, dass `get_storage_info` `is_custom = true` liefert.
+  3. `poll_storage_sync_state` aufrufen und `genealogy_fingerprint`, `design_doc_timestamps` sowie `active_peers` prüfen.
+  4. Beim Beenden `close_peer_session` auslösen.
+- **Erwartetes Ergebnis:**
+  * `inspect_storage_directory` erkennt Schreibbarkeit und vorhandene `.db`-Dateien korrekt.
+  * Bei nicht erreichbarem Pfad greift der Fallback auf `default_data_dir` (`is_fallback_active = true`, `storage_warning != null`).
+  * Peer-Sitzungen werden sauber registriert und beim Schließen entfernt.
+
+#### TC-TRM-006: Lokale Baum-Backups & Komplettsicherung
+- **Traceability:** [REQ-TRM-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-006-lokale-baum-backups--komplettsicherung) -> [SPEC-TRM-006](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-006---req-trm-006)
+- **Test-Typ:** Integration Test (Tauri IPC / SQLite Backup)
+- **Test-Ziel:** Sicherstellen, dass manuelle Backups erstellt, aufgelistet, wiederhergestellt, gelöscht und gesammelt gesichert werden können.
+- **Preconditions:** Aktiver Stammbaum mit mindestens 5 Personen.
+- **Testschritte:**
+  1. `create_tree_backup` aufrufen und über `list_tree_backups` prüfen.
+  2. Eine Person testweise ändern oder löschen.
+  3. `restore_tree_backup` mit dem zuvor erstellten Backup-Dateinamen aufrufen.
+  4. `backup_all_databases` in einen Export-Ordner ausführen und anschließend `delete_tree_backup` testen.
+- **Erwartetes Ergebnis:**
+  * Backup-Datei wird mit Zeitstempel angelegt und korrekt in `list_tree_backups` aufgeführt.
+  * Nach `restore_tree_backup` entspricht der Datenbestand exakt dem Zustand vor der Änderung.
+  * `backup_all_databases` sichert alle vorhandenen `.db`-Dateien in das Zielverzeichnis.
+
 ---
 
 ### 2.2 Domäne: Personen- & Beziehungsstammdaten (DAT)
@@ -213,6 +243,19 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * I_SOURCE existiert nicht mehr in `individuals`.
   * In `json_data` von I_TARGET ist die Revisionsnotiz in `NOTE` hinterlegt.
 
+#### TC-DAT-008: Mehrsprachige Datums-Normalisierung & Anzeigeformatierung
+- **Traceability:** [REQ-DAT-008](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-008-mehrsprachige-datums-normalisierung--konfigurierbare-formatierung) -> [SPEC-DAT-008](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-008---req-dat-008)
+- **Test-Typ:** Unit & Component Test (`gedcom_date.rs`, `useDateFormat.ts`, `DateInput.vue`)
+- **Test-Ziel:** Verifikation der Normalisierung internationaler Eingaben auf kanonisches GEDCOM-Format sowie der Umschaltung des Anzeigeformats.
+- **Preconditions:** `DateInput.vue` in `PersonDetailsDrawer.vue` geöffnet.
+- **Testschritte:**
+  1. `cargo test --manifest-path src-tauri/Cargo.toml` für die Unit-Tests in `gedcom_date.rs` ausführen.
+  2. In `DateInput.vue` lokalisierte Eingaben wie `"14. März 1890"`, `"ca. 1850"`, `"ABT 1850"` oder `"14/11/2026"` eingeben und Fokus verlassen (`onBlur`).
+  3. Datumsformat in `SettingsModal.vue` zwischen `locale`, `dd.mm.yyyy`, `yyyy-mm-dd`, `mm/dd/yyyy` und `gedcom` umschalten.
+- **Erwartetes Ergebnis:**
+  * `normalizeDateInputToGedcom` liefert kanonisches GEDCOM (z. B. `14 MAR 1890`, `ABT 1850`).
+  * `formatDisplayDate` formatiert den gespeicherten GEDCOM-String sofort entsprechend der gewählten `DateFormatOption`.
+
 ---
 
 ### 2.3 Domäne: Genealogische Berechnungen & Algorithmen (ALG)
@@ -311,17 +354,31 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * Live-Filterung zeigt sofort alle passenden Personen.
   * Klick selektiert die Person, schließt das Modal und zentriert die Ansicht.
 
-#### TC-UI-005: Umschaltung der Lokalisierung (DE <-> EN)
-- **Traceability:** [REQ-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-005-vollst%C3%A4ndige-internationalisierung-de--en) -> [SPEC-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-005---req-ui-005)
-- **Test-Typ:** Component Test (`i18n.ts`, `SettingsModal.vue`)
-- **Test-Ziel:** Lückenlose Übersetzung aller Benutzeroberflächenelemente bei Sprachwechsel zur Laufzeit.
+#### TC-UI-005: Umschaltung der Lokalisierung (DE / EN / FR / PT) & Schlüssel-Parität
+- **Traceability:** [REQ-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-005-vollst%C3%A4ndige-internationalisierung-de--en--fr--pt) -> [SPEC-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-005---req-ui-005)
+- **Test-Typ:** Component & Build Test (`i18n.ts`, `registry.ts`, `scripts/check-locales.mjs`)
+- **Test-Ziel:** Lückenlose Übersetzung aller Benutzeroberflächenelemente bei Sprachwechsel zur Laufzeit sowie vollständige Schlüssel-Parität über alle 4 Sprachdateien.
 - **Preconditions:** Sprache ist auf `de` eingestellt.
 - **Testschritte:**
-  1. Sprache in den Einstellungen auf `en` umstellen.
-  2. Tabellenköpfe, Drawer-Titel und Menüeinträge prüfen.
+  1. `npm run check:locales` ausführen.
+  2. Sprache über `LanguageSelector.vue` bzw. `SettingsModal.vue` nacheinander auf `en`, `fr` und `pt` umstellen.
+  3. Tabellenköpfe, Drawer-Titel, Statistik-Tabs und Menüeinträge prüfen.
 - **Erwartetes Ergebnis:**
-  * Alle sichtbaren Texte wechseln unmittelbar auf Englisch (z. B. "Nachname" -> "Surname", "Stammbaum" -> "Family Tree").
-  * Es erscheinen keine unübersetzten I18n-Schlüssel.
+  * `check-locales.mjs` meldet 0 fehlende Schlüssel in `de.json`, `en.json`, `fr.json` und `pt.json`.
+  * Alle sichtbaren Texte wechseln unmittelbar in die gewählte Sprache; `<html lang="...">` wird aktualisiert.
+
+#### TC-UI-006: Genealogische Statistik-Ansicht, Filter & Drilldown
+- **Traceability:** [REQ-UI-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-006-genealogische-statistik---analyse-ansicht) -> [SPEC-UI-006](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-006---req-ui-006)
+- **Test-Typ:** Component & Unit Test (`useStatistics.ts`, `gedcomDate.ts`, `StatisticsView.vue`)
+- **Test-Ziel:** Korrekte Berechnung von Demografie-, Familien-, Namens-/Orts- und Qualitäts-/Implex-Kennzahlen sowie funktionierender Drilldown zu Personen.
+- **Preconditions:** Stammbaum mit mehreren Generationen, Geburts-/Sterbedaten und mindestens einem Implex-Fall geladen.
+- **Testschritte:**
+  1. Zur Ansicht `📊 Statistik` (`StatisticsView.vue`) wechseln und alle 4 Tabs (`Demografie`, `Familien`, `Namen & Orte`, `Qualität & Struktur`) prüfen.
+  2. Filter `Geschlecht`, `Zeitraum` (`yearFrom`/`yearTo`), `Nur exakte Daten` und `Proband` variieren.
+  3. Auf einen Balken in einem D3-Diagramm klicken, um das Drilldown-Panel zu öffnen, und auf `In Tabelle öffnen` klicken.
+- **Erwartetes Ergebnis:**
+  * Alle D3-Diagramme (`D3BarChart`, `D3GroupedBarChart`, `D3LineChart`) und die Implex-Tabelle aktualisieren sich reaktiv auf Filteränderungen.
+  * Das Drilldown-Panel listet exakt die zum Bucket gehörigen Personen und springt per Klick zur Detail-/Tabellenansicht.
 
 ---
 
@@ -416,6 +473,19 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * Alle eingebetteten Zweig-Karten und Gruppen besitzen `isReadOnly: true`; Interaktionen sind gesperrt und mit Schloss-Symbolen gekennzeichnet.
   * Ein eventuelles Hintergrundbild des Zweigs wird maßstabsgetreu und transparent am Zweiganker gerendert.
   * Wechsel in den Zweig-Modus und Rückkehr zum Master behalten den Zustand verlustfrei bei.
+
+#### TC-DSG-007: Verschlüsselter Projekt-Export & -Import (.lgproj)
+- **Traceability:** [REQ-DSG-007](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-007-verschl%C3%BCsselter-projekt-export---import-lgproj) -> [SPEC-DSG-007](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-007---req-dsg-007)
+- **Test-Typ:** Unit & Integration Test (`design_repo.rs`, `useDesignStudioStore.ts`)
+- **Test-Ziel:** Verifikation der AES-256-GCM-Verschlüsselung mit PBKDF2-HMAC-SHA256, Fehlerbehandlung bei falschem Passwort und vollständiger Wiederherstellung inklusive Medien-Assets.
+- **Preconditions:** Design-Dokument mit mindestens einem verknüpften Subtree-Dokument und einem hochgeladenen Hintergrundbild (`media_assets`).
+- **Testschritte:**
+  1. `export_encrypted_project` mit Passwort `"geheim123"` ausführen und Header `LGPROJ01` der erzeugten `.lgproj`-Datei prüfen.
+  2. `import_encrypted_project` zuerst mit falschem Passwort (`"falsch"`) aufrufen.
+  3. `import_encrypted_project` mit korrektem Passwort (`"geheim123"`) in eine saubere Zieldatenbank ausführen.
+- **Erwartetes Ergebnis:**
+  * Import mit falschem Passwort schlägt sauber mit Entschlüsselungsfehler fehl, ohne die Zieldatenbank zu verändern.
+  * Import mit korrektem Passwort stellt Master-Dokument, Subtree-Dokumente, alle Regel-Tabellen und `media_assets` vollständig wieder her.
 
 ---
 
@@ -610,11 +680,16 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 | **TRM** | [REQ-TRM-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-002-zweistufige-sicherheitsl%C3%B6schung-mit-prozess-schutz) | [SPEC-TRM-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-002---req-trm-002) | **TC-TRM-002** | Unit & Integration Test (Rust) | 100 % |
 | **TRM** | [REQ-TRM-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-003-automatischer-fallback--leerzustands-behandlung) | [SPEC-TRM-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-003---req-trm-003) | **TC-TRM-003** | Integration Test (UI / State) | 100 % |
 | **TRM** | [REQ-TRM-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-004-app-aktualisierung--versionspr%C3%BCfung) | [SPEC-TRM-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-004---req-trm-004) | **TC-TRM-004** | Unit & Integration Test (Rust / UI) | 100 % |
+| **TRM** | [REQ-TRM-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-005-konfigurierbarer-speicherort--peer-synchronisation) | [SPEC-TRM-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-005---req-trm-005) | **TC-TRM-005** | Integration Test (IPC / Storage / Sync) | 100 % |
+| **TRM** | [REQ-TRM-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-006-lokale-baum-backups--komplettsicherung) | [SPEC-TRM-006](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-006---req-trm-006) | **TC-TRM-006** | Integration Test (IPC / SQLite Backup) | 100 % |
 | **DAT** | [REQ-DAT-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-001-personen-erfassung--inkrementelle-xref-generierung) | [SPEC-DAT-001](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-001---req-dat-001) | **TC-DAT-001** | Unit Test (Rust) | 100 % |
 | **DAT** | [REQ-DAT-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-002-tabellarische-batch-editierung--validierungs-engine) | [SPEC-DAT-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-002---req-dat-002) | **TC-DAT-002** | Unit & Integration Test (Rust / UI) | 100 % |
 | **DAT** | [REQ-DAT-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-003-eltern-kind-verkn%C3%BCpfung-mit-zyklus---rekursionserkennung) | [SPEC-DAT-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-003---req-dat-003) | **TC-DAT-003** | Unit Test (Rust BFS) | 100 % |
 | **DAT** | [REQ-DAT-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-004-partnerschafts--und-ehedaten-management) | [SPEC-DAT-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-004---req-dat-004) | **TC-DAT-004** | Unit Test (Rust) | 100 % |
 | **DAT** | [REQ-DAT-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-005-audit---revisionsfelder-gedcom-chan--uid) | [SPEC-DAT-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-005---req-dat-005) | **TC-DAT-005** | Unit Test (Rust) | 100 % |
+| **DAT** | [REQ-DAT-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-006-einzel---zweig-l%C3%B6schung-mit-backup-sicherung) | [SPEC-DAT-006](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-006---req-dat-006) | **TC-DAT-006** | Unit & Integration Test (Rust / UI) | 100 % |
+| **DAT** | [REQ-DAT-007](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-007-selektiver-personen-merge-mit-konfliktl%C3%B6sung) | [SPEC-DAT-007](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-007---req-dat-007) | **TC-DAT-007** | Unit & Integration Test (Rust / UI) | 100 % |
+| **DAT** | [REQ-DAT-008](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-008-mehrsprachige-datums-normalisierung--konfigurierbare-formatierung) | [SPEC-DAT-008](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dat-008---req-dat-008) | **TC-DAT-008** | Unit & Component Test (Rust / Vue) | 100 % |
 | **ALG** | [REQ-ALG-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-alg-001-multi-probanden-verwaltung-multi-root) | [SPEC-ALG-001](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-alg-001---req-alg-001) | **TC-ALG-001** | Integration Test (Backend / DB) | 100 % |
 | **ALG** | [REQ-ALG-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-alg-002-chronologische--patrilinearematrilineare-henry-code-berechnung) | [SPEC-ALG-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-alg-002---req-alg-002) | **TC-ALG-002** | Unit Test (Rust Engine) | 100 % |
 | **ALG** | [REQ-ALG-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-alg-003-k%C3%BCrzester-verwandtschaftspfad-a---bfs-graphsuche) | [SPEC-ALG-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-alg-003---req-alg-003) | **TC-ALG-003** | Unit & Integration Test (Petgraph & TS) | 100 % |
@@ -622,13 +697,15 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 | **UI** | [REQ-UI-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-002-infinite-canvas-stammbaum-visualisierung) | [SPEC-UI-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-002---req-ui-002) | **TC-UI-002** | UI / Component Test (TreeCanvas) | 100 % |
 | **UI** | [REQ-UI-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-003-slide-over-detail-drawer--verwandtschafts-inspector) | [SPEC-UI-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-003---req-ui-003) | **TC-UI-003** | Component Test (DetailsDrawer) | 100 % |
 | **UI** | [REQ-UI-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-004-freie-schnellabfrage-free-query-modal) | [SPEC-UI-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-004---req-ui-004) | **TC-UI-004** | Component Test (FreeQueryModal) | 100 % |
-| **UI** | [REQ-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-005-vollst%C3%A4ndige-internationalisierung-de--en) | [SPEC-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-005---req-ui-005) | **TC-UI-005** | Component Test (Vue I18n) | 100 % |
+| **UI** | [REQ-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-005-vollst%C3%A4ndige-internationalisierung-de--en--fr--pt) | [SPEC-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-005---req-ui-005) | **TC-UI-005** | Component & Build Test (Vue I18n) | 100 % |
+| **UI** | [REQ-UI-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-006-genealogische-statistik---analyse-ansicht) | [SPEC-UI-006](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-ui-006---req-ui-006) | **TC-UI-006** | Component & Unit Test (D3 / Vue) | 100 % |
 | **DSG** | [REQ-DSG-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-001-automatisches-hierarchisches-pedigree-layout) | [SPEC-DSG-001](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-001---req-dsg-001) | **TC-DSG-001** | Unit Test (Layout Engine) | 100 % |
 | **DSG** | [REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung-bottom-up-track-assignment--linienbr%C3%BCcken-line-bridges) | [SPEC-DSG-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-002---req-dsg-002) | **TC-DSG-002** | Unit & Component Test (Track Assignment & SVG) | 100 % |
 | **DSG** | [REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten) | [SPEC-DSG-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-003---req-dsg-003) | **TC-DSG-003** | Component Test (PersonCard) | 100 % |
 | **DSG** | [REQ-DSG-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-004-hintergrundgestaltung--bild-persistierung) | [SPEC-DSG-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-004---req-dsg-004) | **TC-DSG-004** | Integration Test (Storage / IO) | 100 % |
 | **DSG** | [REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-005-layout-persistenz--undoredo-verlauf) | [SPEC-DSG-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-005---req-dsg-005) | **TC-DSG-005** | Integration Test (History / DB) | 100 % |
 | **DSG** | [REQ-DSG-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-006-hierarchische-stamm--und-zweig-layouts-subtree-composition) | [SPEC-DSG-006](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-006---req-dsg-006) | **TC-DSG-006** | Unit & Integration Test (Rust / Vue) | 100 % |
+| **DSG** | [REQ-DSG-007](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-007-verschl%C3%BCsselter-projekt-export---import-lgproj) | [SPEC-DSG-007](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-dsg-007---req-dsg-007) | **TC-DSG-007** | Unit & Integration Test (Crypto / DB) | 100 % |
 | **IMP** | [REQ-IMP-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-imp-001-atomarer-gedcom-vollimport-55--551) | [SPEC-IMP-001](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-imp-001---req-imp-001) | **TC-IMP-001** | Unit & Integration Test (Parser) | 100 % |
 | **IMP** | [REQ-IMP-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-imp-002-intelligentes-gedcom-staging--matching) | [SPEC-IMP-002](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-imp-002---req-imp-002) | **TC-IMP-002** | Unit Test (Staging Engine) | 100 % |
 | **IMP** | [REQ-IMP-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-imp-003-differentieller-3-wege-merge-mit-konfliktl%C3%B6sung) | [SPEC-IMP-003](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-imp-003---req-imp-003) | **TC-IMP-003** | Unit & Integration Test (Rust Merge) | 100 % |

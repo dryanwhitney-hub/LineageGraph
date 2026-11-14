@@ -4,14 +4,15 @@
 
 - **Frontend:** Vue 3 (Composition API) + TypeScript built with Vite and packaged as a Tauri v2 desktop application.
   - Entry point: `src/main.ts`. Primary shell: `src/App.vue`.
-  - Views: Table view (`src/components/table/PersonTableView.vue`), Canvas tree (`src/components/tree/TreeCanvasView.vue`), Design studio (`src/components/DesignTree.vue`), Export hub (`src/components/ExportView.vue`).
-  - Core composables: `src/composables/usePersons.ts` (Entity state & mutations), `useShortestPath.ts` (BFS/A* pathfinding), `useDesignLayout.ts` (Pedigree layout), `useDesignHistory.ts` (Undo/Redo).
-  - Localization: `src/locales/de.json` and `src/locales/en.json`, configured in `src/i18n.ts`.
+  - Views: Table view (`src/components/table/PersonTableView.vue`), Canvas tree (`src/components/tree/TreeCanvasView.vue`), Design studio (`src/components/DesignTree.vue`), Statistics (`src/components/stats/StatisticsView.vue`), Research assistant (`src/components/research/ResearchAssistantView.vue`), Export hub (`src/components/ExportView.vue`).
+  - Core composables & domain: `src/composables/usePersons.ts` (Entity state & mutations), `src/composables/useShortestPath.ts` (BFS/A* pathfinding), `src/composables/useStatistics.ts` (D3 statistics), `src/composables/useDateFormat.ts` (Date formatting & GEDCOM normalization), `src/composables/useDesignStudioStore.ts` + `src/domain/design/*` (Design Studio layout, edge routing & scene graph).
+  - Localization: `src/locales/de.json`, `en.json`, `fr.json`, and `pt.json`, registered in `src/locales/registry.ts` and configured in `src/i18n.ts` (verified via `npm run check:locales`).
 - **Backend:** Rust 2024 / Tauri v2 application located in `src-tauri/`.
-  - Main & command router: `src-tauri/src/lib.rs` (39 registered IPC commands, AppState mutex holding active SQLite connection).
-  - Persistence & schema: `src-tauri/src/db.rs` (schema definition, migrations, Henry-code utilities).
+  - Main & command router: `src-tauri/src/lib.rs` (registered IPC commands, AppState mutex holding active SQLite connection, storage & peer-sync state).
+  - Persistence & schema: `src-tauri/src/db.rs` (schema definition, migrations, Henry-code utilities) and `src-tauri/src/design_repo.rs` (Design v2 documents, media assets, AES-256-GCM `.lgproj` bundles).
   - Domain services:
     - `src-tauri/src/parser.rs`: Atomic full GEDCOM 5.5/5.5.1 stream import.
+    - `src-tauri/src/gedcom_date.rs`: Multilingual GEDCOM date parsing and normalization.
     - `src-tauri/src/gedcom_import_merge.rs`: 3-way differential GEDCOM staging, heuristic scoring, conflict diff & merge.
     - `src-tauri/src/gedcom_export.rs`: Scoped GEDCOM export (All, Descendants, Ancestors, SpecificList).
     - `src-tauri/src/csv_export.rs`: Scoped CSV export with UTF-8 BOM and delimiter selection.
@@ -34,7 +35,7 @@ Tauri's configured build hooks run `npm run build` before packaging. Use the exi
 - **Database integrity:** Keep all SQLite schema definitions and runtime migrations centralized in `src-tauri/src/db.rs`. Always preserve `PRAGMA foreign_keys = ON;` and `PRAGMA journal_mode = WAL;`.
 - **Windows Filelock Safety:** When disconnecting or deleting databases, always flush WAL (`wal_checkpoint(TRUNCATE)`) and swap the active connection to in-memory before file removal to prevent Windows sharing violations.
 - **Transaction Safety:** GEDCOM full imports clear and replace records in the active tree inside a single database transaction. GEDCOM merge operations must also run atomically.
-- **Localization:** Never hardcode user-facing strings in Vue templates. Always add keys to both `src/locales/de.json` and `src/locales/en.json`.
+- **Localization:** Never hardcode user-facing strings in Vue templates. Always add keys to all locale files (`src/locales/de.json`, `en.json`, `fr.json`, `pt.json`) and verify with `npm run check:locales`.
 - **Scope Discipline:** Keep changes strictly scoped to the task. Do not edit generated files under `src-tauri/gen/` or build output.
 
 ### ALM Documentation Maintenance

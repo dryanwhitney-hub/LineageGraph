@@ -1266,5 +1266,7 @@
   "settings_peer_name_desc": "Ce nom est affiché aux autres utilisateurs dans un dossier partagé. S'il est vide, le nom de l'appareil est utilisé.",
   "settings_peer_name_placeholder": "ex. David (Portable) — vide = nom d'hôte",
   "nav_collapse": "Réduire le menu",
-  "nav_expand": "Développer le menu"
+  "nav_expand": "Développer le menu",
+  "whats_new_title": "Nouveautés de la v{version}",
+  "whats_new_close_btn": "Compris"
 }

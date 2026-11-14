@@ -1,7 +1,9 @@
 <script setup lang="ts">
+import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { renderReleaseNotesHtml, formatReleaseDate } from '../../utils/releaseNotes';
 
-defineProps<{
+const props = defineProps<{
   visible: boolean;
   currentVersion: string;
   newVersion: string;
@@ -17,7 +19,15 @@ const emit = defineEmits<{
   cancel: [];
 }>();
 
-const { t } = useI18n();
+const { t, locale } = useI18n();
+
+const formattedReleaseNotes = computed(() =>
+  renderReleaseNotesHtml(props.releaseNotes || '')
+);
+
+const formattedReleaseDate = computed(() =>
+  formatReleaseDate(props.releaseDate, locale.value)
+);
 </script>
 
 <template>
@@ -56,9 +66,9 @@ const { t } = useI18n();
         <div v-if="releaseNotes" class="release-notes-box">
           <div class="release-notes-header">
             <strong>{{ t('updater_release_notes') }}</strong>
-            <small v-if="releaseDate" class="release-date">{{ releaseDate }}</small>
+            <small v-if="formattedReleaseDate" class="release-date">{{ formattedReleaseDate }}</small>
           </div>
-          <pre class="release-notes-content">{{ releaseNotes }}</pre>
+          <div class="release-notes-markdown" v-html="formattedReleaseNotes"></div>
         </div>
 
         <div v-if="isDownloading" class="download-section">
@@ -236,7 +246,7 @@ const { t } = useI18n();
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   padding: 0.75rem 1rem;
-  max-height: 160px;
+  max-height: 240px;
   overflow-y: auto;
 }
 
@@ -250,17 +260,58 @@ const { t } = useI18n();
 }
 
 .release-date {
-  color: #94a3b8;
+  color: #64748b;
 }
 
-.release-notes-content {
-  margin: 0;
-  font-family: inherit;
+.release-notes-markdown {
   font-size: 0.85rem;
-  line-height: 1.4;
-  white-space: pre-wrap;
-  word-break: break-word;
+  line-height: 1.5;
   color: #334155;
+}
+
+.release-notes-markdown :deep(h3) {
+  margin: 0.65rem 0 0.3rem 0;
+  font-size: 0.92rem;
+  color: #0f172a;
+}
+
+.release-notes-markdown :deep(h3:first-child),
+.release-notes-markdown :deep(h4:first-child),
+.release-notes-markdown :deep(p:first-child),
+.release-notes-markdown :deep(ul:first-child) {
+  margin-top: 0;
+}
+
+.release-notes-markdown :deep(h4) {
+  margin: 0.5rem 0 0.25rem 0;
+  font-size: 0.85rem;
+  color: #1e293b;
+}
+
+.release-notes-markdown :deep(ul) {
+  margin: 0.2rem 0 0.5rem 0;
+  padding-left: 1.2rem;
+}
+
+.release-notes-markdown :deep(li) {
+  margin-bottom: 0.2rem;
+}
+
+.release-notes-markdown :deep(p) {
+  margin: 0.3rem 0;
+}
+
+.release-notes-markdown :deep(code) {
+  background: #e2e8f0;
+  color: #0f172a;
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 0.82em;
+}
+
+.release-notes-markdown :deep(a) {
+  color: #2563eb;
+  text-decoration: underline;
 }
 
 .download-section {

@@ -1266,5 +1266,7 @@
   "settings_peer_name_desc": "Dieser Name wird anderen Nutzern im geteilten Ordner angezeigt. Bleibt das Feld leer, wird automatisch der Gerätename (Hostname) verwendet.",
   "settings_peer_name_placeholder": "z. B. David (Laptop) — leer = Hostname",
   "nav_collapse": "Menü einklappen",
-  "nav_expand": "Menü ausklappen"
+  "nav_expand": "Menü ausklappen",
+  "whats_new_title": "Neu in v{version}",
+  "whats_new_close_btn": "Verstanden"
 }

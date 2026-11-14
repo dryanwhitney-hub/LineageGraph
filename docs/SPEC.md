@@ -1,9 +1,9 @@
 # Technische Spezifikation & Traceability (SPEC)
 
 **System:** LineageGraph (Froning Familienbuch)  
-**Dokument-Version:** 3.0.0  
+**Dokument-Version:** 3.1.0  
 **Status:** Freigegebener Ist-Stand  
-**Datum:** 5. November 2026  
+**Datum:** 14. November 2026  
 **Referenzierte Dokumente:** [REQ.md](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md), [Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)
 
 ---
@@ -55,6 +55,22 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
 - **Technische Umsetzung:**
   `check_connectivity` führt über `std::net::TcpStream::connect_timeout` (1500 ms) nicht-blockierende TCP-Pings gegen robuste DNS/HTTPS-Endpunkte (`1.1.1.1:53`, `8.8.8.8:53`, `github.com:443`) durch (gekapselt in `tauri::async_runtime::spawn_blocking`). Das Frontend fragt `check_internet_connection` über die Tauri-IPC-Bridge ab. Bei vorhandenem Internet ruft `useAppUpdater.checkForUpdates` die Funktion `check()` von `@tauri-apps/plugin-updater` auf, welche die Update-Metadaten (`latest.json` auf GitHub Releases) abgleicht. Beim Start (`onMounted` in `App.vue`) erfolgt die Prüfung geräuschlos im Hintergrund; in `SettingsModal.vue` kann sie im dedizierten Bereich „ℹ️ Über LineageGraph“ manuell mit direktem Feedback ausgelöst werden. Steht ein Update bereit, poppt `UpdateConfirmModal.vue` auf, das Versionsnummer, Release-Datum und Changelog anzeigt. Erst bei Klick auf „Jetzt aktualisieren“ lädt `downloadAndInstall` das Paket mit prozentualer Fortschrittsanzeige herunter und stößt den Windows NSIS-Installer an.
   Für den Absprung zur Dokumentation (`USER_GUIDE.md`) öffnet der IPC-Befehl `open_user_guide` die lokale Markdown-Datei über den Standard-Editor/Betrachter des Betriebssystems oder fällt bei Nichtvorhandensein transparent auf die Web-Dokumentation im GitHub-Repository zurück. Zudem steht in der oberen Menüleiste eine direkte Schaltfläche `📖 Handbuch` zur Verfügung.
+
+#### SPEC-TRM-005 -> REQ-TRM-005
+- **Fachliche Anforderung:** Konfigurierbarer Speicherort & Peer-Synchronisation ([REQ-TRM-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-005-konfigurierbarer-speicherort--peer-synchronisation))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`get_storage_info`, `inspect_storage_directory`, `change_storage_directory`, `poll_storage_sync_state`, `close_peer_session`, `open_storage_directory`, `StorageInfoDto`, `TargetDirInspectionDto`, `StorageSyncStateDto`)
+  - UI-Komponenten: [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue), [`src/App.vue`](file:///c:/dev/Froning/app/LineageGraph/src/App.vue)
+- **Technische Umsetzung:**
+  `inspect_storage_directory` prüft Zielpfad-Existenz, Schreibrechte, Netzwerkpfad-Heuristik und bereits vorhandene `.db`-Dateien. `change_storage_directory` flusht das aktuelle WAL, schließt die SQLite-Verbindung, kopiert bzw. wechselt in den Zielordner und persistiert die Pfadkonfiguration; bei Nichterreichbarkeit greift ein Fallback auf das lokale `default_data_dir` mit Warnhinweis (`is_fallback_active`, `storage_warning`). Im laufenden Betrieb pollt `App.vue` über `poll_storage_sync_state`, erkennt Änderungen über `genealogy_fingerprint` sowie `design_doc_timestamps` (inkl. automatischem Reload in `DesignTree.vue`) und tauscht aktive Peer-Sitzungen (`PeerSessionDto`) mit konfigurierbarem `peerDisplayName` aus. Beim Beenden meldet `close_peer_session` die Sitzung ab.
+
+#### SPEC-TRM-006 -> REQ-TRM-006
+- **Fachliche Anforderung:** Lokale Baum-Backups & Komplettsicherung ([REQ-TRM-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-trm-006-lokale-baum-backups--komplettsicherung))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`list_tree_backups`, `create_tree_backup`, `restore_tree_backup`, `delete_tree_backup`, `backup_all_databases`, `TreeBackupInfoDto`)
+  - UI-Komponente: [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue)
+- **Technische Umsetzung:**
+  `create_tree_backup` sichert die aktive `.db`-Datei nach `wal_checkpoint(TRUNCATE)` als zeitgestempelten Snapshot im Backup-Unterverzeichnis. `list_tree_backups` listet vorhandene Sicherungen mit Metadaten (`TreeBackupInfoDto`), `delete_tree_backup` entfernt einzelne Snapshots und `restore_tree_backup` trennt sicher die aktive SQLite-Verbindung, stellt die gewählte Backup-Datei wieder her und lädt die Datenbank neu. `backup_all_databases` exportiert alle `.db`-Dateien des aktuellen Datenverzeichnisses gebündelt in einen benutzerdefinierten Zielordner.
 
 ---
 
@@ -131,6 +147,15 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
   5. Audit-Notiz: `audit_note` wird in `json_data.NOTE` dokumentiert; Quell-Person wird kaskadierend aus `individuals` gelöscht.
   6. Automatische Neuberechnung der Henry-Codes für alle Probanden.
 
+#### SPEC-DAT-008 -> REQ-DAT-008
+- **Fachliche Anforderung:** Mehrsprachige Datums-Normalisierung & Konfigurierbare Formatierung ([REQ-DAT-008](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dat-008-mehrsprachige-datums-normalisierung--konfigurierbare-formatierung))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/gedcom_date.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/gedcom_date.rs) (`SimpleDate`, `GedcomDateExpr`, `parse_month_token`), [`src-tauri/src/parser.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/parser.rs), [`src-tauri/src/gedcom_export.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/gedcom_export.rs), [`src-tauri/src/gedcom_import_merge.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/gedcom_import_merge.rs), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs)
+  - Frontend Composable & Komponente: [`src/composables/useDateFormat.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDateFormat.ts) (`useDateFormat`, `formatDisplayDate`, `normalizeDateInputToGedcom`, `resolveEffectiveFormat`), [`src/components/common/DateInput.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/common/DateInput.vue)
+  - Integration in UI: [`src/components/modals/AddPersonModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/AddPersonModal.vue), [`src/components/details/PersonDetailsDrawer.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/details/PersonDetailsDrawer.vue), [`src/components/table/PersonTableView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/table/PersonTableView.vue), [`src/components/modals/SettingsModal.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/modals/SettingsModal.vue)
+- **Technische Umsetzung:**
+  `gedcom_date.rs` parst mehrsprachige Monatsnamen (DE/EN/FR/PT), numerische Datumsformate sowie GEDCOM-Ausdrücke (`ABT`, `CAL`, `EST`, `BEF`, `AFT`, `BET ... AND ...`, `FROM ... TO ...`, `INT`, Phrasen) in ein strukturiertes `GedcomDateExpr` und normalisiert sie über `to_gedcom()` kanonisch in GEDCOM 5.5.1. Im Frontend stellt `DateInput.vue` eine kontrollierte Eingabekomponente bereit, die beim Fokus/Verlassen über `normalizeDateInputToGedcom` normalisiert und über `formatDisplayDate` gemäß der in `SettingsModal.vue` gewählten `DateFormatOption` (`locale`, `dd.mm.yyyy`, `yyyy-mm-dd`, `dd/mm/yyyy`, `mm/dd/yyyy`, `dd_mmm_yyyy`, `gedcom`, gespeichert in `localStorage` unter `lineagegraph_date_format`) anzeigt.
+
 ---
 
 ### 2.3 Domäne: Genealogische Berechnungen & Algorithmen (ALG)
@@ -195,81 +220,91 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
   Modales Dialogfenster mit isoliertem Event-Bubbling (`@mousedown.stop`, `@wheel.stop`). Ein kombiniertes Filterprädikat durchsucht Nachname, Vorname, Geburtsdaten und ID und liefert bis zu 30 Treffer zur direkten Selektion zurück.
 
 #### SPEC-UI-005 -> REQ-UI-005
-- **Fachliche Anforderung:** Vollständige Internationalisierung (DE / EN) ([REQ-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-005-vollst%C3%A4ndige-internationalisierung-de--en))
+- **Fachliche Anforderung:** Vollständige Internationalisierung (DE / EN / FR / PT) ([REQ-UI-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-005-vollst%C3%A4ndige-internationalisierung-de--en--fr--pt))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Frontend-Konfiguration: [`src/i18n.ts`](file:///c:/dev/Froning/app/LineageGraph/src/i18n.ts)
-  - Sprachdateien: [`src/locales/de.json`](file:///c:/dev/Froning/app/LineageGraph/src/locales/de.json), [`src/locales/en.json`](file:///c:/dev/Froning/app/LineageGraph/src/locales/en.json)
+  - Frontend-Konfiguration & Registry: [`src/i18n.ts`](file:///c:/dev/Froning/app/LineageGraph/src/i18n.ts) (`setAppLocale`, `tLocale`), [`src/locales/registry.ts`](file:///c:/dev/Froning/app/LineageGraph/src/locales/registry.ts) (`SUPPORTED_LOCALES`, `resolveLocale`, `getLocaleDefinition`)
+  - Sprachdateien: [`src/locales/de.json`](file:///c:/dev/Froning/app/LineageGraph/src/locales/de.json), [`src/locales/en.json`](file:///c:/dev/Froning/app/LineageGraph/src/locales/en.json), [`src/locales/fr.json`](file:///c:/dev/Froning/app/LineageGraph/src/locales/fr.json), [`src/locales/pt.json`](file:///c:/dev/Froning/app/LineageGraph/src/locales/pt.json)
+  - UI-Komponenten & Build-Check: [`src/components/common/LanguageSelector.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/common/LanguageSelector.vue), [`src/components/common/ExportLanguageSelect.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/common/ExportLanguageSelect.vue), [`scripts/check-locales.mjs`](file:///c:/dev/Froning/app/LineageGraph/scripts/check-locales.mjs)
 - **Technische Umsetzung:**
-  Verwendung von `vue-i18n` (Composition API `useI18n()`). Alle UI-Labels, Fehlermeldungen, Dialogtexte und Tooltips sind vollständig in Schlüssel-Wert-Paaren in `de.json` und `en.json` abgelegt und persistent umschaltbar.
+  Verwendung von `vue-i18n` v11 (Composition API `useI18n()`). `SUPPORTED_LOCALES` in `registry.ts` definiert `de`, `en`, `fr` und `pt` samt Endonym, BCP-47-Tag und `latexBabel`-Paket. `setAppLocale` persistiert die Sprachwahl in `localStorage` (`lineagegraph.locale`) und aktualisiert `<html lang="...">`. `tLocale` ermöglicht gezielte Übersetzungen für Exporte ohne Änderung der globalen UI-Sprache. Das Build-Skript `npm run check:locales` (`scripts/check-locales.mjs`) verifiziert vor jedem Produktions-Build die vollständige Schlüssel-Parität aller Sprachdateien.
+
+#### SPEC-UI-006 -> REQ-UI-006
+- **Fachliche Anforderung:** Genealogische Statistik- & Analyse-Ansicht ([REQ-UI-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-ui-006-genealogische-statistik---analyse-ansicht))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Composable & Datums-Parser: [`src/composables/useStatistics.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useStatistics.ts), [`src/utils/gedcomDate.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/gedcomDate.ts)
+  - Hauptansicht & Tabs: [`src/components/stats/StatisticsView.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/StatisticsView.vue), [`src/components/stats/tabs/DemographicsTab.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/tabs/DemographicsTab.vue), [`src/components/stats/tabs/FamiliesTab.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/tabs/FamiliesTab.vue), [`src/components/stats/tabs/NamesPlacesTab.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/tabs/NamesPlacesTab.vue), [`src/components/stats/tabs/QualityStructureTab.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/tabs/QualityStructureTab.vue)
+  - D3-Diagramme: [`src/components/stats/charts/D3BarChart.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/charts/D3BarChart.vue), [`src/components/stats/charts/D3GroupedBarChart.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/charts/D3GroupedBarChart.vue), [`src/components/stats/charts/D3LineChart.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/stats/charts/D3LineChart.vue)
+- **Technische Umsetzung:**
+  `useStatistics.ts` berechnet reaktiv aus `persons` und `rootAncestors` unter Berücksichtigung von `StatisticsFilterState` (`probandId`, `sex`, `yearFrom`, `yearTo`, `onlyExactDates`, `familyGrouping`) Kennzahlen und Buckets (`StatBucket`, `GroupedSeriesBucket`, `LineSeries`, `ImplexGenerationRow`). `gedcomDate.ts` extrahiert Jahreszahlen, Lebensalter (`computeAgeYears`), Zeitintervalle (`computeIntervalYears`) und Jahrhunderte (`getCentury`). Klicks auf Balken, Linienpunkte oder Tabellenzeilen öffnen in `StatisticsView.vue` ein Drilldown-Panel mit den zugehörigen Personen und direkten Sprungaktionen (`select-person`, `open-in-table`).
 
 ---
 
 ### 2.5 Domäne: Stammbaum Design Studio (DSG)
 
 #### SPEC-DSG-001 -> REQ-DSG-001
-- **Fachliche Anforderung:** Automatisches hierarchisches Pedigree-Layout ([REQ-DSG-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-001-automatisches-hierarchisches-pedigree-layout))
+- **Fachliche Anforderung:** Automatisches hierarchisches Pedigree-Layout & Wuchsrichtung ([REQ-DSG-001](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-001-automatisches-hierarchisches-pedigree-layout--wuchsrichtung))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Vue Composable: [`src/composables/useDesignLayout.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignLayout.ts)
-  - UI-Komponenten: [`src/components/DesignTree.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/DesignTree.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue)
+  - Domain Layout Engine: [`src/domain/design/contourLayoutEngine.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/contourLayoutEngine.ts), [`src/domain/design/lineageResolver.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/lineageResolver.ts) (`resolveGenealogyTree`), [`src/domain/design/sceneGraphBuilder.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/sceneGraphBuilder.ts) (`buildDesignSceneGraph`), [`src/domain/design/groupWrapper.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/groupWrapper.ts)
+  - State Store & UI: [`src/composables/useDesignStudioStore.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignStudioStore.ts), [`src/components/DesignTree.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/DesignTree.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue)
 - **Technische Umsetzung:**
-  `useDesignLayout.ts` berechnet rekursiv die Subtree-Breiten jeder Familie, partitioniert Generationen in Y-Ebenen und platziert Eltern- und Kindergruppen mit horizontalen Ausgleichsabständen (`horizontalLaneGap`). Überlappungen dichter Unterzweige werden durch automatische Versetzung in Sub-Lanes aufgelöst.
+  `lineageResolver.ts` löst ausgehend von `rootPersonId` gemäß `LineagePolicy` (`patrilinear`, `matrilinear`, `oldest_branch`) den Baum auf. `contourLayoutEngine.ts` berechnet mittels Kontur-Algorithmus kollisionsfreie horizontale Positionen für Partner- und Geschwistergruppen (`BRANCH_GAP_X`, `DOCKED_GROUP_GAP_X`), partitioniert Generationen gemäß `GrowthDirection` (`bottom_up` oder `top_down`) und berücksichtigt `GroupDesignRule` (`maxColumnsPerRow`, `relativeDeltaX`, `dockTargetGroupKey`, `levelOverride`). `sceneGraphBuilder.ts` erzeugt daraus den vollständigen `DesignSceneGraph`.
 
 #### SPEC-DSG-002 -> REQ-DSG-002
-- **Fachliche Anforderung:** Orthogonale Linienführung, Bottom-Up Track Assignment & Linienbrücken (Line Bridges) ([REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-002-orthogonale-linienf%C3%BChrung-bottom-up-track-assignment--linienbr%C3%BCcken-line-bridges))
+- **Fachliche Anforderung:** Orthogonale & organische Linienführung, Track Assignment & Linienbrücken ([REQ-DSG-002](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-002-orthogonale--organische-linienf%C3%BChrung-track-assignment--linienbr%C3%BCcken))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Vue Composable: [`src/composables/useDesignLayout.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignLayout.ts) (`resolvePatrilinearParentId`, `partitionIntoChildGroupings`, `assignNonOverlappingLanes`, `edgeGeometry`)
-  - Export Utility: [`src/utils/designExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/designExport.ts) (`resolvePatrilinearParentId`, `partitionIntoChildGroupings`, `assignNonOverlappingLanes`, `generateDesignExportSvg`)
+  - Domain Edge Router: [`src/domain/design/edgeRouter.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/edgeRouter.ts)
+  - Export Utility: [`src/utils/designSceneExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/designSceneExport.ts)
   - Vue Komponente: [`src/components/design/DesignConnectorLayer.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignConnectorLayer.vue)
 - **Technische Umsetzung:**
-  1. **Patrilineare Elternauflösung (`resolvePatrilinearParentId`) & Kindergruppierungen (`partitionIntoChildGroupings`):** Für jede sichtbare Personenkachel wird der maßgebliche Elterneintrag im aktiven Baum ermittelt; sind bei Implex-Fällen sowohl Vater als auch Mutter im Baum enthalten, erhält stets der Vater (`father_id` bzw. männlicher Elternteil `sex === 'M'`) den Vorrang. Kinder desselben Elternteils auf einer Ebene werden in zusammenhängende Gruppierungen (`targetX = Math.round((minLeft + maxRight) / 2)`) zusammengefasst.
-  2. **Track Assignment für Bottom-Up-Layouts (`assignNonOverlappingLanes`):**
-     - **Datenaufbereitung & Intervalle:** Jede Verbindung `C` zwischen Eltern-Mitte (`x_start`) und Kind-/Gruppen-Mitte (`x_end`) definiert das Intervall `[min(x_start, x_end) - PADDING, max(x_start, x_end) + PADDING]` (`PADDING = 8`).
-     - **Sortierung (Längste zuerst):** Absteigend nach horizontaler Spannweite `abs(x_start - x_end)`.
-     - **Greedy Track-Zuweisung von oben nach unten:** `Track 0` liegt ganz oben direkt unter den Kind-Knoten, `Track 1, 2, ...` liegen darunter Richtung Eltern-Knoten. Geprüft werden **Bedingung A** (keine horizontale Intervall-Überlappung in Track `T`) und **Bedingung B** (vertikale Zuleitungen von den Kind-Knoten oben hinab zu Track `T` kreuzen in `0..T-1` keine horizontalen Intervalle; überdeckt eine bereits platzierte weitere Verbindung die vertikale Kind-Zuleitung einer engeren Verbindung, rückt die weitere Verbindung nach unten Richtung Elternknoten).
-     - **Rendering:** Jedem Track `T` wird `jogY = levelMaxBottom + CORRIDOR_PAD_TOP + T * gap` zugewiesen. An verbleibenden Schnittpunkten wird ein SVG-Bogenbefehl (`A radius radius ...`) eingefügt.
+  1. **Elternauflösung & Kindergruppierungen:** `lineageResolver.ts` und `edgeRouter.ts` ermitteln für jede sichtbare Personenkachel den maßgeblichen Elterneintrag gemäß `lineagePolicy` bzw. expliziter `implexActiveParentId`-Regel (`PersonDesignRule`). Kinder desselben Elternteils auf einer Ebene werden in zusammenhängende Gruppierungen zusammengefasst.
+  2. **Routing-Modi & Track Assignment (`edgeRouter.ts`):** Unterstützt `orthogonal_bus` (rechtwinklige Bus-Führung mit Greedy Track Assignment zur Vermeidung horizontaler Intervall-Überlappungen und vertikaler Kreuzungen) sowie `organic_bezier` (geschwungene Bezier-Pfade). Manuelle Wegpunkt-Verschiebungen werden über `EdgeWaypointRule` (`laneOffsetDelta`, `verticalChannelDeltaX`) eingerechnet.
+  3. **Linienbrücken (`enableLineBridges`):** An verbleibenden Schnittpunkten zwischen horizontalen und vertikalen Segmenten wird ein SVG-Bogenbefehl (`A radius radius ...`) eingefügt.
 
 #### SPEC-DSG-003 -> REQ-DSG-003
-- **Fachliche Anforderung:** Voll konfigurierbare Personenkarten mit Live-Preview-Popover ([REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten-mit-live-preview-popover))
+- **Fachliche Anforderung:** Voll konfigurierbare Personenkarten & Dichteprofile ([REQ-DSG-003](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-003-voll-konfigurierbare-personenkarten--dichteprofile))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Typ-Definitionen: [`src/types/design.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/design.ts)
+  - Domain & Typen: [`src/domain/design/cardMetrics.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/cardMetrics.ts), [`src/domain/design/sceneTypes.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/sceneTypes.ts) (`CardDensityProfile`), [`src/types/design.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/design.ts)
   - Vue Komponenten: [`src/components/design/DesignPersonCard.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignPersonCard.vue), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue)
 - **Technische Umsetzung:**
-  `DesignPersonCard.vue` kapselt die visuelle Repräsentation einer Person ohne überlagernde Mini-Buttons in der Kopfzeile. Über das Popover `.layout-options-popover` in `DesignSidebar.vue` werden Kachel-Zeilen (`#1`–`#5`) und Linien-/Brückenparameter mit unmittelbarer Live-Vorschau auf der Canvas konfiguriert. Alle kontextabhängigen Einzel- und Gruppenaktionen sind im schwebenden HUD `.group-floating-controls` in `DesignCanvas.vue` konsolidiert.
+  `cardMetrics.ts` berechnet dynamische Kartenabmessungen und Zeileninhalte anhand von `CardDensityProfile` (`detail`, `standard`, `compact_years`, `narrow`) und `DesignCardConfig`. `DesignPersonCard.vue` rendert die Kachel ohne überlagernde Mini-Buttons in der Kopfzeile. Über `DesignSidebar.vue` werden Kachel-Zeilen, Farben, Dichteprofile und Linien-/Brückenparameter mit Live-Vorschau konfiguriert. Kontextabhängige Einzel- und Gruppenaktionen sind im schwebenden HUD in `DesignCanvas.vue` gebündelt.
 
 #### SPEC-DSG-004 -> REQ-DSG-004
-- **Fachliche Anforderung:** Hintergrundgestaltung & Bild-Persistierung ([REQ-DSG-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-004-hintergrundgestaltung--bild-persistierung))
+- **Fachliche Anforderung:** Hintergrundgestaltung & Medien-Asset-Persistierung ([REQ-DSG-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-004-hintergrundgestaltung--medien-asset-persistierung))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Utilities: [`src/utils/designBgStorage.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/designBgStorage.ts)
-  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs#L2350-L2380) (`save_binary_file`)
-  - UI-Sidebar: [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue)
+  - Rust Backend: [`src-tauri/src/design_repo.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/design_repo.rs), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`upload_design_media_asset`, `get_design_media_asset`)
+  - SQLite Schema: [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs) (`media_assets`)
+  - Frontend Store & UI: [`src/composables/useDesignStudioStore.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignStudioStore.ts), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue)
 - **Technische Umsetzung:**
-  Hintergrundbilder werden im Browser als Data-URL oder Binär-Blob eingelesen. `designBgStorage.ts` speichert das Bild in IndexedDB bzw. über das Backend-Kommando `save_binary_file` im Anwendungsordner. In der Sidebar lassen sich Opacity (0–100 %), Positionierung (`cover`, `contain`, `center`) und Farbtönungen justieren.
+  Hintergrundbilder (PNG, JPG, SVG) werden über `upload_design_media_asset` in der SQLite-Tabelle `media_assets` (inklusive `sha256` zur Deduplizierung, MIME-Typ, Abmessungen und Binärdaten) gespeichert und über `bg_asset_id` am `DesignDocumentModel` referenziert. `get_design_media_asset` liefert die Bilddaten als Data-URL zurück. In der Sidebar lassen sich Opacity (0–100 %), Positionierung und Skalierung über `DesignBackgroundConfig` justieren.
 
 #### SPEC-DSG-005 -> REQ-DSG-005
-- **Fachliche Anforderung:** Layout-Persistenz, Dateiverwaltung & Undo/Redo-Verlauf ([REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-005-layout-persistenz-dateiverwaltung--undoredo-verlauf))
+- **Fachliche Anforderung:** Dokumenten-Persistenz (v2), Dateiverwaltung & Undo/Redo-Verlauf ([REQ-DSG-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-005-dokumenten-persistenz-v2-dateiverwaltung--undoredo-verlauf))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Vue Composables & Views: [`src/composables/useDesignHistory.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignHistory.ts), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue)
-  - Rust Backend: [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs#L2250-L2495) (`save_design_layout`, `get_design_layouts`, `delete_design_layout`, `read_design_file`, `save_design_file`)
-  - SQLite Schema: [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs#L85-L93) (`design_layouts`)
+  - Frontend Store & Views: [`src/composables/useDesignStudioStore.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignStudioStore.ts), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue)
+  - Rust Backend: [`src-tauri/src/design_repo.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/design_repo.rs), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`list_design_documents`, `load_design_tree_bundle`, `save_design_document_v2`, `delete_design_document_v2`, `read_design_file`, `save_design_file`, sowie Legacy `save_design_layout`, `get_design_layouts`, `delete_design_layout`)
+  - SQLite Schema: [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs) (`design_documents`, `design_person_rules`, `design_group_rules`, `design_subtree_mounts`, `design_edge_waypoints`, `design_layouts`)
 - **Technische Umsetzung:**
-  `useDesignHistory` führt Stacks (`historyStack`, `redoStack`) mit Snapshots des gesamten Layoutzustands. Layouts werden über `save_design_layout` als JSON-String in die Tabelle `design_layouts` serialisiert und sind strikt pro Proband filterbar. Beim Umschalten auf einen anderen Probanden (`checkAndLoadLatestStateOrOffer`) wird die Abfrage isoliert auf diesen Probanden begrenzt, sodass fremde Stände niemals geladen oder Stammahn-Auswahlen überschrieben werden. Das Anlegen neuer Designs (`openNewDesignModal`, `confirmCreateNewDesign`) bietet eine Auswahlliste aller definierten Stammahnen (`rootAncestors`), aktualisiert den Standard-Entwurfsnamen reaktiv, warnt vor ungespeicherten Änderungen und unterdrückt über `skipAutoLoadOnce` das Laden alter Speicherdateien beim Wechsel. Über `loadStateFromFile` und `exportStateToFile` werden native Dateioperationen via Tauri-Dateidialog (`read_design_file`, `save_design_file`) angebunden.
+  `useDesignStudioStore.ts` verwaltet das aktive `DesignDocumentModel`, die Undo/Redo-Historie und das Laden/Speichern über `design_repo.rs`. Dokumente werden relational in `design_documents` samt verknüpften Regel-Tabellen (`design_person_rules`, `design_group_rules`, `design_subtree_mounts`, `design_edge_waypoints`) gespeichert. `list_design_documents` filtert strikt nach Stammahn (`root_person_id`), während `read_design_file` und `save_design_file` den JSON-Dateiaustausch über den nativen Dateidialog ermöglichen.
 
 #### SPEC-DSG-006 -> REQ-DSG-006
 - **Fachliche Anforderung:** Hierarchische Stamm- und Zweig-Layouts (Subtree Composition) ([REQ-DSG-006](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-006-hierarchische-stamm--und-zweig-layouts-subtree-composition))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Typ-Definitionen: [`src/types/design.ts`](file:///c:/dev/Froning/app/LineageGraph/src/types/design.ts) (`DesignLayoutType`, `SubLayoutReference`, `SubtreeBoundingBox`, `SubtreeBackground`)
-  - Vue Composables & Layout Engine: [`src/composables/useDesignHistory.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignHistory.ts), [`src/composables/useDesignLayout.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignLayout.ts)
-  - UI-Komponenten: [`src/components/DesignTree.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/DesignTree.vue), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue), [`src/components/design/DesignPersonCard.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignPersonCard.vue)
-  - Rust Backend: [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs) (Migration `layout_type`, `anchor_person_id`), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`save_design_layout`, `get_design_layouts`)
+  - Domain & Typen: [`src/domain/design/sceneTypes.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/sceneTypes.ts) (`SubtreeMountRule`, `SubtreeDisplayMode`, `DesignTreeBundle`), [`src/domain/design/sceneGraphBuilder.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/sceneGraphBuilder.ts), [`src/domain/design/contourLayoutEngine.ts`](file:///c:/dev/Froning/app/LineageGraph/src/domain/design/contourLayoutEngine.ts)
+  - Frontend Store & UI: [`src/composables/useDesignStudioStore.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignStudioStore.ts), [`src/components/DesignTree.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/DesignTree.vue), [`src/components/design/DesignSidebar.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignSidebar.vue), [`src/components/design/DesignCanvas.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignCanvas.vue), [`src/components/design/DesignPersonCard.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/design/DesignPersonCard.vue)
+  - Rust Backend: [`src-tauri/src/design_repo.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/design_repo.rs), [`src-tauri/src/db.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/db.rs) (`design_documents`, `design_subtree_mounts`), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`load_design_tree_bundle`, `save_design_document_v2`)
 - **Technische Umsetzung:**
-  1. **Backend & Persistenz:** Die Tabelle `design_layouts` wird um die Spalten `layout_type TEXT DEFAULT 'master'` und `anchor_person_id TEXT` erweitert. Das Backend-Kommando `get_design_layouts` filtert optional nach `anchor_person_id` und `layout_type`, während `save_design_layout` diese Metadaten dauerhaft mitspeichert.
-  2. **State & Verknüpfungsverwaltung (`useDesignHistory.ts`):** Verwaltet reaktive Felder `currentLayoutType`, `currentAnchorPersonId`, `subLayoutReferences` (Mapping von Anker-Person-ID auf Subtree-Layout-Metadaten) und `subLayoutCache`. Über `loadReferencedSubLayouts` werden referenzierte Teilstämme parallel geladen. Über `openLinkSubtreeModal`, `linkSubtreeToAnchor` und `unlinkSubtreeFromAnchor` können Zweige an Personen mit Nachkommen angehängt oder gelöst werden. Beim Wechsel zur Bearbeitung eines Teilstamms (`switchToSubtreeDesign`) wird der Master-Stand im Arbeitsspeicher (`masterLayoutBackup`) gesichert und beim Verlassen (`returnToMasterDesign`) verlustfrei mit aktualisierten Subtree-Daten wiederhergestellt.
-  3. **Dynamische Einbettung, Isolierung & Verdrängung (`useDesignLayout.ts`):**
-     - **Isolierung des Zweigankers:** `isolateAnchorInSiblingGroups` bzw. die Normalisierung in `visibleGroupAndMemberMap` trennt den Stammeintrag automatisch aus einer bestehenden Geschwistergruppe heraus in eine eigenständige Gruppe `sg-anchor-${anchorId}` mit definiertem Abstand (`GAP = 28`) zu seinen Geschwistern.
-     - **Einbettung & Koordinatentransformation:** Die Gruppen des Zweig-Layouts werden relativ zum Ankerknoten transformiert (`deltaX = anchorCard.centerX - subRootX`, `levelOffset = anchorGroup.level - subRootLevel`) und als schreibgeschützt (`isReadOnly: true`) eingebunden.
-     - **Auswärtsschub links/rechts (Outward Push):** Über alle Ebenen des Zweigs wird der horizontale Korridor berechnet. Links liegende Master-Gruppen (`x <= anchorCard.centerX`) werden um den maximalen Überlappungsabstand nach links geschoben, rechts liegende (`x > anchorCard.centerX`) nach rechts. Die relative Struktur der Nachbarzweige bleibt unverzerrt erhalten und Kollisionen werden vollständig verhindert.
-  4. **Lokale Wappen & Hintergründe:** Lokale Hintergrundbilder aus Teilstämmen werden über `subtreeBackgrounds` auf die transformierte Bounding-Box des Zweigs ausgerichtet und mit Deckkraft und Skalierung im Canvas gerendert.
-  5. **Schreibschutz & UX-Feedback:** In eingebetteten Zweig-Gruppen sind Drag-Verschiebungen, Gruppenauflösungen, Andock-Operationen und Kachel-Umordnungen gesperrt. Auf der Canvas wird ein Schloss-Symbol samt Schnellwechsel-Schaltfläche (*„🌱 Zweig bearbeiten“*) eingeblendet; Anker-Karten zeigen ein Zweig-Badge.
+  1. **Backend & Persistenz:** Zweig-Dokumente (`document_kind = 'subtree'`) werden über `design_subtree_mounts` (`anchor_person_id`, `sub_document_id`, `display_mode`: `'inline' | 'capsule'`, `relative_delta_x`) an das Master-Dokument gebunden. `load_design_tree_bundle` lädt das Master-Dokument inklusive aller rekursiv referenzierten Sub-Dokumente (`subDocuments`) und Medien-Assets (`mediaAssets`, `mediaMetas`) in einem Aufruf.
+  2. **Szenen-Komposition & Outward Push:** `sceneGraphBuilder.ts` und `contourLayoutEngine.ts` isolieren Ankerknoten, betten das Sub-Dokument relativ zum Ankerknoten ein (`inline` vollständig, `capsule` als kompakte Kapsel) und verdrängen angrenzende Master-Gruppen kollisionsfrei nach außen.
+  3. **Lokale Hintergründe & Schreibschutz:** Über `bg_asset_id` verknüpfte Medien-Assets des Zweig-Dokuments werden am Zweig-Anker gerendert. Eingebettete Zweig-Karten sind im Master schreibgeschützt; ein Klick auf „Zweig bearbeiten“ wechselt nahtlos in das Subtree-Dokument und zurück zum Master.
+
+#### SPEC-DSG-007 -> REQ-DSG-007
+- **Fachliche Anforderung:** Verschlüsselter Projekt-Export & -Import (.lgproj) ([REQ-DSG-007](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-dsg-007-verschl%C3%BCsselter-projekt-export---import-lgproj))
+- **Architektonische Schicht & Komponenten-Mapping:**
+  - Rust Backend: [`src-tauri/src/design_repo.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/design_repo.rs) (`LGPROJ_MAGIC`, `PBKDF2_ITERS`), [`src-tauri/src/lib.rs`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/src/lib.rs) (`export_encrypted_project`, `import_encrypted_project`)
+  - Kryptografie-Crates: `aes-gcm`, `pbkdf2`, `hmac`, `sha2`, `rand`, `base64` ([`src-tauri/Cargo.toml`](file:///c:/dev/Froning/app/LineageGraph/src-tauri/Cargo.toml))
+  - Frontend Store: [`src/composables/useDesignStudioStore.ts`](file:///c:/dev/Froning/app/LineageGraph/src/composables/useDesignStudioStore.ts)
+- **Technische Umsetzung:**
+  `export_encrypted_project` serialisiert das vollständige Design-Bundle (Dokumente, Regeln, Subtree-Mounts, Medien-Assets) in JSON, leitet aus dem Benutzerpasswort und einem zufälligen Salt mittels `PBKDF2-HMAC-SHA256` (`100_000` Iterationen) einen 256-Bit-Schlüssel ab und verschlüsselt die Nutzdaten mit `Aes256Gcm`. Die Ausgabedatei beginnt mit dem 8-Byte-Header `LGPROJ01`. `import_encrypted_project` prüft den Header, entschlüsselt die Nutzdaten und importiert Dokumente sowie Medien-Assets transaktional in die aktive SQLite-Datenbank.
 
 ---
 
@@ -322,9 +357,10 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
 - **Architektonische Schicht & Komponenten-Mapping:**
   - Frontend Utility: [`src/utils/htmlExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/htmlExport.ts) (`buildInteractiveExportTree`, `generateInteractiveTreeHtml`)
   - Vendor Assets: [`src/assets/vendor/d3.v7.min.ts`](file:///c:/dev/Froning/app/LineageGraph/src/assets/vendor/d3.v7.min.ts)
-  - UI-Komponente: [`src/components/export/HtmlExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/HtmlExportPane.vue)
+  - UI-Komponenten: [`src/components/export/HtmlExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/HtmlExportPane.vue), [`src/components/common/ExportLanguageSelect.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/common/ExportLanguageSelect.vue)
 - **Technische Umsetzung:**
   `htmlExport.ts` kompiliert alle Personendaten, Verwandtschaftsbeziehungen und Stammbaumäste in einen einzigen, autarken HTML5-String. Das Dokument enthält eingebettete CSS-Stile, SVG-Icons und vanilla JavaScript für interaktive Suche, Personenauswahl, einen auf Desktop und Mobilgeräten einklappbaren Detail-Drawer (`#sidebar`) sowie klickbare Sprunglinks (`jumpToHenry`) für Eltern, Implex-Verweise und Kinder ohne externe Netzwerkabhängigkeiten:
+  - **Mehrsprachigkeit & Responsive Vorschau:** Über `ExportLanguageSelect.vue` und `tLocale` kann die Exportsprache (`de`, `en`, `fr`, `pt`) gezielt gewählt werden; `HtmlExportPane.vue` bietet zudem einen Umschalter zwischen Desktop- und Mobile-Vorschau (`previewViewport`, `mobileOrientation`).
   - **Single-File Bundle:** D3.js v7.9.2 ist direkt über `d3.v7.min.ts` als Minified String im Skriptblock vor dem schließenden `</body>` eingebunden; Personendaten werden als strukturiertes `<script type="application/json" id="tree-data-json">` injectet und mit `</script`-Maskierung geschützt.
   - **Mobil- & Touch-Härtung (iOS & Android):** Viewport mit `viewport-fit=cover`, Mindest-Touch-Ziele von 44x44px für alle Schaltflächen und transparente SVG-Knoten-Hitboxen (`circle.touch-hitbox` mit `r=22`), `touch-action: none` zur Entkopplung des SVG-Pinch/Pans von Browser-Gesten sowie Safe-Area-Insets (`env(safe-area-inset-*)`) und Dynamic Viewport Height (`100dvh`). Auf Viewports `<= 900px` wird die Menüleiste auf `overflow: visible` umgestellt, das Suchfeld flexibel über die Leiste gestreckt (Vorschlags-Dropdown schwebt unbeschnitten frei über der Leinwand) und Werkzeugschaltflächen werden kompakt in einem Dropdown-Kontextmenü (`.menu-dropdown-wrapper` / `#btn-mobile-menu`) gebündelt.
   - **Sandbox- & Storage-Schutz:** Persistierung von Sprachauswahl und Ehepartner-Anzeige über einen `safeStorage`-Wrapper mit In-Memory-Fallback zur Vermeidung von `SecurityError`-Abbrüchen in iOS Quick Look oder isolierten `file://`-Kontexten.
@@ -333,10 +369,10 @@ Dieses Dokument übersetzt die im fachlichen Anforderungsdokument ([REQ.md](file
 #### SPEC-EXP-004 -> REQ-EXP-004
 - **Fachliche Anforderung:** Hochauflösender Bild- & Vektorexport des Stammbaums ([REQ-EXP-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-004-hochaufl%C3%B6sender-bild---vektorexport-des-stammbaums))
 - **Architektonische Schicht & Komponenten-Mapping:**
-  - Frontend Utility: [`src/utils/designExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/designExport.ts)
+  - Frontend Utility: [`src/utils/designSceneExport.ts`](file:///c:/dev/Froning/app/LineageGraph/src/utils/designSceneExport.ts)
   - UI-Komponente: [`src/components/export/DesignImageExportPane.vue`](file:///c:/dev/Froning/app/LineageGraph/src/components/export/DesignImageExportPane.vue)
 - **Technische Umsetzung:**
-  `designExport.ts` serialisiert das DOM-Element des Canvas inklusive SVG-Verbindern. Für Vektorgrafiken wird ein bereinigtes XML-Dokument generiert. Für PNG-Grafiken wird die SVG auf ein offscreen HTML5 `<canvas>`-Element gezeichnet und mit benutzerdefiniertem Skalierungsfaktor (z. B. 2x oder 3x) via `canvas.toBlob('image/png')` gerendert.
+  `designSceneExport.ts` rendert den berechneten `DesignSceneGraph` (inklusive Personen-Karten, orthogonaler/organischer Verbinder, Linienbrücken und eingebetteter Hintergrundbilder) direkt in ein bereinigtes SVG-XML-Dokument. Für PNG-Grafiken wird die SVG auf ein offscreen HTML5 `<canvas>`-Element gezeichnet und mit benutzerdefiniertem Skalierungsfaktor (z. B. 2x oder 3x) via `canvas.toBlob('image/png')` gerendert.
 
 #### SPEC-EXP-005 -> REQ-EXP-005
 - **Fachliche Anforderung:** Automatisierte LaTeX/TikZ-Buchchronik ([REQ-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-005-automatisierte-latextikz-buchchronik))

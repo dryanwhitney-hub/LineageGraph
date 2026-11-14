@@ -12,6 +12,8 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
   - [1.2 Stammbäume anlegen, auswählen und wechseln](#12-stammbäume-anlegen-auswählen-und-wechseln)
   - [1.3 Stammbäume sicher entfernen](#13-stammbäume-sicher-entfernen)
   - [1.4 Arbeiten im Leerzustand](#14-arbeiten-im-leerzustand)
+  - [1.5 App-Aktualisierung & Versionsprüfung](#15-app-aktualisierung--versionsprüfung)
+  - [1.6 Speicherort, Backups & Datumsformat](#16-speicherort-backups--datumsformat)
 - [Kapitel 2: Fachliche Module & Workflows](#kapitel-2-fachliche-module--workflows)
   - [2.1 Personen- und Familiendaten verwalten](#21-personen--und-familiendaten-verwalten)
     - [2.1.1 Neue Personen erfassen mit automatischer ID-Vergabe](#211-neue-personen-erfassen-mit-automatischer-id-vergabe)
@@ -29,7 +31,7 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
     - [2.3.2 Der interaktive Stammbaum-Canvas](#232-der-interaktive-stammbaum-canvas)
     - [2.3.3 Das Eintragsdetail-Panel (Inspektor)](#233-das-eintragsdetail-panel-inspektor)
     - [2.3.4 Die freie Schnellabfrage (Free Query)](#234-die-freie-schnellabfrage-free-query)
-    - [2.3.5 Sprache umschalten (Deutsch / Englisch)](#235-sprache-umschalten-deutsch--englisch)
+    - [2.3.5 Sprache umschalten (Deutsch / Englisch / Französisch / Portugiesisch)](#235-sprache-umschalten-deutsch--englisch--französisch--portugiesisch)
   - [2.4 Stammbaum Design Studio](#24-stammbaum-design-studio)
     - [2.4.1 Der Design-Modus & das hierarchische Schaubild](#241-der-design-modus--das-hierarchische-schaubild)
     - [2.4.2 Geschwistergruppen, Track-Routing und Leitungsbrücken](#242-geschwistergruppen-track-routing-und-leitungsbrücken)
@@ -54,6 +56,7 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
     - [2.7.3 Priorisierung, differenzierter Aufgabenstatus & persönliche Genealogen-Notizen](#273-priorisierung-differenzierter-aufgabenstatus--persönliche-genealogen-notizen)
     - [2.7.4 Schwellenwerte & Recherche-Portale konfigurieren (Einstellungen)](#274-schwellenwerte--recherche-portale-konfigurieren-einstellungen)
     - [2.7.5 Erkennung und Analyse isolierter Zweige (Insel-Finder)](#275-erkennung-und-analyse-isolierter-zweige-insel-finder)
+  - [2.8 Statistik & Genealogische Auswertungen](#28-statistik--genealogische-auswertungen)
 - [Kapitel 3: Praktische Tipps, Fehlersicherheiten & Best Practices](#kapitel-3-praktische-tipps-fehlersicherheiten--best-practices)
   - [3.1 Das zweistufige Sicherheitskonzept gegen Datenverlust](#31-das-zweistufige-sicherheitskonzept-gegen-datenverlust)
   - [3.2 Warum der Schutz vor Verwandtschaftsschleifen unverzichtbar ist](#32-warum-der-schutz-vor-verwandtschaftsschleifen-unverzichtbar-ist)
@@ -75,10 +78,12 @@ Nach dem Start von LineageGraph öffnet sich das Hauptfenster. Die Benutzeroberf
 
 1. **Die Kopfzeile (Header):**
    * **Programm-Titel & Aktiver Stammbaum:** Zeigt an, welche Familiendatenbank aktuell geöffnet ist.
-   * **Haupt-Modus-Schalter:** Wechselt zwischen den vier Hauptansichten:
+   * **Haupt-Modus-Schalter:** Wechselt zwischen den Hauptansichten:
      * 📋 **Tabelle:** Tabellarische Erfassung, Filterung und Sortierung aller Personen.
      * 🌳 **Stammbaum:** Interaktiver Canvas-Stammbaum mit stufenlosem Panning & Zoom.
      * 🎨 **Design Mode:** Visuelles Design-Studio zur Gestaltung druckreifer Stammbäume.
+     * 📊 **Statistik:** Interaktive Diagramme zu Demografie, Familien, Namen/Orten und Datenqualität.
+     * 🔍 **Forschung:** Genealogischer Lücken-Finder, Dossiers und Insel-Finder.
      * 📦 **Export:** Zentraler Hub zur Generierung von Büchern, Webseiten, Bildern und Tabellen.
    * **Probanden-Tabs:** Schnellauswahl der definierten Stammahnen zur sofortigen Neuberechnung und Anzeige der Henry-Nummerierung.
    * **Aktionsschaltflächen:** Schneller Zugriff auf *„+ Person anlegen“*, *„GEDCOM importieren“* und die *„⚙️ Einstellungen“*.
@@ -168,6 +173,21 @@ Hält LineageGraph stets auf dem neuesten Stand. Bei jedem Start prüft die Anwe
 
 ### Was ist das Ergebnis?
 Nach Bestätigung lädt LineageGraph das Update mit Fortschrittsbalken herunter. Der Windows-Installer übernimmt die Aktualisierung und startet die Anwendung anschließend auf Wunsch mit der neuen Version neu. Ihre Stammbäume und Einstellungen bleiben dabei vollständig erhalten.
+
+---
+
+## 1.6 Speicherort, Backups & Datumsformat
+
+### Was macht die Funktion?
+Ermöglicht es Ihnen, den Speicherordner Ihrer Stammbaum-Datenbanken frei zu wählen (z. B. ein lokales Verzeichnis, ein Netzlaufwerk oder ein Cloud-Sync-Ordner), gleichzeitige Zugriffe anderer Familienmitglieder zu erkennen, gezielte Sicherungskopien (Backups) anzulegen bzw. wiederherzustellen und das gewünschte Datumsformat festzulegen.
+
+### Wie bediene ich sie?
+1. **Speicherort wechseln & Team-Sync:** Öffnen Sie **„⚙️ Einstellungen“** -> Reiter **„Speicherort“**. Wählen Sie einen neuen Zielordner aus; LineageGraph prüft vorab Schreibrechte und vorhandene Datenbanken. Optional können Sie im selben Bereich Ihren **Anzeigenamen für aktive Sitzungen** hinterlegen, damit andere Nutzer im selben Netzwerkordner sehen, wer gerade arbeitet.
+2. **Backups verwalten:** Im Reiter **„Stammbäume“** bzw. **„Speicherort“** können Sie jederzeit ein manuelles Backup des aktiven Stammbaums anlegen, frühere Sicherungen wiederherstellen, nicht mehr benötigte Snapshots löschen oder mit **„Alle Datenbanken sichern“** sämtliche Stammbäume gesammelt in einen Zielordner exportieren.
+3. **Datumsformat einstellen:** Im Reiter **„Allgemein“** wählen Sie unter *„Datumsformat“* zwischen automatischer Anpassung an die Programmsprache oder festen Formaten (`TT.MM.JJJJ`, `JJJJ-MM-TT`, `TT/MM/JJJJ`, `MM/TT/JJJJ`, `TT MMM JJJJ`, `GEDCOM`).
+
+### Was ist das Ergebnis?
+Ihre Familiendaten liegen sicher am gewünschten Ort. Ist ein Netzlaufwerk vorübergehend nicht erreichbar, fällt LineageGraph automatisch mit einer Warnmeldung auf das lokale Standardverzeichnis zurück. Änderungen anderer Nutzer im geteilten Ordner werden automatisch erkannt und nachgeladen.
 
 ---
 
@@ -406,17 +426,18 @@ Das Suchfenster schließt sich und der Stammbaum öffnet sich exakt an der Posit
 
 ---
 
-### 2.3.5 Sprache umschalten (Deutsch / Englisch)
+### 2.3.5 Sprache umschalten (Deutsch / Englisch / Französisch / Portugiesisch)
 
 #### Was macht die Funktion?
-Schaltet die gesamte Programmoberfläche inklusive aller Fachbegriffe, Tooltips und Meldungen zwischen Deutsch und Englisch um.
+Schaltet die gesamte Programmoberfläche inklusive aller Fachbegriffe, Tooltips, Datumsanzeigen und Meldungen zwischen **Deutsch**, **English**, **Français** und **Português** um.
 
 #### Wie bediene ich sie?
-1. Öffnen Sie die **„⚙️ Einstellungen“** (Reiter *„Allgemein“*).
-2. Wählen Sie unter *„Sprache / Language“* entweder **Deutsch** oder **English**.
+1. Öffnen Sie die **„⚙️ Einstellungen“** (Reiter *„Allgemein“*) oder nutzen Sie die Sprachauswahl direkt in der Oberfläche.
+2. Wählen Sie unter *„Sprache / Language“* zwischen **Deutsch**, **English**, **Français** oder **Português**.
+3. Optional können Sie im selben Bereich das bevorzugte **Datumsformat** (z. B. automatisch nach Sprache, `TT.MM.JJJJ`, `JJJJ-MM-TT`, `MM/TT/JJJJ`, `TT MMM JJJJ` oder `GEDCOM`) festlegen.
 
 #### Was ist das Ergebnis?
-Alle Texte passen sich sofort ohne Neustart der Anwendung an.
+Alle Texte und Datumsdarstellungen passen sich sofort ohne Neustart der Anwendung an. Bei der Eingabe von Daten werden auch lokalisierte Monatsnamen (z. B. *„14. März 1890“* oder *„ca. 1850“*) automatisch erkannt und intern standardkonform im GEDCOM-Format gespeichert.
 
 ---
 
@@ -498,6 +519,8 @@ Sie können neue Design-Entwürfe für jeden beliebigen Stammahnen anlegen, best
 * **Rückgängig (Undo):** Drücken Sie `Strg + Z` (oder klicken Sie in der Werkzeugleiste auf **„↩️ Zurück“**), um eine versehentliche Verschiebung sofort rückgängig zu machen.
 * **Stand speichern:** Klicken Sie in der Werkzeugleiste auf **„💾 Speichern“**, vergeben Sie einen Namen (z. B. `Hauptstamm_Poster_A0`) und wählen Sie *„In Stammbaum speichern“*.
 * **Als Datei exportieren:** Über die Schaltfläche *„⬇️ Als Datei ablegen (.json)“* im Speichern-Dialog exportieren Sie das Layout als transportable JSON-Datei auf Ihre Festplatte.
+* **Verschlüsseltes Projekt-Paket (.lgproj):** Für die sichere Weitergabe kompletter Design-Projekte inklusive eingebetteter Zweig-Layouts und Hintergrundbilder/Wappen steht der passwortgeschützte Projekt-Export und -Import (`.lgproj` mit AES-256-GCM-Verschlüsselung) zur Verfügung.
+* **Layout- & Stil-Optionen:** Im Design Studio lassen sich zudem Wuchsrichtung (*von unten nach oben* oder *von oben nach unten*), Abstammungspolicy (*patrilinear*, *matrilinear*, *ältester Zweig*), Linienführung (*orthogonal* oder *organisch geschwungen*) sowie vier kompakte Karten-Dichteprofile (*Detail*, *Standard*, *Kompakt (Jahre)*, *Schmal*) flexibel einstellen.
 
 #### Was ist das Ergebnis?
 Ihre manuelle Layoutarbeit ist flexibel organisiert, Sie können jeden Stammahn unabhängig gestalten, sind vor versehentlichem Überschreiben geschützt und können Entwürfe jederzeit austauschen oder archivieren.
@@ -640,7 +663,7 @@ Erzeugt eine vollständig autarke, [interaktive HTML-Chronik](#glossar-html-chro
 #### Wie bediene ich sie?
 1. Wählen Sie im Export-Modul den Reiter **„Interaktiver HTML-Export“**.
 2. Wählen Sie den gewünschten Stammahn aus.
-3. Vergeben Sie nach Wunsch einen zweisprachigen Dokumenttitel (Deutsch / Englisch).
+3. Vergeben Sie nach Wunsch einen Titel und wählen Sie die gewünschte **Exportsprache** (`Deutsch`, `English`, `Français`, `Português`).
 4. Testen Sie die interaktive Vorschau direkt im Fenster:
    * **Desktop-Modus:** Großflächige Ansicht mit Maus-Navigation und ausklappbarer Seitenleiste.
    * **Mobile-Modus:** Testen Sie die Ansicht im Smartphone-Mockup (umschaltbar zwischen Hoch- und Querformat mit Notch- und Safe-Area-Simulation).
@@ -889,6 +912,31 @@ Wenn zwei Einträge dieselbe reale Person repräsentieren, können Sie diese üb
 * **Ereignisse & Findings:** Wählen Sie per Checkliste gezielt aus, welche Ereignisse (z. B. Taufen, Berufe, Wohnorte) in den Ziel-Eintrag übernommen werden.
 * **Revisionsprotokoll & Notiz:** LineageGraph generiert automatisch einen Revisionshinweis im Notizfeld des Ziel-Eintrags mit Dokumentation der aufgelösten Quell-ID und verworfener abweichender Werte. Dieser Text kann vor dem Speichern individuell ergänzt werden.
 * **Sicherheit:** Auch vor jedem Merge wird automatisch eine `.bak`-Datenbanksicherung angelegt.
+
+---
+
+## 2.8 Statistik & Genealogische Auswertungen
+
+### Was macht die Funktion?
+Die Ansicht **„📊 Statistik“** wertet Ihren aktiven Stammbaum quantitativ aus und bereitet demografische Entwicklungen, Familienstrukturen, häufige Namen/Orte sowie Datenqualität und Ahnenschwund (Implex) in interaktiven Diagrammen auf.
+
+### Wie bediene ich sie?
+1. Wechseln Sie in der oberen Menüleiste auf **„📊 Statistik“**.
+2. Nutzen Sie die **Filterleiste** am oberen Rand, um die Auswertung gezielt einzugrenzen:
+   * **Proband:** Gesamter Stammbaum oder nur Nachkommen eines bestimmten Stammahnen.
+   * **Geschlecht:** Alle, Männlich oder Weiblich.
+   * **Zeitraum (`Von` – `Bis`):** Eingrenzung auf bestimmte Geburtsjahre.
+   * **Nur exakte Daten:** Schließt ungefähre Datumsangaben (`ABT`, `BEF`, `AFT` etc.) aus.
+   * **Familiengruppierung:** Gruppierung nach Elternpaaren oder Einzelpersonen.
+3. Wechseln Sie zwischen den vier Analyse-Tabs:
+   * **Demografie:** Lebenserwartung, Altersverteilung, Geburten/Sterbefälle nach Jahrhunderten und Geschlechterverteilung.
+   * **Familien:** Kinderzahl pro Familie, Heiratsalter und Generationenabstände.
+   * **Namen & Orte:** Häufigste Vor- und Nachnamen sowie Geburts- und Sterbeorte.
+   * **Qualität & Struktur:** Vollständigkeit von Lebensdaten und Orten sowie eine detaillierte **Implex-/Ahnenschwund-Analyse** nach Generationen.
+4. **Drilldown:** Klicken Sie auf einen beliebigen Balken, Kurvenpunkt oder eine Tabellenzeile, um die dazugehörigen Personen in der Seitenleiste anzuzeigen und direkt in die Detailansicht oder Tabelle zu springen.
+
+### Was ist das Ergebnis?
+Sie erhalten auf einen Blick belastbare Kennzahlen und historische Muster zu Ihrer Familie und können datenarme Bereiche oder interessante Ausreißer direkt weiterbearbeiten.
 
 ---
 

@@ -18,13 +18,21 @@ const statusType = ref<
 >('idle');
 const showConfirmModal = ref<boolean>(false);
 
+const PENDING_WHATS_NEW_KEY = 'lineagegraph_pending_whats_new';
+const LAST_SEEN_VERSION_KEY = 'lineagegraph_last_seen_version';
+
+const showWhatsNewModal = ref<boolean>(false);
+const whatsNewVersion = ref<string>('');
+const whatsNewNotes = ref<string>('');
+const whatsNewDate = ref<string>('');
+
 export function useAppUpdater() {
   async function loadCurrentVersion(): Promise<string> {
     if (!currentVersion.value) {
       try {
         currentVersion.value = await getVersion();
       } catch {
-        currentVersion.value = '0.2.4';
+        currentVersion.value = '0.3.0';
       }
     }
     return currentVersion.value;
@@ -118,6 +126,17 @@ export function useAppUpdater() {
       let downloaded = 0;
       let contentLength = 0;
 
+      try {
+        localStorage.setItem(
+          PENDING_WHATS_NEW_KEY,
+          JSON.stringify({
+            version: update.version,
+            notes: releaseNotes.value,
+            date: releaseDate.value,
+          })
+        );
+      } catch {}
+
       await update.downloadAndInstall((event: DownloadEvent) => {
         if (event.event === 'Started') {
           contentLength = event.data.contentLength || 0;
@@ -142,6 +161,28 @@ export function useAppUpdater() {
     showConfirmModal.value = false;
   }
 
+  async function checkPostUpdateWhatsNew(): Promise<void> {
+    const ver = await loadCurrentVersion();
+    try {
+      const rawPending = localStorage.getItem(PENDING_WHATS_NEW_KEY);
+      if (rawPending) {
+        const parsed = JSON.parse(rawPending);
+        if (parsed && parsed.version === ver && typeof parsed.notes === 'string' && parsed.notes.trim()) {
+          whatsNewVersion.value = ver;
+          whatsNewNotes.value = parsed.notes;
+          whatsNewDate.value = typeof parsed.date === 'string' ? parsed.date : '';
+          showWhatsNewModal.value = true;
+        }
+        localStorage.removeItem(PENDING_WHATS_NEW_KEY);
+      }
+      localStorage.setItem(LAST_SEEN_VERSION_KEY, ver);
+    } catch {}
+  }
+
+  function dismissWhatsNewModal() {
+    showWhatsNewModal.value = false;
+  }
+
   return {
     currentVersion,
     isChecking,
@@ -154,11 +195,17 @@ export function useAppUpdater() {
     statusMessage,
     statusType,
     showConfirmModal,
+    showWhatsNewModal,
+    whatsNewVersion,
+    whatsNewNotes,
+    whatsNewDate,
     loadCurrentVersion,
     isInternetAvailable,
     checkForUpdates,
     confirmInstall,
     dismissConfirmModal,
+    checkPostUpdateWhatsNew,
+    dismissWhatsNewModal,
   };
 }
 

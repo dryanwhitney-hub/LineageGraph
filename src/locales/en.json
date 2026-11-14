@@ -1266,5 +1266,7 @@
   "settings_peer_name_desc": "This name is shown to other users in a shared folder. If left empty, your device hostname is used automatically.",
   "settings_peer_name_placeholder": "e.g. David (Laptop) — empty = hostname",
   "nav_collapse": "Collapse menu",
-  "nav_expand": "Expand menu"
+  "nav_expand": "Expand menu",
+  "whats_new_title": "What's New in v{version}",
+  "whats_new_close_btn": "Got it"
 }
