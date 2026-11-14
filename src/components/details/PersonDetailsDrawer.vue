@@ -2,6 +2,8 @@
 import { ref, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import ShortestPathModal from '../modals/ShortestPathModal.vue';
+import DateInput from '../common/DateInput.vue';
+import { formatDisplayDate } from '../../composables/useDateFormat';
 import type { ResearchTaskDto } from '../../types/research';
 import {
   isValidGedcomXref,
@@ -203,7 +205,7 @@ function formatPersonLabel(p: Person | undefined, fallbackId?: string): string {
   if (!p) return fallbackId || '';
   const s = p.surname || 'N.N.';
   const g = p.given_name || 'N.N.';
-  const b = p.birth_date ? ` *${p.birth_date}` : '';
+  const b = p.birth_date ? ` *${formatDisplayDate(p.birth_date)}` : '';
   return `${s}, ${g} (${p.id})${b}`;
 }
 
@@ -495,6 +497,9 @@ function handleRemoveChild(childId: string) {
                     <span v-else-if="col.key === 'id'">
                       <code class="xref-code">{{ selectedPerson.id }}</code>
                     </span>
+                    <span v-else-if="col.isDate || col.key.includes('date') || col.key === 'chan'">
+                      {{ formatDisplayDate(getPersonAttr(selectedPerson, col.key)) || '-' }}
+                    </span>
                     <span v-else>{{ getPersonAttr(selectedPerson, col.key) || '-' }}</span>
                     <span v-if="getFieldGapBadge(col.key)" class="gap-field-badge">
                       {{ getFieldGapBadge(col.key) }}
@@ -561,6 +566,12 @@ function handleRemoveChild(childId: string) {
                         </div>
                       </div>
                     </div>
+                    <DateInput
+                      v-else-if="col.isDate || col.key.includes('date')"
+                      :modelValue="getPersonAttr(editedPersons.get(selectedPerson.id)!, col.key) ?? ''"
+                      @update:modelValue="setPersonAttr(editedPersons.get(selectedPerson.id)!, col.key, $event)"
+                      class="w-100"
+                    />
                     <input
                       v-else
                       :value="getPersonAttr(editedPersons.get(selectedPerson.id)!, col.key) ?? ''"
@@ -715,7 +726,7 @@ function handleRemoveChild(childId: string) {
                   <span class="badge clickable-henry" v-else>↪</span>
                 </div>
                 <div class="marriage-info">
-                  * {{ p.birth_date || '?' }}<span v-if="p.death_date"> · † {{ p.death_date }}</span>
+                  * {{ formatDisplayDate(p.birth_date) || '?' }}<span v-if="p.death_date"> · † {{ formatDisplayDate(p.death_date) }}</span>
                 </div>
               </li>
             </ul>
@@ -777,22 +788,20 @@ function handleRemoveChild(childId: string) {
               <div v-if="isEditing" class="edit-spouse-box">
                 <div class="picker-field">
                   <label>⚭ {{ t('wedding_date') }}:</label>
-                  <input
-                    type="text"
+                  <DateInput
                     class="w-100"
-                    placeholder="12.05.1950 / 12 MAY 1950"
-                    :value="editedSpouses?.get(sp.family_id)?.marriage_date ?? sp.marriage_date ?? ''"
-                    @input="emit('update-spouse', { familyId: sp.family_id, field: 'marriage_date', value: ($event.target as HTMLInputElement).value })"
+                    :placeholder="formatDisplayDate('12 MAY 1950')"
+                    :modelValue="editedSpouses?.get(sp.family_id)?.marriage_date ?? sp.marriage_date ?? ''"
+                    @update:modelValue="emit('update-spouse', { familyId: sp.family_id, field: 'marriage_date', value: $event })"
                   />
                 </div>
                 <div class="picker-field">
                   <label>⚮ {{ t('divorce_date') }}:</label>
-                  <input
-                    type="text"
+                  <DateInput
                     class="w-100"
-                    placeholder="01.06.1970 / 01 JUN 1970"
-                    :value="editedSpouses?.get(sp.family_id)?.divorce_date ?? sp.divorce_date ?? ''"
-                    @input="emit('update-spouse', { familyId: sp.family_id, field: 'divorce_date', value: ($event.target as HTMLInputElement).value })"
+                    :placeholder="formatDisplayDate('01 JUN 1970')"
+                    :modelValue="editedSpouses?.get(sp.family_id)?.divorce_date ?? sp.divorce_date ?? ''"
+                    @update:modelValue="emit('update-spouse', { familyId: sp.family_id, field: 'divorce_date', value: $event })"
                   />
                 </div>
                 <div class="spouse-edit-footer">
@@ -817,9 +826,9 @@ function handleRemoveChild(childId: string) {
 
               <!-- Lese-Modus: Ehedaten anzeigen -->
               <div v-else class="marriage-info">
-                ⚭ {{ t('wedding_date') }}: {{ sp.marriage_date || '-' }}
+                ⚭ {{ t('wedding_date') }}: {{ formatDisplayDate(sp.marriage_date) || '-' }}
                 <span v-if="sp.is_divorced || sp.divorce_date">
-                  · ⚮ {{ t('divorce_date') }}: {{ sp.divorce_date || '✓' }}
+                  · ⚮ {{ t('divorce_date') }}: {{ formatDisplayDate(sp.divorce_date) || '✓' }}
                 </span>
               </div>
             </li>
@@ -902,7 +911,7 @@ function handleRemoveChild(childId: string) {
                 </div>
               </div>
               <div class="marriage-info">
-                * {{ c.birth_date || '?' }}<span v-if="c.death_date"> · † {{ c.death_date }}</span>
+                * {{ formatDisplayDate(c.birth_date) || '?' }}<span v-if="c.death_date"> · † {{ formatDisplayDate(c.death_date) }}</span>
               </div>
               <div class="child-other-parents">
                 <template v-if="getOtherParents(c.id).length > 0">

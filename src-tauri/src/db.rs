@@ -1,16 +1,105 @@
 use rusqlite::{Connection, Result};
 use std::path::Path;
+use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+const DRIVE_REMOTE: u32 = 4;
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" {
+    fn GetDriveTypeW(lpRootPathName: *const u16) -> u32;
+}
+
+/// Checks whether a filesystem path points to a network location (UNC path or mapped network drive).
+pub fn is_network_path(path: &Path) -> bool {
+    let raw = path.to_string_lossy();
+    let trimmed = raw.trim();
+
+    if trimmed.starts_with(r"\\?\UNC\")
+        || trimmed.starts_with(r"\\?\unc\")
+        || trimmed.starts_with("//")
+    {
+        return true;
+    }
+
+    if let Some(after_prefix) = trimmed.strip_prefix(r"\\?\") {
+        // Extended-length local drive path like \\?\C:\... -> extract drive letter below
+        return check_windows_drive_remote(after_prefix);
+    }
+
+    if trimmed.starts_with(r"\\") {
+        return true;
+    }
+
+    check_windows_drive_remote(trimmed)
+}
+
+#[cfg(target_os = "windows")]
+fn check_windows_drive_remote(path_str: &str) -> bool {
+    let bytes = path_str.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        let drive_letter = (bytes[0] as char).to_ascii_uppercase();
+        let root = format!("{}:\\", drive_letter);
+        let wide: Vec<u16> = root.encode_utf16().chain(std::iter::once(0)).collect();
+        let drive_type = unsafe { GetDriveTypeW(wide.as_ptr()) };
+        return drive_type == DRIVE_REMOTE;
+    }
+    false
+}
+
+#[cfg(not(target_os = "windows"))]
+fn check_windows_drive_remote(_path_str: &str) -> bool {
+    false
+}
 
 pub fn init_database(db_path: &Path) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
+    conn.busy_timeout(Duration::from_millis(10_000))?;
 
-    conn.execute_batch("
-        PRAGMA journal_mode = WAL;
+    if is_network_path(db_path) {
+        let wal_path = std::path::PathBuf::from(format!("{}-wal", db_path.to_string_lossy()));
+        if wal_path.exists() {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
+        conn.execute_batch("PRAGMA journal_mode = DELETE; PRAGMA locking_mode = NORMAL;")?;
+    } else if conn.execute_batch("PRAGMA journal_mode = WAL;").is_err() {
+        conn.execute_batch("PRAGMA journal_mode = DELETE;")?;
+    }
+
+    conn.execute_batch(
+        "
+        PRAGMA locking_mode = NORMAL;
         PRAGMA synchronous = NORMAL;
         PRAGMA foreign_keys = ON;
-    ")?;
+    ",
+    )?;
 
     setup_schema(conn)
+}
+
+/// Starts an IMMEDIATE transaction so SQLite acquires a RESERVED lock upfront
+/// and waits up to `busy_timeout` instead of failing immediately with SQLITE_BUSY
+/// when upgrading from a SHARED lock across multiple clients.
+pub fn begin_write_tx(conn: &mut Connection) -> Result<rusqlite::Transaction<'_>> {
+    conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+}
+
+/// Flushes any pending WAL frames and resets the database to rollback journal mode (`DELETE`)
+/// so the `.db` file is completely self-contained before copying or moving across directories.
+pub fn prepare_db_for_transfer(db_path: &Path) -> Result<()> {
+    if !db_path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(db_path)?;
+    conn.busy_timeout(Duration::from_millis(5000))?;
+    conn.execute_batch(
+        "
+        PRAGMA wal_checkpoint(TRUNCATE);
+        PRAGMA journal_mode = DELETE;
+    ",
+    )?;
+    drop(conn);
+    Ok(())
 }
 
 pub fn init_in_memory_database() -> Result<Connection> {

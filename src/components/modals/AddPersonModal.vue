@@ -8,6 +8,8 @@ import {
   type Person,
   type ColumnConfig,
 } from '../../composables/usePersons';
+import DateInput from '../common/DateInput.vue';
+import { formatDisplayDate } from '../../composables/useDateFormat';
 
 export interface AddPersonPayload {
   targetPersonId: string | null;
@@ -20,6 +22,7 @@ export interface AddPersonPayload {
   deathDate: string | null;
   deathPlace: string | null;
   customId: string;
+  isAutoId?: boolean;
   extraAttributes?: Record<string, string>;
 }
 
@@ -41,6 +44,7 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const newRelId = ref<string>('');
+const autoSuggestedId = ref<string>('');
 const localError = ref<string>('');
 const newRelType = ref<string>('none'); // 'none' | 'parent' | 'child' | 'spouse'
 const newRelTarget = ref<string | null>(null);
@@ -107,7 +111,9 @@ const selectedTargetPersonObj = computed<Person | null>(() => {
 function formatPersonLabel(p: Person): string {
   const g = p.given_name || 'N.N.';
   const s = p.surname || '';
-  const dates = p.birth_date || p.death_date ? ` (* ${p.birth_date || '?'}, † ${p.death_date || '?'})` : '';
+  const b = p.birth_date ? formatDisplayDate(p.birth_date) : '?';
+  const d = p.death_date ? formatDisplayDate(p.death_date) : '?';
+  const dates = p.birth_date || p.death_date ? ` (* ${b}, † ${d})` : '';
   return `${s ? s + ', ' : ''}${g} (${p.id})${dates}`;
 }
 
@@ -138,9 +144,13 @@ watch(
     extraFieldValues.value = {};
 
     try {
-      newRelId.value = await invoke<string>('get_next_person_id');
+      const nextId = await invoke<string>('get_next_person_id');
+      newRelId.value = nextId;
+      autoSuggestedId.value = nextId;
     } catch {
-      newRelId.value = props.fallbackNextId();
+      const fallback = props.fallbackNextId();
+      newRelId.value = fallback;
+      autoSuggestedId.value = fallback;
     }
   },
   { immediate: true }
@@ -183,6 +193,10 @@ function handleSubmit() {
     return;
   }
 
+  const isAutoId =
+    Boolean(autoSuggestedId.value) &&
+    normalizeGedcomXref(autoSuggestedId.value) === normalizedId;
+
   emit('submit', {
     targetPersonId: newRelType.value === 'none' ? null : newRelTarget.value,
     relationType: newRelType.value === 'none' ? null : newRelType.value,
@@ -194,6 +208,7 @@ function handleSubmit() {
     deathDate: newRelDeathDate.value || null,
     deathPlace: newRelDeathPlace.value || null,
     customId: normalizedId,
+    isAutoId,
     extraAttributes: { ...extraFieldValues.value },
   });
 }
@@ -311,7 +326,7 @@ function handleSubmit() {
           <div class="form-row-grid">
             <div>
               <label><strong>Geburtsdatum:</strong></label>
-              <input v-model="newRelBirthDate" class="w-100 mt-1" placeholder="z. B. 12.05.1875 oder 1875-05-12" />
+              <DateInput v-model="newRelBirthDate" class="w-100 mt-1" :placeholder="formatDisplayDate('12 MAY 1875')" />
             </div>
             <div>
               <label><strong>Geburtsort:</strong></label>
@@ -322,7 +337,7 @@ function handleSubmit() {
           <div class="form-row-grid mt-1">
             <div>
               <label><strong>Todesdatum:</strong></label>
-              <input v-model="newRelDeathDate" class="w-100 mt-1" placeholder="z. B. 03.11.1942 oder 1942" />
+              <DateInput v-model="newRelDeathDate" class="w-100 mt-1" :placeholder="formatDisplayDate('BEF 1942')" />
             </div>
             <div>
               <label><strong>Todesort:</strong></label>
@@ -357,9 +372,15 @@ function handleSubmit() {
                     <span>{{ getColLabel ? getColLabel(col) : col.labelKey }}</span>
                     <small v-if="col.isDate" class="date-hint">(Datum)</small>
                   </label>
-                  <input
+                  <DateInput
+                    v-if="col.isDate"
                     v-model="extraFieldValues[col.key]"
-                    :placeholder="col.isDate ? 'z. B. 1920-04-10' : ''"
+                    :placeholder="formatDisplayDate('10 APR 1920')"
+                    class="w-100 field-input"
+                  />
+                  <input
+                    v-else
+                    v-model="extraFieldValues[col.key]"
                     class="w-100 field-input"
                   />
                 </div>

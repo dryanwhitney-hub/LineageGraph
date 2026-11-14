@@ -87,6 +87,8 @@ pub struct PersonResolution {
     pub target_db_id: String,
     pub field_choices: HashMap<String, String>, // field_name -> "db" or "import"
     pub extra_action: String,                   // "overwrite", "append", "db"
+    #[serde(default)]
+    pub expected_db_values: HashMap<String, Option<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -662,7 +664,7 @@ pub fn execute_gedcom_merge(
     staged: &StagedGedcomData,
     resolution: &GedcomMergeResolution,
 ) -> Result<MergeResultStats, String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = crate::db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     let staged_persons_by_xref: HashMap<String, &StagedPerson> = staged
         .individuals
@@ -700,7 +702,12 @@ pub fn execute_gedcom_merge(
 
         let row = match curr_row.next().map_err(|e| e.to_string())? {
             Some(r) => r,
-            None => continue, // Nicht gefunden
+            None => {
+                return Err(format!(
+                    "GEDCOM_MERGE_CONFLICT: Die zugeordnete Person '{}' wurde zwischenzeitlich extern gelöscht oder umbenannt. Bitte starten Sie die Merge-Analyse neu.",
+                    m.target_db_id
+                ));
+            }
         };
 
         let db_given: Option<String> = row.get(0).ok();
@@ -713,6 +720,32 @@ pub fn execute_gedcom_merge(
         let db_json_str: String = row.get(7).unwrap_or_else(|_| "{}".to_string());
         let mut db_json: serde_json::Value =
             serde_json::from_str(&db_json_str).unwrap_or(serde_json::json!({}));
+
+        let staged_field_vals: [(&str, &Option<String>, Option<&str>); 7] = [
+            ("given_name", &db_given, staged_p.given_name.as_deref()),
+            ("surname", &db_sur, staged_p.surname.as_deref()),
+            ("sex", &db_sex, Some(staged_p.sex.as_str())),
+            ("birth_date", &db_bdate, staged_p.birth_date.as_deref()),
+            ("birth_place", &db_bplace, staged_p.birth_place.as_deref()),
+            ("death_date", &db_ddate, staged_p.death_date.as_deref()),
+            ("death_place", &db_dplace, staged_p.death_place.as_deref()),
+        ];
+        for (fname, curr_db_val, import_val) in staged_field_vals {
+            let choice = m.field_choices.get(fname).map(|s| s.as_str()).unwrap_or("db");
+            if choice == "import" {
+                if let Some(expected_val) = m.expected_db_values.get(fname) {
+                    let curr_norm = curr_db_val.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                    let exp_norm = expected_val.as_deref().map(str::trim).filter(|s| !s.is_empty());
+                    let imp_norm = import_val.map(str::trim).filter(|s| !s.is_empty());
+                    if curr_norm != exp_norm && curr_norm != imp_norm {
+                        return Err(format!(
+                            "GEDCOM_MERGE_CONFLICT: Die Person '{}' wurde zwischenzeitlich auf einem anderen Rechner geändert. Bitte starten Sie die Merge-Analyse neu, um keine fremden Änderungen zu überschreiben.",
+                            m.target_db_id
+                        ));
+                    }
+                }
+            }
+        }
 
         // Werte gemäß Benutzerauswahl wählen
         let pick_str = |field_name: &str, db_val: Option<String>, st_val: Option<String>| -> Option<String> {

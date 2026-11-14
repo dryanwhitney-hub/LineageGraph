@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
+import { formatDisplayDate } from '../composables/useDateFormat';
 
 interface ProbandData { henry_code: string; generation: number; }
 interface SpouseConnection { id: string; date: string | null; place: string | null; divorce_date: string | null; is_divorced: boolean; }
@@ -90,7 +91,7 @@ const marriageDatePlaceText = computed(() => {
   const r = props.node.relation_info;
   if (!r) return '';
   const parts: string[] = [];
-  if (r.date) parts.push(r.date);
+  if (r.date) parts.push(formatDisplayDate(r.date));
   if (r.place) parts.push(r.place);
   return parts.join(', ');
 });
@@ -98,7 +99,7 @@ const marriageDatePlaceText = computed(() => {
 const divorceText = computed(() => {
   const r = props.node.relation_info;
   if (!r) return '';
-  if (r.divorce_date) return `gesch. ${r.divorce_date}`;
+  if (r.divorce_date) return `gesch. ${formatDisplayDate(r.divorce_date)}`;
   if (r.is_divorced) return 'gesch.';
   return '';
 });
@@ -525,7 +526,7 @@ watch(
           ⚭ {{ marriageDatePlaceText }}
         </div>
         <div v-if="node.person.death_date" class="mar-line">
-          † {{ node.person.death_date }}
+          † {{ formatDisplayDate(node.person.death_date) }}
         </div>
         <div v-if="divorceText" class="mar-line">
           ⚮ {{ divorceText }}
@@ -597,7 +598,7 @@ watch(
                 [{{ node.active_henry }}] <template v-if="node.side_branch_type === 'spouse'">🔗</template>
               </span>
             </div>
-            <div class="dates">(* {{ node.person.birth_date || '?' }}<span v-if="node.person.death_date"> - † {{ node.person.death_date }}</span>)</div>
+            <div class="dates">(* {{ formatDisplayDate(node.person.birth_date) || '?' }}<span v-if="node.person.death_date"> - † {{ formatDisplayDate(node.person.death_date) }}</span>)</div>
             
             <div class="side-actions" v-if="!node.is_side_branch && (node.person.spouses.length > 0 || node.spouse_nodes.length > 0)">
               <button @click.stop="emit('toggle-side', node.person.id, 'spouses')" class="side-btn" :class="{ 'active': expandedSideNodes.get(node.person.id)?.spouses }" title="Ehepartner ein-/ausblenden">⚭ {{ Math.max(node.person.spouses.length, node.spouse_nodes.length) }}</button>

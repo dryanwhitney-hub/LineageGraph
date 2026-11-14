@@ -11,6 +11,7 @@ import type {
   SuggestedConnection,
 } from '../../types/research';
 import { useResearchPortals } from '../../composables/useResearchPortals';
+import { formatDisplayDate } from '../../composables/useDateFormat';
 
 interface PersonCandidate {
   id: string;
@@ -785,13 +786,13 @@ function getGapTypeName(type: string) {
               >
                 <span v-if="grp.person_birth_date || grp.person_birth_place" class="vital-item">
                   <span class="vital-symbol">*</span>
-                  {{ grp.person_birth_date || '' }}
+                  {{ formatDisplayDate(grp.person_birth_date) || '' }}
                   {{ grp.person_birth_place ? 'in ' + grp.person_birth_place : '' }}
                 </span>
                 <span v-if="(grp.person_birth_date || grp.person_birth_place) && (grp.person_death_date || grp.person_death_place)" class="vital-sep">·</span>
                 <span v-if="grp.person_death_date || grp.person_death_place" class="vital-item">
                   <span class="vital-symbol">†</span>
-                  {{ grp.person_death_date || '' }}
+                  {{ formatDisplayDate(grp.person_death_date) || '' }}
                   {{ grp.person_death_place ? 'in ' + grp.person_death_place : '' }}
                 </span>
               </div>

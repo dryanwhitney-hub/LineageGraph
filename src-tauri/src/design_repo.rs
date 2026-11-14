@@ -494,8 +494,20 @@ fn check_subtree_mount_cycle(
 
 pub fn save_design_document(
     conn: &mut Connection,
+    doc: DesignDocumentDto,
+    overwrite_same_name: bool,
+) -> Result<DesignDocumentSummaryDto, String> {
+    save_design_document_checked(conn, doc, overwrite_same_name, None, true)
+}
+
+/// Saves a design document inside an IMMEDIATE transaction with optional optimistic locking
+/// against `expected_updated_at` to prevent blind overwrites across concurrent clients.
+pub fn save_design_document_checked(
+    conn: &mut Connection,
     mut doc: DesignDocumentDto,
     overwrite_same_name: bool,
+    expected_updated_at: Option<&str>,
+    force_overwrite: bool,
 ) -> Result<DesignDocumentSummaryDto, String> {
     let trimmed_name = doc.name.trim().to_string();
     if trimmed_name.is_empty() {
@@ -541,7 +553,24 @@ pub fn save_design_document(
 
     check_subtree_mount_cycle(conn, &doc.id, &doc.subtree_mounts)?;
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = crate::db::begin_write_tx(conn).map_err(|e| e.to_string())?;
+
+    if !force_overwrite {
+        if let Some(exp) = expected_updated_at.map(str::trim).filter(|s| !s.is_empty()) {
+            let current_db_updated: Option<String> = tx
+                .query_row(
+                    "SELECT updated_at FROM design_documents WHERE id = ?1",
+                    [&doc.id],
+                    |r| r.get(0),
+                )
+                .ok();
+            if let Some(ref db_ts) = current_db_updated {
+                if db_ts != exp {
+                    return Err(format!("DESIGN_CONFLICT:{}", db_ts));
+                }
+            }
+        }
+    }
 
     tx.execute(
         "INSERT INTO design_documents (

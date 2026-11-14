@@ -349,11 +349,21 @@ async function applyMerge() {
     if (state.isUnlinked) {
       newPersonXrefs.push(stagedXref);
     } else {
+      const diffItem = mergePlan.value.mapped_persons.find(
+        mp => mp.staged_xref === stagedXref && mp.db_person_id === state.targetDbId
+      );
+      const expectedDbValues: Record<string, string | null> = {};
+      if (diffItem) {
+        for (const [fieldKey, fieldDiff] of Object.entries(diffItem.fields || {})) {
+          expectedDbValues[fieldKey] = fieldDiff.db_value ?? null;
+        }
+      }
       mappingsPayload.push({
         staged_xref: stagedXref,
         target_db_id: state.targetDbId,
         field_choices: state.fieldChoices,
         extra_action: state.extraAction,
+        expected_db_values: expectedDbValues,
       });
     }
   }

@@ -37,6 +37,11 @@ const personSearchQuery = ref<string>('');
 const showCustomPersonPicker = ref<boolean>(props.rootAncestors.length === 0);
 const customTitleDe = ref<string>('');
 const customTitleEn = ref<string>('');
+const bgImageInputRef = ref<HTMLInputElement | null>(null);
+const backgroundImageDataUrl = ref<string>('');
+const backgroundImageName = ref<string>('');
+const backgroundImageDimensions = ref<{ width: number; height: number } | null>(null);
+const backgroundImageOpacity = ref<number>(100);
 const isLeftPanelCollapsed = ref<boolean>(false);
 const saveStatusMsg = ref<string>('');
 const saveErrorMsg = ref<string>('');
@@ -155,8 +160,51 @@ const generatedHtml = computed<string>(() => {
     customTitleDe: customTitleDe.value,
     customTitleEn: customTitleEn.value,
     defaultLang: resolveLocale(locale.value) ?? FALLBACK_LOCALE,
+    backgroundImageDataUrl: backgroundImageDataUrl.value || undefined,
+    backgroundImageOpacity: backgroundImageOpacity.value,
   });
 });
+
+function triggerBgImageSelect() {
+  bgImageInputRef.value?.click();
+}
+
+function onBgImageFileChange(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const file = input.files?.[0];
+  if (!file || !file.type.startsWith('image/')) {
+    input.value = '';
+    return;
+  }
+
+  const reader = new FileReader();
+  reader.onload = () => {
+    const result = typeof reader.result === 'string' ? reader.result : '';
+    if (!result.startsWith('data:image/')) return;
+    backgroundImageDataUrl.value = result;
+    backgroundImageName.value = file.name;
+    backgroundImageDimensions.value = null;
+
+    const img = new Image();
+    img.onload = () => {
+      if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+        backgroundImageDimensions.value = {
+          width: img.naturalWidth,
+          height: img.naturalHeight,
+        };
+      }
+    };
+    img.src = result;
+  };
+  reader.readAsDataURL(file);
+  input.value = '';
+}
+
+function clearBackgroundImage() {
+  backgroundImageDataUrl.value = '';
+  backgroundImageName.value = '';
+  backgroundImageDimensions.value = null;
+}
 
 function reloadPreview() {
   previewKey.value++;
@@ -305,6 +353,66 @@ async function saveHtmlFile() {
           <div class="export-form-row">
             <label>{{ t('export_title_en_label') }}</label>
             <input type="text" v-model="customTitleEn" class="export-input" />
+          </div>
+
+          <div class="export-form-row">
+            <label>{{ t('export_bg_image_label') }}</label>
+            <input
+              ref="bgImageInputRef"
+              type="file"
+              accept="image/*"
+              class="sr-hidden-file"
+              @change="onBgImageFileChange"
+            />
+            <div class="bg-image-actions">
+              <button
+                type="button"
+                class="btn-bg-image-select"
+                @click="triggerBgImageSelect"
+              >
+                🖼️ {{ backgroundImageDataUrl ? t('export_bg_image_replace') : t('export_bg_image_select') }}
+              </button>
+              <button
+                v-if="backgroundImageDataUrl"
+                type="button"
+                class="btn-bg-image-remove"
+                @click="clearBackgroundImage"
+                :title="t('export_bg_image_remove')"
+              >
+                ✕ {{ t('export_bg_image_remove') }}
+              </button>
+            </div>
+            <div v-if="backgroundImageDataUrl" class="bg-image-preview-card">
+              <img
+                :src="backgroundImageDataUrl"
+                alt=""
+                class="bg-image-thumb"
+                :style="{ opacity: backgroundImageOpacity / 100 }"
+              />
+              <div class="bg-image-meta">
+                <span class="bg-image-filename" :title="backgroundImageName">
+                  {{ backgroundImageName }}
+                </span>
+                <span v-if="backgroundImageDimensions" class="bg-image-dims">
+                  {{ backgroundImageDimensions.width }} × {{ backgroundImageDimensions.height }} px
+                </span>
+              </div>
+            </div>
+            <div v-if="backgroundImageDataUrl" class="bg-image-opacity-row">
+              <div class="bg-image-opacity-header">
+                <span>{{ t('export_bg_image_opacity_label') }}</span>
+                <span class="bg-image-opacity-val">{{ backgroundImageOpacity }} %</span>
+              </div>
+              <input
+                v-model.number="backgroundImageOpacity"
+                type="range"
+                min="5"
+                max="100"
+                step="5"
+                class="bg-image-opacity-slider"
+              />
+            </div>
+            <p class="bg-image-hint">{{ t('export_bg_image_hint') }}</p>
           </div>
         </div>
 
@@ -1127,5 +1235,128 @@ async function saveHtmlFile() {
   color: #64748b;
   margin: 0;
   line-height: 1.4;
+}
+
+.sr-hidden-file {
+  display: none;
+}
+
+.bg-image-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.btn-bg-image-select {
+  flex: 1;
+  padding: 6px 10px;
+  background: #f8fafc;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.15s ease;
+}
+
+.btn-bg-image-select:hover {
+  background: #f1f5f9;
+  border-color: #94a3b8;
+}
+
+.btn-bg-image-remove {
+  padding: 6px 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #dc2626;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-bg-image-remove:hover {
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+
+.bg-image-preview-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px;
+  margin-top: 2px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+}
+
+.bg-image-thumb {
+  width: 40px;
+  height: 40px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+
+.bg-image-meta {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.bg-image-filename {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1e293b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bg-image-dims {
+  font-size: 0.72rem;
+  color: #64748b;
+  font-family: monospace;
+}
+
+.bg-image-opacity-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.bg-image-opacity-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.bg-image-opacity-val {
+  font-family: monospace;
+  color: #1e293b;
+}
+
+.bg-image-opacity-slider {
+  width: 100%;
+  accent-color: #3b82f6;
+  cursor: pointer;
+}
+
+.bg-image-hint {
+  margin: 2px 0 0 0;
+  font-size: 0.72rem;
+  color: #64748b;
+  line-height: 1.35;
 }
 </style>

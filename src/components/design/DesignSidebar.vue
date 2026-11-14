@@ -36,9 +36,10 @@ const emit = defineEmits<{
   (e: 'card-config-changed', cfg: DesignCardConfig): void;
 }>();
 
-const { locale } = useI18n();
+const { locale, t } = useI18n();
 
 const activeDoc = computed(() => props.store.activeDocument.value);
+const hasExternalDesignConflict = computed(() => props.store.hasExternalDesignConflict.value);
 const sceneGraph = computed(() => props.store.sceneGraph.value);
 const breadcrumbs = computed(() => props.store.breadcrumbStack.value);
 const isInSubtreeMode = computed(() => props.store.isInSubtreeMode.value);
@@ -645,6 +646,32 @@ async function executeCryptoAction() {
             </button>
           </div>
         </div>
+      </div>
+    </div>
+
+    <!-- Konflikt-Banner bei parallelen Design-Änderungen -->
+    <div v-if="hasExternalDesignConflict" class="design-conflict-banner" @click.stop>
+      <span class="dcb-text">⚠️ {{ t('design_sync_conflict_banner') }}</span>
+      <div class="dcb-actions">
+        <button type="button" class="dcb-btn" @click="openSaveAsModal">
+          {{ t('design_sync_save_copy') }}
+        </button>
+        <button
+          type="button"
+          class="dcb-btn"
+          :disabled="props.store.isLoading.value"
+          @click="props.store.reloadActiveFromDisk()"
+        >
+          {{ t('design_sync_reload_external') }}
+        </button>
+        <button
+          type="button"
+          class="dcb-btn danger"
+          :disabled="props.store.isLoading.value"
+          @click="props.store.forceOverwriteActiveDocument()"
+        >
+          {{ t('design_sync_overwrite_external') }}
+        </button>
       </div>
     </div>
 
@@ -1390,5 +1417,58 @@ async function executeCryptoAction() {
 .m-btn.danger {
   color: #dc2626;
   border-color: #fecaca;
+}
+
+.design-conflict-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 14px;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
+  font-size: 12px;
+  color: #92400e;
+  z-index: 25;
+}
+
+.dcb-text {
+  font-weight: 600;
+}
+
+.dcb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.dcb-btn {
+  border: 1px solid #d97706;
+  background: #ffffff;
+  color: #92400e;
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.dcb-btn:hover:not(:disabled) {
+  background: #fef3c7;
+}
+
+.dcb-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.dcb-btn.danger {
+  border-color: #dc2626;
+  color: #b91c1c;
+}
+
+.dcb-btn.danger:hover:not(:disabled) {
+  background: #fee2e2;
 }
 </style>

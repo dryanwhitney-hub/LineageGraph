@@ -178,10 +178,12 @@ const GEDCOM_MONTHS: Record<string, { deNum: string; deName: string; enName: str
   DEZ: { deNum: '12', deName: 'Dez.', enName: 'Dec' },
 };
 
+import { formatDisplayDate } from '../composables/useDateFormat';
+
 const dateCache = new Map<string, string>();
 
 /**
- * Passt das Format eines Datums (GEDCOM, ISO oder numerisch) an die aktuelle Sprache an.
+ * Passt das Format eines Datums (GEDCOM, ISO oder numerisch) an die aktuelle Sprache und das gewählte Datumsformat an.
  */
 export function formatLocalizedDate(
   raw: string | null | undefined,
@@ -191,6 +193,10 @@ export function formatLocalizedDate(
   if (!raw) return '';
   const sRaw = raw.trim();
   if (!sRaw) return '';
+
+  if (!onlyYear) {
+    return formatDisplayDate(sRaw, undefined, currentLocale);
+  }
 
   const cacheKey = `${sRaw}___${currentLocale}___${onlyYear ? 'Y' : 'F'}`;
   const cached = dateCache.get(cacheKey);

@@ -229,8 +229,9 @@ pub fn generate_gedcom(
         if ind.birth_date.is_some() || ind.birth_place.is_some() {
             out.push_str("1 BIRT\n");
             if let Some(ref d) = ind.birth_date {
-                if !d.trim().is_empty() {
-                    out.push_str(&format!("2 DATE {}\n", d.trim()));
+                let formatted = crate::gedcom_date::format_for_gedcom_export(d);
+                if !formatted.is_empty() {
+                    out.push_str(&format!("2 DATE {}\n", formatted));
                 }
             }
             if let Some(ref p) = ind.birth_place {
@@ -243,8 +244,9 @@ pub fn generate_gedcom(
         if ind.death_date.is_some() || ind.death_place.is_some() {
             out.push_str("1 DEAT\n");
             if let Some(ref d) = ind.death_date {
-                if !d.trim().is_empty() {
-                    out.push_str(&format!("2 DATE {}\n", d.trim()));
+                let formatted = crate::gedcom_date::format_for_gedcom_export(d);
+                if !formatted.is_empty() {
+                    out.push_str(&format!("2 DATE {}\n", formatted));
                 }
             }
             if let Some(ref p) = ind.death_place {
@@ -305,17 +307,19 @@ pub fn generate_gedcom(
         }
 
         if let Some(ref m_date) = f.marriage_date {
-            if !m_date.trim().is_empty() {
+            let formatted = crate::gedcom_date::format_for_gedcom_export(m_date);
+            if !formatted.is_empty() {
                 out.push_str("1 MARR\n");
-                out.push_str(&format!("2 DATE {}\n", m_date.trim()));
+                out.push_str(&format!("2 DATE {}\n", formatted));
             }
         }
 
         if f.is_divorced || f.divorce_date.is_some() {
             out.push_str("1 DIV\n");
             if let Some(ref d_date) = f.divorce_date {
-                if !d_date.trim().is_empty() {
-                    out.push_str(&format!("2 DATE {}\n", d_date.trim()));
+                let formatted = crate::gedcom_date::format_for_gedcom_export(d_date);
+                if !formatted.is_empty() {
+                    out.push_str(&format!("2 DATE {}\n", formatted));
                 }
             }
         }
@@ -393,7 +397,15 @@ fn append_json_extra_tags(out: &mut String, json_str: &str, is_family: bool) {
                 }
                 if let Some(leaf_str) = leaf.as_str() {
                     if !leaf_str.trim().is_empty() {
-                        out.push_str(&format!("2 {} {}\n", subtag.to_uppercase(), leaf_str.trim()));
+                        let subtag_upper = subtag.to_uppercase();
+                        let val_out = if subtag_upper == "DATE" {
+                            crate::gedcom_date::format_for_gedcom_export(leaf_str)
+                        } else {
+                            leaf_str.trim().to_string()
+                        };
+                        if !val_out.is_empty() {
+                            out.push_str(&format!("2 {} {}\n", subtag_upper, val_out));
+                        }
                     }
                 }
             }

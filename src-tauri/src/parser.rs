@@ -67,7 +67,7 @@ pub fn import_gedcom(conn: &mut Connection, path: &Path) -> Result<usize, String
         records.push(rec);
     }
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = crate::db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     // Vor dem Import alle bestehenden Datensätze im aktiven Stammbaum atomar löschen
     tx.execute("DELETE FROM proband_henry_codes", []).map_err(|e| e.to_string())?;

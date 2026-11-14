@@ -1,18 +1,30 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { open } from '@tauri-apps/plugin-dialog';
 import type { DesignCardConfig } from '../../types/design';
 import { useAppUpdater } from '../../composables/useAppUpdater';
 import { useResearchPortals } from '../../composables/useResearchPortals';
+import {
+  useDateFormat,
+  formatDisplayDate,
+  type DateFormatOption,
+} from '../../composables/useDateFormat';
+import { setAppLocale } from '../../i18n';
+import {
+  SUPPORTED_LOCALES,
+  getLocaleDefinition,
+  type SupportedLocale,
+} from '../../locales/registry';
 import type {
   Person,
   ColumnConfig,
   RootAncestorConfig,
 } from '../../composables/usePersons';
 
-export type SettingsTab = 'general' | 'table_view' | 'tree_view' | 'research' | 'about';
+export type SettingsTab = 'general' | 'trees' | 'storage' | 'table_view' | 'research' | 'about';
 
 export interface DesignConfigState {
   horizontalLaneGap: number;
@@ -23,7 +35,28 @@ export interface DesignConfigState {
   cardConfig: DesignCardConfig;
 }
 
-defineProps<{
+interface StorageInfoDto {
+  current_data_dir: string;
+  default_data_dir: string;
+  configured_custom_dir: string | null;
+  is_custom: boolean;
+  is_network_path: boolean;
+  is_fallback_active: boolean;
+  storage_warning: string | null;
+  trees: string[];
+  active_tree: string;
+}
+
+interface TargetDirInspectionDto {
+  path: string;
+  exists: boolean;
+  is_writable: boolean;
+  is_network_path: boolean;
+  existing_trees: string[];
+  error: string | null;
+}
+
+const props = defineProps<{
   visible: boolean;
   activeTab: SettingsTab;
   trees: string[];
@@ -54,9 +87,12 @@ const emit = defineEmits<{
   'add-root-ancestor': [];
   'remove-root-ancestor': [personId: string];
   'calculate-codes': [];
+  'storage-changed': [];
+  'backup-restored': [];
 }>();
 
 const { t, locale } = useI18n();
+const { dateFormat, setDateFormat } = useDateFormat();
 
 const {
   currentVersion,
@@ -69,13 +105,439 @@ const {
   loadCurrentVersion,
 } = useAppUpdater();
 
-onMounted(() => {
-  loadCurrentVersion();
-  loadResearchSettings();
+// --- Auto-save feedback ---
+const showSavedFeedback = ref(false);
+let savedFeedbackTimer: ReturnType<typeof setTimeout> | null = null;
+
+function triggerSavedFeedback() {
+  showSavedFeedback.value = true;
+  if (savedFeedbackTimer) clearTimeout(savedFeedbackTimer);
+  savedFeedbackTimer = setTimeout(() => {
+    showSavedFeedback.value = false;
+  }, 2000);
+}
+
+// --- Language ---
+const currentLocaleCode = computed(() => getLocaleDefinition(locale.value).code);
+
+function onLanguageChange(event: Event) {
+  const code = (event.target as HTMLSelectElement).value as SupportedLocale;
+  setAppLocale(code);
+  triggerSavedFeedback();
+}
+
+function onDateFormatChange(event: Event) {
+  setDateFormat((event.target as HTMLSelectElement).value as DateFormatOption);
+  triggerSavedFeedback();
+}
+
+// --- Startup View ---
+type StartupViewOption = 'last' | 'table' | 'tree' | 'design' | 'research';
+const startupView = ref<StartupViewOption>('last');
+
+function loadStartupView() {
+  try {
+    const saved = localStorage.getItem('lineagegraph_startup_view');
+    if (saved === 'last' || saved === 'table' || saved === 'tree' || saved === 'design' || saved === 'research') {
+      startupView.value = saved;
+    }
+  } catch {}
+}
+
+function onStartupViewChange(event: Event) {
+  const val = (event.target as HTMLSelectElement).value as StartupViewOption;
+  startupView.value = val;
+  try {
+    localStorage.setItem('lineagegraph_startup_view', val);
+  } catch {}
+  triggerSavedFeedback();
+}
+
+// --- Peer Display Name (Multi-User Sync) ---
+const peerDisplayName = ref<string>('');
+
+function loadPeerDisplayName() {
+  try {
+    peerDisplayName.value = localStorage.getItem('lineagegraph_peer_display_name') || '';
+  } catch {}
+}
+
+function onPeerDisplayNameChange() {
+  const trimmed = peerDisplayName.value.trim();
+  peerDisplayName.value = trimmed;
+  try {
+    if (trimmed) {
+      localStorage.setItem('lineagegraph_peer_display_name', trimmed);
+    } else {
+      localStorage.removeItem('lineagegraph_peer_display_name');
+    }
+  } catch {}
+  triggerSavedFeedback();
+}
+
+// --- Tree Backups & Recovery ---
+interface TreeBackupInfoDto {
+  filename: string;
+  action_type: string;
+  created_at_ms: number;
+  size_bytes: number;
+}
+
+const treeBackups = ref<TreeBackupInfoDto[]>([]);
+const isLoadingBackups = ref<boolean>(false);
+const isBackupActionRunning = ref<boolean>(false);
+const backupFeedback = ref<{ type: 'success' | 'error'; text: string } | null>(null);
+const confirmRestoreBackupFilename = ref<string | null>(null);
+const confirmDeleteBackupFilename = ref<string | null>(null);
+const isBackingUpAll = ref<boolean>(false);
+const backupAllFeedback = ref<{ type: 'success' | 'error'; text: string } | null>(null);
+
+async function loadTreeBackups() {
+  if (!props.activeTree) {
+    treeBackups.value = [];
+    return;
+  }
+  isLoadingBackups.value = true;
+  try {
+    treeBackups.value = await invoke<TreeBackupInfoDto[]>('list_tree_backups');
+  } catch (err) {
+    console.warn('Could not load tree backups', err);
+  } finally {
+    isLoadingBackups.value = false;
+  }
+}
+
+async function createManualBackup() {
+  isBackupActionRunning.value = true;
+  backupFeedback.value = null;
+  try {
+    const filename = await invoke<string>('create_tree_backup');
+    backupFeedback.value = {
+      type: 'success',
+      text: t('settings_backup_created_msg', { file: filename }),
+    };
+    await loadTreeBackups();
+  } catch (err) {
+    backupFeedback.value = { type: 'error', text: String(err) };
+  } finally {
+    isBackupActionRunning.value = false;
+  }
+}
+
+async function confirmRestoreBackup(filename: string) {
+  confirmRestoreBackupFilename.value = null;
+  isBackupActionRunning.value = true;
+  backupFeedback.value = null;
+  try {
+    const safetyBackup = await invoke<string>('restore_tree_backup', { filename });
+    backupFeedback.value = {
+      type: 'success',
+      text: t('settings_backup_restored_msg', { file: safetyBackup }),
+    };
+    await loadTreeBackups();
+    emit('backup-restored');
+  } catch (err) {
+    backupFeedback.value = { type: 'error', text: String(err) };
+  } finally {
+    isBackupActionRunning.value = false;
+  }
+}
+
+async function confirmDeleteBackup(filename: string) {
+  confirmDeleteBackupFilename.value = null;
+  isBackupActionRunning.value = true;
+  backupFeedback.value = null;
+  try {
+    await invoke('delete_tree_backup', { filename });
+    await loadTreeBackups();
+  } catch (err) {
+    backupFeedback.value = { type: 'error', text: String(err) };
+  } finally {
+    isBackupActionRunning.value = false;
+  }
+}
+
+async function backupAllDatabasesToFolder() {
+  backupAllFeedback.value = null;
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: storageInfo.value?.current_data_dir || undefined,
+    });
+    if (typeof selected !== 'string' || !selected.trim()) return;
+    isBackingUpAll.value = true;
+    const count = await invoke<number>('backup_all_databases', { targetDir: selected });
+    backupAllFeedback.value = {
+      type: 'success',
+      text: t('settings_backup_all_success', { count }),
+    };
+  } catch (err) {
+    backupAllFeedback.value = { type: 'error', text: String(err) };
+  } finally {
+    isBackingUpAll.value = false;
+  }
+}
+
+function getBackupTypeLabel(actionType: string): string {
+  switch (actionType) {
+    case 'manual':
+      return t('settings_backup_type_manual');
+    case 'pre_restore':
+      return t('settings_backup_type_pre_restore');
+    case 'pre_merge':
+      return t('settings_backup_type_pre_merge');
+    case 'pre_delete':
+    case 'pre_delete_batch':
+      return t('settings_backup_type_pre_delete');
+    default:
+      return t('settings_backup_type_other');
+  }
+}
+
+function formatBackupDate(ms: number): string {
+  if (!ms) return '';
+  return new Date(ms).toLocaleString();
+}
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+}
+
+// --- Probands confirmation & lookup ---
+const confirmRemoveProbandId = ref<string | null>(null);
+const rootAncestorIdSet = computed(() => new Set(props.rootAncestors.map(r => r.person_id)));
+
+function requestRemoveProband(personId: string) {
+  confirmRemoveProbandId.value = personId;
+}
+
+function cancelRemoveProband() {
+  confirmRemoveProbandId.value = null;
+}
+
+function confirmRemoveProband(personId: string) {
+  confirmRemoveProbandId.value = null;
+  emit('remove-root-ancestor', personId);
+}
+
+// --- Table Matrix bulk actions ---
+function setAllColumnsVisibility(field: 'visible' | 'detailVisible', value: boolean) {
+  for (const col of props.columns) {
+    col[field] = value;
+  }
+  triggerSavedFeedback();
+}
+
+function onMatrixMoveColumn(index: number, direction: 'up' | 'down') {
+  props.moveColumn(index, direction);
+  triggerSavedFeedback();
+}
+
+// --- Storage ---
+const storageInfo = ref<StorageInfoDto | null>(null);
+const targetStoragePath = ref<string>('');
+const transferMode = ref<'move' | 'copy' | 'switch'>('move');
+const overwriteExistingTrees = ref<boolean>(false);
+const storageInspection = ref<TargetDirInspectionDto | null>(null);
+const isInspectingStorage = ref<boolean>(false);
+const isApplyingStorageChange = ref<boolean>(false);
+const storageFeedback = ref<{ type: 'success' | 'error'; text: string } | null>(null);
+let inspectDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+const showOverwriteWarning = computed(
+  () =>
+    transferMode.value !== 'switch' &&
+    overwriteExistingTrees.value &&
+    !!storageInspection.value &&
+    storageInspection.value.existing_trees.length > 0
+);
+
+async function loadStorageInfo() {
+  try {
+    storageInfo.value = await invoke<StorageInfoDto>('get_storage_info');
+  } catch (err) {
+    console.warn('Could not load storage info', err);
+  }
+}
+
+async function inspectTargetDirectory(pathToInspect: string) {
+  const trimmed = pathToInspect.trim();
+  if (!trimmed) {
+    storageInspection.value = null;
+    return;
+  }
+  isInspectingStorage.value = true;
+  try {
+    storageInspection.value = await invoke<TargetDirInspectionDto>('inspect_storage_directory', {
+      path: trimmed,
+    });
+  } catch (err) {
+    storageInspection.value = {
+      path: trimmed,
+      exists: false,
+      is_writable: false,
+      is_network_path: false,
+      existing_trees: [],
+      error: String(err),
+    };
+  } finally {
+    isInspectingStorage.value = false;
+  }
+}
+
+watch(
+  () => props.visible,
+  isVisible => {
+    if (isVisible) {
+      storageFeedback.value = null;
+      backupFeedback.value = null;
+      backupAllFeedback.value = null;
+      confirmRemoveProbandId.value = null;
+      confirmRestoreBackupFilename.value = null;
+      confirmDeleteBackupFilename.value = null;
+      loadStorageInfo();
+      loadTreeBackups();
+    }
+  }
+);
+
+watch(
+  () => props.activeTree,
+  () => {
+    if (props.visible) {
+      confirmRestoreBackupFilename.value = null;
+      confirmDeleteBackupFilename.value = null;
+      loadTreeBackups();
+    }
+  }
+);
+
+watch(targetStoragePath, newVal => {
+  storageFeedback.value = null;
+  if (inspectDebounceTimer) clearTimeout(inspectDebounceTimer);
+  if (!newVal.trim()) {
+    storageInspection.value = null;
+    return;
+  }
+  inspectDebounceTimer = setTimeout(() => {
+    inspectTargetDirectory(newVal);
+  }, 300);
 });
 
+async function browseStorageDirectory() {
+  try {
+    const selected = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: storageInfo.value?.current_data_dir || undefined,
+    });
+    if (typeof selected === 'string' && selected.trim()) {
+      targetStoragePath.value = selected;
+      if (inspectDebounceTimer) clearTimeout(inspectDebounceTimer);
+      await inspectTargetDirectory(selected);
+    }
+  } catch (err) {
+    storageFeedback.value = { type: 'error', text: String(err) };
+  }
+}
+
+async function openStorageFolder() {
+  try {
+    await invoke('open_storage_directory');
+  } catch (err) {
+    storageFeedback.value = { type: 'error', text: String(err) };
+  }
+}
+
+async function applyStorageChange() {
+  const target = targetStoragePath.value.trim();
+  if (!target) return;
+  isApplyingStorageChange.value = true;
+  storageFeedback.value = null;
+  try {
+    const updated = await invoke<StorageInfoDto>('change_storage_directory', {
+      newPath: target,
+      transferMode: transferMode.value,
+      overwriteExisting: overwriteExistingTrees.value,
+    });
+    storageInfo.value = updated;
+    storageFeedback.value = {
+      type: 'success',
+      text: t('storage_change_success', { path: updated.current_data_dir }),
+    };
+    emit('storage-changed');
+  } catch (err) {
+    storageFeedback.value = {
+      type: 'error',
+      text: t('storage_change_error', { error: String(err) }),
+    };
+  } finally {
+    isApplyingStorageChange.value = false;
+  }
+}
+
+async function resetToDefaultStorage() {
+  isApplyingStorageChange.value = true;
+  storageFeedback.value = null;
+  try {
+    const updated = await invoke<StorageInfoDto>('change_storage_directory', {
+      newPath: null,
+      transferMode: transferMode.value,
+      overwriteExisting: overwriteExistingTrees.value,
+    });
+    storageInfo.value = updated;
+    targetStoragePath.value = '';
+    storageInspection.value = null;
+    storageFeedback.value = {
+      type: 'success',
+      text: t('storage_reset_success', { path: updated.current_data_dir }),
+    };
+    emit('storage-changed');
+  } catch (err) {
+    storageFeedback.value = {
+      type: 'error',
+      text: t('storage_change_error', { error: String(err) }),
+    };
+  } finally {
+    isApplyingStorageChange.value = false;
+  }
+}
+
+async function reconnectConfiguredStorage() {
+  const customDir = storageInfo.value?.configured_custom_dir;
+  if (!customDir) return;
+  isApplyingStorageChange.value = true;
+  storageFeedback.value = null;
+  try {
+    const updated = await invoke<StorageInfoDto>('change_storage_directory', {
+      newPath: customDir,
+      transferMode: 'switch',
+      overwriteExisting: false,
+    });
+    storageInfo.value = updated;
+    storageFeedback.value = {
+      type: 'success',
+      text: t('storage_change_success', { path: updated.current_data_dir }),
+    };
+    emit('storage-changed');
+  } catch (err) {
+    storageFeedback.value = {
+      type: 'error',
+      text: t('storage_change_error', { error: String(err) }),
+    };
+  } finally {
+    isApplyingStorageChange.value = false;
+  }
+}
+
+// --- Research Assistant & Portals ---
 const researchMaxAge = ref<number>(110);
 const researchChildGap = ref<number>(3.5);
+const portalSearchQuery = ref<string>('');
+const portalAccessFilter = ref<'all' | 'free' | 'free_registration' | 'freemium' | 'subscription'>('all');
 
 const {
   portals: researchPortals,
@@ -83,13 +545,39 @@ const {
   resetToDefaults: resetResearchPortals,
 } = useResearchPortals();
 
+const enabledPortalsCount = computed(
+  () => researchPortals.value.filter(p => p.enabled).length
+);
+
+const filteredResearchPortals = computed(() => {
+  const q = portalSearchQuery.value.trim().toLowerCase();
+  return researchPortals.value.filter(p => {
+    if (portalAccessFilter.value !== 'all' && p.access_type !== portalAccessFilter.value) {
+      return false;
+    }
+    if (!q) return true;
+    const desc = locale.value.startsWith('de')
+      ? p.description_de || p.description_en || ''
+      : p.description_en || p.description_de || '';
+    return (
+      p.name.toLowerCase().includes(q) ||
+      p.category.toLowerCase().includes(q) ||
+      desc.toLowerCase().includes(q)
+    );
+  });
+});
+
 function loadResearchSettings() {
   try {
     const raw = localStorage.getItem('lineagegraph_research_settings');
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (typeof parsed.max_age_years === 'number') researchMaxAge.value = parsed.max_age_years;
-      if (typeof parsed.child_gap_years === 'number') researchChildGap.value = parsed.child_gap_years;
+      if (typeof parsed.max_age_years === 'number') {
+        researchMaxAge.value = Math.min(130, Math.max(70, parsed.max_age_years));
+      }
+      if (typeof parsed.child_gap_years === 'number') {
+        researchChildGap.value = Math.min(10, Math.max(1.5, parsed.child_gap_years));
+      }
     }
   } catch (e) {
     console.warn('Could not read research settings', e);
@@ -97,20 +585,43 @@ function loadResearchSettings() {
 }
 
 function updateResearchSettings() {
+  const rawMaxAge = Number(researchMaxAge.value);
+  const clampedMaxAge = Number.isFinite(rawMaxAge)
+    ? Math.min(130, Math.max(70, Math.round(rawMaxAge)))
+    : 110;
+  researchMaxAge.value = clampedMaxAge;
+
+  const rawChildGap = Number(researchChildGap.value);
+  const clampedChildGap = Number.isFinite(rawChildGap)
+    ? Math.min(10, Math.max(1.5, Math.round(rawChildGap * 2) / 2))
+    : 3.5;
+  researchChildGap.value = clampedChildGap;
+
   try {
-    let current: any = {};
+    let current: Record<string, unknown> = {};
     const raw = localStorage.getItem('lineagegraph_research_settings');
     if (raw) {
       try {
         current = JSON.parse(raw);
       } catch {}
     }
-    current.max_age_years = Number(researchMaxAge.value) || 110;
-    current.child_gap_years = Number(researchChildGap.value) || 3.5;
+    current.max_age_years = clampedMaxAge;
+    current.child_gap_years = clampedChildGap;
     localStorage.setItem('lineagegraph_research_settings', JSON.stringify(current));
+    triggerSavedFeedback();
   } catch (e) {
     console.warn('Could not save research settings', e);
   }
+}
+
+function onTogglePortal(portalId: string) {
+  togglePortal(portalId);
+  triggerSavedFeedback();
+}
+
+function onResetResearchPortals() {
+  resetResearchPortals();
+  triggerSavedFeedback();
 }
 
 function getAccessTypeLabel(type: string): string {
@@ -153,61 +664,221 @@ function onTreeSelectChange(event: Event) {
   emit('update:activeTree', val);
   emit('switch-tree');
 }
+
+// --- Keyboard Escape handling ---
+function handleKeydown(event: KeyboardEvent) {
+  if (!props.visible) return;
+  if (event.key === 'Escape') {
+    if (confirmRemoveProbandId.value) {
+      confirmRemoveProbandId.value = null;
+      return;
+    }
+    if (confirmRestoreBackupFilename.value) {
+      confirmRestoreBackupFilename.value = null;
+      return;
+    }
+    if (confirmDeleteBackupFilename.value) {
+      confirmDeleteBackupFilename.value = null;
+      return;
+    }
+    emit('close');
+  }
+}
+
+onMounted(() => {
+  loadCurrentVersion();
+  loadResearchSettings();
+  loadStartupView();
+  loadPeerDisplayName();
+  loadStorageInfo();
+  loadTreeBackups();
+  window.addEventListener('keydown', handleKeydown);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown);
+  if (savedFeedbackTimer) clearTimeout(savedFeedbackTimer);
+  if (inspectDebounceTimer) clearTimeout(inspectDebounceTimer);
+});
 </script>
 
 <template>
   <div v-if="visible" class="modal-overlay" @click.self="emit('close')">
-    <div class="modal-content settings-modal-content settings-layout-split">
+    <div
+      class="modal-content settings-modal-content settings-layout-split"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="settings-modal-title"
+    >
       <div class="settings-modal-header-row">
-        <h2>⚙️ {{ t('settings') }}</h2>
-        <button class="btn-close-icon" @click="emit('close')">✕</button>
+        <h2 id="settings-modal-title">⚙️ {{ t('settings') }}</h2>
+        <button
+          type="button"
+          class="btn-close-icon"
+          @click="emit('close')"
+          :aria-label="t('close')"
+          :title="t('close')"
+        >
+          ✕
+        </button>
       </div>
 
       <div class="settings-split-body">
-        <!-- Linker Bereich: Navigation / Auswahl der Bereiche -->
-        <div class="settings-nav-sidebar">
+        <!-- Linke Navigationsleiste -->
+        <nav class="settings-nav-sidebar" role="tablist" aria-orientation="vertical">
           <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'general'"
             class="settings-nav-item"
-            :class="{ active: activeTab === 'general' || activeTab === 'tree_view' }"
+            :class="{ active: activeTab === 'general' }"
             @click="emit('update:activeTab', 'general')"
           >
-            🌐 {{ t('settings_tab_general') || 'Allgemein' }}
+            🌐 {{ t('settings_tab_general') }}
           </button>
           <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'trees'"
+            class="settings-nav-item"
+            :class="{ active: activeTab === 'trees' }"
+            @click="emit('update:activeTab', 'trees')"
+          >
+            🌳 {{ t('settings_tab_trees') }}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'storage'"
+            class="settings-nav-item"
+            :class="{ active: activeTab === 'storage' }"
+            @click="emit('update:activeTab', 'storage')"
+          >
+            💾 {{ t('settings_tab_storage') }}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'table_view'"
             class="settings-nav-item"
             :class="{ active: activeTab === 'table_view' }"
             @click="emit('update:activeTab', 'table_view')"
           >
-            📋 {{ t('settings_tab_table') || 'Tabellarische Ansicht' }}
+            📋 {{ t('settings_tab_table') }}
           </button>
           <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'research'"
             class="settings-nav-item"
             :class="{ active: activeTab === 'research' }"
             @click="emit('update:activeTab', 'research')"
           >
-            🔬 {{ t('settings_tab_research') || 'Forschungsassistent' }}
+            🔬 {{ t('settings_tab_research') }}
           </button>
           <button
+            type="button"
+            role="tab"
+            :aria-selected="activeTab === 'about'"
             class="settings-nav-item settings-nav-item-bottom"
             :class="{ active: activeTab === 'about' }"
             @click="emit('update:activeTab', 'about')"
           >
-            ℹ️ {{ t('settings_tab_about') || 'Über LineageGraph' }}
+            ℹ️ {{ t('settings_tab_about') }}
           </button>
-        </div>
+        </nav>
 
-        <!-- Rechter Bereich: Inhalt des ausgewählten Bereichs -->
-        <div class="settings-main-pane">
-          <!-- 1. Allgemein (inkl. Auswahl & Konfiguration der Probanden) -->
-          <div v-if="activeTab === 'general' || activeTab === 'tree_view'" class="settings-tab-pane">
+        <!-- Rechter Inhaltsbereich -->
+        <div class="settings-main-pane" role="tabpanel">
+          <!-- 1. Allgemein (App-weit: Sprache & Datumsformat) -->
+          <div v-if="activeTab === 'general'" class="settings-tab-pane">
+            <div class="settings-section">
+              <h3>🌐 {{ t('settings_language_section_title') }}</h3>
+              <p class="section-desc">{{ t('settings_language_section_desc') }}</p>
+              <label for="settings-language-select" class="field-label">
+                {{ t('settings_language_label') }}:
+              </label>
+              <select
+                id="settings-language-select"
+                :value="currentLocaleCode"
+                @change="onLanguageChange"
+                class="w-100"
+              >
+                <option
+                  v-for="loc in SUPPORTED_LOCALES"
+                  :key="loc.code"
+                  :value="loc.code"
+                >
+                  {{ loc.endonym }} ({{ loc.code.toUpperCase() }})
+                </option>
+              </select>
+            </div>
+
+            <div class="settings-section">
+              <h3>📅 {{ t('date_format_section_title') }}</h3>
+              <p class="section-desc">{{ t('date_format_section_desc') }}</p>
+              <label for="settings-date-format-select" class="field-label">
+                {{ t('date_format_label') }}:
+              </label>
+              <select
+                id="settings-date-format-select"
+                :value="dateFormat"
+                @change="onDateFormatChange"
+                class="w-100"
+              >
+                <option value="locale">{{ t('date_format_opt_locale') }}</option>
+                <option value="dd.mm.yyyy">{{ t('date_format_opt_dd_mm_yyyy') }}</option>
+                <option value="yyyy-mm-dd">{{ t('date_format_opt_yyyy_mm_dd') }}</option>
+                <option value="dd/mm/yyyy">{{ t('date_format_opt_dd_slash_mm_yyyy') }}</option>
+                <option value="mm/dd/yyyy">{{ t('date_format_opt_mm_slash_dd_yyyy') }}</option>
+                <option value="dd_mmm_yyyy">{{ t('date_format_opt_dd_mmm_yyyy') }}</option>
+                <option value="gedcom">{{ t('date_format_opt_gedcom') }}</option>
+              </select>
+              <div class="date-format-preview">
+                <strong>{{ t('date_format_preview_label') }}</strong>
+                {{ formatDisplayDate('15 MAY 1950') }} ·
+                {{ formatDisplayDate('BEF 1890') }} ·
+                {{ formatDisplayDate('ABT 03 DEC 1875') }}
+              </div>
+              <p class="section-hint">{{ t('date_format_input_hint') }}</p>
+            </div>
+
+            <div class="settings-section">
+              <h3>🚀 {{ t('settings_startup_view_title') }}</h3>
+              <p class="section-desc">{{ t('settings_startup_view_desc') }}</p>
+              <label for="settings-startup-view-select" class="field-label">
+                {{ t('settings_startup_view_label') }}:
+              </label>
+              <select
+                id="settings-startup-view-select"
+                :value="startupView"
+                @change="onStartupViewChange"
+                class="w-100"
+              >
+                <option value="last">{{ t('settings_startup_view_last') }}</option>
+                <option value="table">📋 {{ t('view_table') }}</option>
+                <option value="tree">🌳 {{ t('view_tree') }}</option>
+                <option value="design">🎨 {{ t('view_design') }}</option>
+                <option value="research">🔬 {{ t('view_research') }}</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 2. Stammbaum & Probanden (baumbezogen) -->
+          <div v-if="activeTab === 'trees'" class="settings-tab-pane">
+            <div v-if="activeTree" class="scope-banner">
+              🌳 {{ t('settings_trees_scope_badge', { name: activeTree }) }}
+            </div>
+
             <div class="settings-section">
               <h3>{{ t('tree_management') }}</h3>
-              <label>{{ t('active_tree') }}:</label>
-              <div v-if="trees.length > 0 && activeTree" class="d-flex align-items-center mb-1">
+              <label class="field-label">{{ t('active_tree') }}:</label>
+              <div v-if="trees.length > 0 && activeTree" class="d-flex align-items-center mb-2">
                 <select :value="activeTree" @change="onTreeSelectChange" class="flex-grow">
                   <option v-for="tree in trees" :key="tree" :value="tree">{{ tree }}</option>
                 </select>
                 <button
+                  type="button"
                   class="btn-danger btn-delete-tree"
                   @click="emit('start-delete-tree')"
                   :title="t('delete_tree')"
@@ -215,10 +886,11 @@ function onTreeSelectChange(event: Event) {
                   🗑️ {{ t('delete_tree') }}
                 </button>
               </div>
-              <div v-else class="no-active-tree mb-1">
+              <div v-else class="no-active-tree mb-2">
                 {{ t('no_active_tree') }}
               </div>
-              <label>{{ t('new_tree') }}:</label>
+
+              <label class="field-label">{{ t('new_tree') }}:</label>
               <div class="d-flex">
                 <input
                   :value="newTreeName"
@@ -226,48 +898,78 @@ function onTreeSelectChange(event: Event) {
                   :placeholder="t('new_tree_placeholder')"
                   class="flex-grow"
                 />
-                <button @click="emit('create-tree')">{{ t('create_btn') }}</button>
+                <button type="button" @click="emit('create-tree')">{{ t('create_btn') }}</button>
               </div>
             </div>
 
             <div class="settings-section">
               <h3>{{ t('root_ancestor_config') }}</h3>
-              <div class="proband-list-box mb-1">
-                <label><strong>{{ t('proband_list') }}:</strong></label>
+              <div class="proband-list-box mb-2">
+                <label class="field-label">{{ t('proband_list') }}:</label>
                 <ul v-if="rootAncestors.length > 0" class="proband-list">
                   <li v-for="r in rootAncestors" :key="r.person_id">
                     <span class="proband-info">
                       [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }}
                       <small>({{ r.person_id }})</small>
                     </span>
+                    <div v-if="confirmRemoveProbandId === r.person_id" class="inline-confirm-group">
+                      <span class="inline-confirm-text">{{ t('settings_confirm_remove_proband') }}</span>
+                      <button
+                        type="button"
+                        class="btn-sm btn-danger"
+                        @click="confirmRemoveProband(r.person_id)"
+                      >
+                        {{ t('settings_confirm_yes') }}
+                      </button>
+                      <button
+                        type="button"
+                        class="btn-sm btn-secondary-inline"
+                        @click="cancelRemoveProband"
+                      >
+                        {{ t('settings_confirm_cancel') }}
+                      </button>
+                    </div>
                     <button
+                      v-else
+                      type="button"
                       class="btn-sm btn-danger"
-                      @click="emit('remove-root-ancestor', r.person_id)"
+                      @click="requestRemoveProband(r.person_id)"
                     >
                       {{ t('remove') }}
                     </button>
                   </li>
                 </ul>
-                <div v-else class="sub-empty mt-1">{{ t('no_probands') }}</div>
+                <div v-else class="sub-empty">{{ t('no_probands') }}</div>
               </div>
-              <label><strong>{{ t('add_proband') }}:</strong></label>
+
+              <div class="proband-search-header">
+                <label class="field-label">{{ t('add_proband') }}:</label>
+                <span class="search-count-pill">
+                  {{ t('settings_proband_search_count', { count: filteredPersons.length }) }}
+                </span>
+              </div>
               <input
                 :value="rootSearchQuery"
                 @input="emit('update:rootSearchQuery', ($event.target as HTMLInputElement).value)"
                 :placeholder="t('search_placeholder')"
-                class="w-100 mt-1 mb-1"
+                class="w-100 mb-2"
               />
               <select
                 :value="selectedRootId"
                 @change="emit('update:selectedRootId', ($event.target as HTMLSelectElement).value)"
-                class="w-100 mb-1"
+                class="w-100 mb-2"
                 size="4"
               >
-                <option v-for="p in filteredPersons" :key="p.id" :value="p.id">
-                  {{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }})
+                <option
+                  v-for="p in filteredPersons"
+                  :key="p.id"
+                  :value="p.id"
+                  :disabled="rootAncestorIdSet.has(p.id)"
+                >
+                  {{ rootAncestorIdSet.has(p.id) ? '✓ ' : '' }}{{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }} ({{ p.id }}){{ rootAncestorIdSet.has(p.id) ? ' — ' + t('settings_proband_already_added') : '' }}
                 </option>
               </select>
-              <div class="d-flex align-items-center mt-1">
+              <div class="d-flex align-items-center">
                 <input
                   :value="newRootCode"
                   @input="emit('update:newRootCode', ($event.target as HTMLInputElement).value)"
@@ -275,6 +977,7 @@ function onTreeSelectChange(event: Event) {
                   class="flex-grow"
                 />
                 <button
+                  type="button"
                   @click="emit('add-root-ancestor')"
                   :disabled="!selectedRootId || !newRootCode"
                 >
@@ -282,20 +985,320 @@ function onTreeSelectChange(event: Event) {
                 </button>
               </div>
               <button
-                class="mt-1 btn-full btn-calculate"
+                type="button"
+                class="mt-2 btn-full btn-calculate"
                 @click="emit('calculate-codes')"
                 :disabled="rootAncestors.length === 0"
               >
                 {{ t('calc_codes_btn') }}
               </button>
               <small class="auto-calc-hint">✨ {{ t('settings_auto_calc_hint') }}</small>
-              <small class="auto-calc-hint" style="display: block; margin-top: 6px;">
-                🎨 {{ t('settings_design_studio_hint') || 'Kachel-Inhalte, Typografie, Linienführung & Layoutregeln konfigurieren Sie direkt live in der Toolbar des Design Studio.' }}
-              </small>
+              <small class="auto-calc-hint">🎨 {{ t('settings_design_studio_hint') }}</small>
+            </div>
+
+            <div v-if="activeTree" class="settings-section">
+              <div class="backup-section-header">
+                <div>
+                  <h3>🛡️ {{ t('settings_backup_section_title') }}</h3>
+                  <p class="section-desc">{{ t('settings_backup_section_desc') }}</p>
+                </div>
+                <button
+                  type="button"
+                  :disabled="isBackupActionRunning"
+                  @click="createManualBackup"
+                >
+                  💾 {{ t('settings_backup_create_btn') }}
+                </button>
+              </div>
+
+              <div
+                v-if="backupFeedback"
+                class="storage-feedback-banner mb-2"
+                :class="backupFeedback.type === 'success' ? 'feedback-ok' : 'feedback-err'"
+              >
+                {{ backupFeedback.text }}
+              </div>
+
+              <div v-if="isLoadingBackups" class="sub-empty">⏳ ...</div>
+              <ul v-else-if="treeBackups.length > 0" class="backup-list">
+                <li v-for="b in treeBackups" :key="b.filename" class="backup-list-item">
+                  <div class="backup-item-meta">
+                    <div class="backup-item-top">
+                      <span class="backup-type-pill" :class="'type-' + b.action_type">
+                        {{ getBackupTypeLabel(b.action_type) }}
+                      </span>
+                      <span class="backup-date-text">{{ formatBackupDate(b.created_at_ms) }}</span>
+                      <span class="backup-size-text">{{ formatFileSize(b.size_bytes) }}</span>
+                    </div>
+                    <code class="backup-filename-code">{{ b.filename }}</code>
+                  </div>
+
+                  <div v-if="confirmRestoreBackupFilename === b.filename" class="inline-confirm-group">
+                    <span class="inline-confirm-text">{{ t('settings_backup_confirm_restore') }}</span>
+                    <button
+                      type="button"
+                      class="btn-sm btn-calculate"
+                      :disabled="isBackupActionRunning"
+                      @click="confirmRestoreBackup(b.filename)"
+                    >
+                      {{ t('settings_confirm_yes') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-sm btn-secondary-inline"
+                      @click="confirmRestoreBackupFilename = null"
+                    >
+                      {{ t('settings_confirm_cancel') }}
+                    </button>
+                  </div>
+                  <div v-else-if="confirmDeleteBackupFilename === b.filename" class="inline-confirm-group">
+                    <span class="inline-confirm-text">{{ t('settings_backup_confirm_delete') }}</span>
+                    <button
+                      type="button"
+                      class="btn-sm btn-danger"
+                      :disabled="isBackupActionRunning"
+                      @click="confirmDeleteBackup(b.filename)"
+                    >
+                      {{ t('settings_confirm_yes') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-sm btn-secondary-inline"
+                      @click="confirmDeleteBackupFilename = null"
+                    >
+                      {{ t('settings_confirm_cancel') }}
+                    </button>
+                  </div>
+                  <div v-else class="backup-item-actions">
+                    <button
+                      type="button"
+                      class="btn-sm"
+                      :disabled="isBackupActionRunning"
+                      @click="confirmRestoreBackupFilename = b.filename"
+                    >
+                      ↺ {{ t('settings_backup_restore_btn') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="btn-sm btn-danger"
+                      :disabled="isBackupActionRunning"
+                      @click="confirmDeleteBackupFilename = b.filename"
+                      :title="t('delete_btn')"
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </li>
+              </ul>
+              <div v-else class="sub-empty">{{ t('settings_backup_empty') }}</div>
             </div>
           </div>
 
-          <!-- 2. Tabellarische Ansicht (Direkt sichtbare 2-Spalten-Matrix) -->
+          <!-- 3. Speicherort & Daten -->
+          <div v-if="activeTab === 'storage'" class="settings-tab-pane">
+            <div class="settings-section storage-settings-section">
+              <h3>💾 {{ t('storage_section_title') }}</h3>
+              <p class="section-desc">{{ t('storage_section_desc') }}</p>
+
+              <div v-if="storageInfo" class="storage-status-card">
+                <div class="storage-status-header">
+                  <span class="storage-status-label">{{ t('storage_current_dir_label') }}</span>
+                  <div class="storage-badges">
+                    <span v-if="!storageInfo.is_custom" class="storage-badge badge-default">
+                      💻 {{ t('storage_badge_default') }}
+                    </span>
+                    <span v-else-if="storageInfo.is_network_path" class="storage-badge badge-network">
+                      🌐 {{ t('storage_badge_network') }}
+                    </span>
+                    <span v-else class="storage-badge badge-custom">
+                      📂 {{ t('storage_badge_custom') }}
+                    </span>
+                  </div>
+                </div>
+                <div class="storage-path-row">
+                  <code class="storage-path-box" :title="storageInfo.current_data_dir">
+                    {{ storageInfo.current_data_dir }}
+                  </code>
+                  <button
+                    type="button"
+                    class="btn-secondary-sm"
+                    @click="openStorageFolder"
+                    :title="t('storage_open_folder')"
+                  >
+                    📂 {{ t('storage_open_folder') }}
+                  </button>
+                </div>
+              </div>
+
+              <div v-if="storageInfo?.storage_warning" class="storage-warning-banner">
+                <div class="storage-warning-text">
+                  ⚠️ {{ storageInfo.storage_warning }}
+                </div>
+                <button
+                  v-if="storageInfo.configured_custom_dir"
+                  type="button"
+                  class="btn-sm btn-reconnect"
+                  :disabled="isApplyingStorageChange"
+                  @click="reconnectConfiguredStorage"
+                >
+                  🔄 {{ t('storage_reconnect_btn') }}
+                </button>
+              </div>
+
+              <div class="storage-target-block">
+                <label class="field-label">{{ t('storage_new_dir_label') }}:</label>
+                <div class="d-flex">
+                  <input
+                    v-model="targetStoragePath"
+                    :placeholder="t('storage_new_dir_placeholder')"
+                    class="flex-grow"
+                  />
+                  <button
+                    type="button"
+                    class="btn-browse-dir"
+                    @click="browseStorageDirectory"
+                  >
+                    📁 {{ t('storage_browse_btn') }}
+                  </button>
+                </div>
+
+                <div v-if="isInspectingStorage" class="storage-inspect-hint">
+                  ⏳ {{ t('storage_inspecting') }}
+                </div>
+                <div v-else-if="storageInspection" class="storage-inspect-box">
+                  <div
+                    class="storage-inspect-line"
+                    :class="storageInspection.is_writable ? 'text-ok' : 'text-err'"
+                  >
+                    <span v-if="storageInspection.is_writable">
+                      ✅ {{ t('storage_inspect_writable') }}
+                    </span>
+                    <span v-else>
+                      ❌ {{ storageInspection.error || t('storage_inspect_not_writable') }}
+                    </span>
+                  </div>
+                  <div v-if="storageInspection.is_network_path" class="storage-inspect-line text-net">
+                    🌐 {{ t('storage_inspect_network_notice') }}
+                  </div>
+                  <div
+                    v-if="storageInspection.existing_trees.length > 0"
+                    class="storage-inspect-line text-info"
+                  >
+                    📊 {{
+                      t('storage_inspect_existing_trees', {
+                        count: storageInspection.existing_trees.length,
+                        trees: storageInspection.existing_trees.join(', '),
+                      })
+                    }}
+                  </div>
+                </div>
+              </div>
+
+              <div class="storage-mode-group">
+                <label class="field-label">{{ t('storage_transfer_mode_label') }}:</label>
+                <label class="storage-radio-option">
+                  <input type="radio" v-model="transferMode" value="move" />
+                  <div>
+                    <strong>📦 {{ t('storage_mode_move') }}</strong>
+                    <div class="storage-radio-desc">{{ t('storage_mode_move_desc') }}</div>
+                  </div>
+                </label>
+                <label class="storage-radio-option">
+                  <input type="radio" v-model="transferMode" value="copy" />
+                  <div>
+                    <strong>📋 {{ t('storage_mode_copy') }}</strong>
+                    <div class="storage-radio-desc">{{ t('storage_mode_copy_desc') }}</div>
+                  </div>
+                </label>
+                <label class="storage-radio-option">
+                  <input type="radio" v-model="transferMode" value="switch" />
+                  <div>
+                    <strong>🔗 {{ t('storage_mode_switch') }}</strong>
+                    <div class="storage-radio-desc">{{ t('storage_mode_switch_desc') }}</div>
+                  </div>
+                </label>
+              </div>
+
+              <label
+                v-if="transferMode !== 'switch' && storageInspection && storageInspection.existing_trees.length > 0"
+                class="storage-overwrite-check"
+              >
+                <input type="checkbox" v-model="overwriteExistingTrees" />
+                <span>{{ t('storage_overwrite_existing') }}</span>
+              </label>
+
+              <div v-if="showOverwriteWarning" class="storage-warning-banner">
+                ⚠️ {{ t('settings_storage_overwrite_warning') }}
+              </div>
+
+              <div class="storage-actions-row">
+                <button
+                  type="button"
+                  :disabled="
+                    !targetStoragePath.trim() ||
+                    isApplyingStorageChange ||
+                    (storageInspection !== null && !storageInspection.is_writable)
+                  "
+                  @click="applyStorageChange"
+                >
+                  💾 {{ t('storage_apply_btn') }}
+                </button>
+                <button
+                  v-if="storageInfo && (storageInfo.is_custom || storageInfo.configured_custom_dir)"
+                  type="button"
+                  class="btn-reset-storage"
+                  :disabled="isApplyingStorageChange"
+                  @click="resetToDefaultStorage"
+                >
+                  ↺ {{ t('storage_reset_btn') }}
+                </button>
+              </div>
+
+              <div
+                v-if="storageFeedback"
+                class="storage-feedback-banner"
+                :class="storageFeedback.type === 'success' ? 'feedback-ok' : 'feedback-err'"
+              >
+                {{ storageFeedback.text }}
+              </div>
+            </div>
+
+            <div class="settings-section">
+              <h3>📦 {{ t('settings_backup_all_title') }}</h3>
+              <p class="section-desc">{{ t('settings_backup_all_desc') }}</p>
+              <button
+                type="button"
+                :disabled="isBackingUpAll"
+                @click="backupAllDatabasesToFolder"
+              >
+                📁 {{ t('settings_backup_all_btn') }}
+              </button>
+              <div
+                v-if="backupAllFeedback"
+                class="storage-feedback-banner"
+                :class="backupAllFeedback.type === 'success' ? 'feedback-ok' : 'feedback-err'"
+              >
+                {{ backupAllFeedback.text }}
+              </div>
+            </div>
+
+            <div
+              v-if="storageInfo && (storageInfo.is_custom || storageInfo.is_network_path)"
+              class="settings-section"
+            >
+              <h3>👥 {{ t('settings_peer_name_title') }}</h3>
+              <p class="section-desc">{{ t('settings_peer_name_desc') }}</p>
+              <input
+                v-model="peerDisplayName"
+                @change="onPeerDisplayNameChange"
+                :placeholder="t('settings_peer_name_placeholder')"
+                class="w-100"
+                maxlength="48"
+              />
+            </div>
+          </div>
+
+          <!-- 4. Tabellarische Ansicht (Spalten-Matrix) -->
           <div v-if="activeTab === 'table_view'" class="settings-tab-pane">
             <div class="settings-section matrix-section">
               <div class="matrix-header-block">
@@ -309,14 +1312,54 @@ function onTreeSelectChange(event: Event) {
                     <tr>
                       <th>{{ t('settings_matrix_col_attr') }}</th>
                       <th class="center-col">
-                        {{ t('settings_matrix_col_table') }}
-                        <span class="matrix-count-pill">{{ columns.filter(c => c.visible).length }}/{{ columns.length }}</span>
+                        <div class="matrix-th-stack">
+                          <span>
+                            {{ t('settings_matrix_col_table') }}
+                            <span class="matrix-count-pill">{{ columns.filter(c => c.visible).length }}/{{ columns.length }}</span>
+                          </span>
+                          <span class="matrix-bulk-actions">
+                            <button
+                              type="button"
+                              class="btn-matrix-bulk"
+                              @click="setAllColumnsVisibility('visible', true)"
+                            >
+                              {{ t('settings_matrix_select_all') }}
+                            </button>
+                            <button
+                              type="button"
+                              class="btn-matrix-bulk"
+                              @click="setAllColumnsVisibility('visible', false)"
+                            >
+                              {{ t('settings_matrix_select_none') }}
+                            </button>
+                          </span>
+                        </div>
                       </th>
                       <th class="center-col">
-                        {{ t('settings_matrix_col_details') }}
-                        <span class="matrix-count-pill">{{ columns.filter(c => c.detailVisible).length }}/{{ columns.length }}</span>
+                        <div class="matrix-th-stack">
+                          <span>
+                            {{ t('settings_matrix_col_details') }}
+                            <span class="matrix-count-pill">{{ columns.filter(c => c.detailVisible).length }}/{{ columns.length }}</span>
+                          </span>
+                          <span class="matrix-bulk-actions">
+                            <button
+                              type="button"
+                              class="btn-matrix-bulk"
+                              @click="setAllColumnsVisibility('detailVisible', true)"
+                            >
+                              {{ t('settings_matrix_select_all') }}
+                            </button>
+                            <button
+                              type="button"
+                              class="btn-matrix-bulk"
+                              @click="setAllColumnsVisibility('detailVisible', false)"
+                            >
+                              {{ t('settings_matrix_select_none') }}
+                            </button>
+                          </span>
+                        </div>
                       </th>
-                      <th class="center-col" style="width: 90px;">{{ t('settings_matrix_col_order') }}</th>
+                      <th class="center-col matrix-order-col">{{ t('settings_matrix_col_order') }}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -326,26 +1369,42 @@ function onTreeSelectChange(event: Event) {
                         <small v-if="!col.editable" class="readonly-hint">({{ t('readonly') || 'schreibgeschützt' }})</small>
                       </td>
                       <td class="center-col">
-                        <input type="checkbox" v-model="col.visible" class="matrix-checkbox" />
+                        <input
+                          type="checkbox"
+                          v-model="col.visible"
+                          @change="triggerSavedFeedback"
+                          class="matrix-checkbox"
+                          :aria-label="getColLabel(col) + ' — ' + t('settings_matrix_col_table')"
+                        />
                       </td>
                       <td class="center-col">
-                        <input type="checkbox" v-model="col.detailVisible" class="matrix-checkbox" />
+                        <input
+                          type="checkbox"
+                          v-model="col.detailVisible"
+                          @change="triggerSavedFeedback"
+                          class="matrix-checkbox"
+                          :aria-label="getColLabel(col) + ' — ' + t('settings_matrix_col_details')"
+                        />
                       </td>
                       <td class="center-col">
                         <div class="matrix-order-btns">
                           <button
                             type="button"
                             class="btn-matrix-order"
-                            @click.stop="moveColumn(index, 'up')"
+                            @click.stop="onMatrixMoveColumn(index, 'up')"
                             :disabled="index === 0"
+                            :title="t('settings_matrix_move_up')"
+                            :aria-label="getColLabel(col) + ': ' + t('settings_matrix_move_up')"
                           >
                             ▲
                           </button>
                           <button
                             type="button"
                             class="btn-matrix-order"
-                            @click.stop="moveColumn(index, 'down')"
+                            @click.stop="onMatrixMoveColumn(index, 'down')"
                             :disabled="index === columns.length - 1"
+                            :title="t('settings_matrix_move_down')"
+                            :aria-label="getColLabel(col) + ': ' + t('settings_matrix_move_down')"
                           >
                             ▼
                           </button>
@@ -358,92 +1417,144 @@ function onTreeSelectChange(event: Event) {
             </div>
           </div>
 
-          <!-- 4. Forschungsassistent Einstellungen -->
+          <!-- 5. Forschungsassistent Einstellungen -->
           <div v-if="activeTab === 'research'" class="settings-tab-pane">
             <div class="settings-section">
               <h3>🔬 {{ t('research.settingsTitle', 'Forschungsassistent & Heuristiken') }}</h3>
-              <p style="color: #64748b; font-size: 0.85rem; margin-bottom: 20px;">
+              <p class="section-desc">
                 {{ t('research.settingsDesc', 'Konfiguriere die Schwellenwerte für die automatische Erkennung von genealogischen Lücken.') }}
               </p>
 
-              <div class="form-group" style="margin-bottom: 24px;">
-                <label style="display: block; font-weight: 600; margin-bottom: 6px;">
+              <div class="research-form-group">
+                <label for="research-max-age" class="field-label">
                   {{ t('research.maxAgeLabel', 'Maximales Alter für vermuteten Tod (Jahre)') }}:
                 </label>
-                <div style="display: flex; align-items: center; gap: 12px;">
+                <div class="research-input-row">
                   <input
+                    id="research-max-age"
                     type="number"
                     min="70"
                     max="130"
                     v-model.number="researchMaxAge"
                     @change="updateResearchSettings"
-                    class="form-control"
-                    style="max-width: 140px;"
+                    class="research-number-input"
                   />
-                  <span style="font-size: 0.82rem; color: #64748b;">
+                  <span class="research-input-hint">
                     {{ t('research.maxAgeHint', 'Liegt die Geburt länger zurück und fehlt das Sterbedatum, wird eine Lücke gemeldet (Standard: 110 Jahre).') }}
                   </span>
                 </div>
               </div>
 
-              <div class="form-group" style="margin-bottom: 24px;">
-                <label style="display: block; font-weight: 600; margin-bottom: 6px;">
+              <div class="research-form-group">
+                <label for="research-child-gap" class="field-label">
                   {{ t('research.childGapLabel', 'Mindestabstand für Kinderlücke (Jahre)') }}:
                 </label>
-                <div style="display: flex; align-items: center; gap: 12px;">
+                <div class="research-input-row">
                   <input
+                    id="research-child-gap"
                     type="number"
                     step="0.5"
                     min="1.5"
                     max="10.0"
                     v-model.number="researchChildGap"
                     @change="updateResearchSettings"
-                    class="form-control"
-                    style="max-width: 140px;"
+                    class="research-number-input"
                   />
-                  <span style="font-size: 0.82rem; color: #64748b;">
+                  <span class="research-input-hint">
                     {{ t('research.childGapHint', 'Spannen zwischen Geschwistern ab diesem Schwellenwert werden als auffällige Kinderlücke gelistet (Standard: 3.5 Jahre).') }}
                   </span>
                 </div>
               </div>
 
-              <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 30px 0 24px 0;" />
+              <hr class="section-divider" />
 
               <!-- Konfigurierbare Recherche-Portale & Bibliotheken -->
               <div class="portals-config-section">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px;">
+                <div class="portals-header-row">
                   <div>
-                    <h4 style="margin: 0 0 6px 0; color: #1e293b; font-size: 1rem; display: flex; align-items: center; gap: 8px;">
-                      <span>🌐</span> {{ t('research.portalsSectionTitle', 'Genealogische Archive & Recherche-Portale') }}
+                    <h4 class="portals-title">
+                      <span>🌐</span>
+                      {{ t('research.portalsSectionTitle', 'Genealogische Archive & Recherche-Portale') }}
+                      <span class="matrix-count-pill">{{ enabledPortalsCount }}/{{ researchPortals.length }}</span>
                     </h4>
-                    <p style="color: #64748b; font-size: 0.83rem; margin: 0;">
+                    <p class="section-desc">
                       {{ t('research.portalsSectionDesc', 'Wähle aus, welche Archive im Forschungsassistenten zur 1-Klick-Recherche eingebunden werden sollen. Deaktiviere Portale, für die du kein Abonnement besitzt.') }}
                     </p>
                   </div>
                   <button
                     type="button"
                     class="btn-reset-portals"
-                    @click="resetResearchPortals"
+                    @click="onResetResearchPortals"
                     :title="t('research.resetPortalsTitle', 'Auf Standardauswahl zurücksetzen')"
                   >
                     ↺ {{ t('research.resetPortals', 'Standard') }}
                   </button>
                 </div>
 
-                <div class="portals-list-grid">
-                  <div
-                    v-for="portal in researchPortals"
+                <div class="portals-toolbar">
+                  <input
+                    v-model="portalSearchQuery"
+                    type="search"
+                    :placeholder="t('settings_portals_search_placeholder')"
+                    class="portals-search-input"
+                  />
+                  <div class="portals-filter-pills" role="group">
+                    <button
+                      type="button"
+                      class="filter-pill"
+                      :class="{ active: portalAccessFilter === 'all' }"
+                      @click="portalAccessFilter = 'all'"
+                    >
+                      {{ t('settings_portals_filter_all') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="filter-pill"
+                      :class="{ active: portalAccessFilter === 'free' }"
+                      @click="portalAccessFilter = 'free'"
+                    >
+                      {{ t('settings_portals_filter_free') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="filter-pill"
+                      :class="{ active: portalAccessFilter === 'free_registration' }"
+                      @click="portalAccessFilter = 'free_registration'"
+                    >
+                      {{ t('settings_portals_filter_free_reg') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="filter-pill"
+                      :class="{ active: portalAccessFilter === 'freemium' }"
+                      @click="portalAccessFilter = 'freemium'"
+                    >
+                      {{ t('settings_portals_filter_freemium') }}
+                    </button>
+                    <button
+                      type="button"
+                      class="filter-pill"
+                      :class="{ active: portalAccessFilter === 'subscription' }"
+                      @click="portalAccessFilter = 'subscription'"
+                    >
+                      {{ t('settings_portals_filter_subscription') }}
+                    </button>
+                  </div>
+                </div>
+
+                <div v-if="filteredResearchPortals.length > 0" class="portals-list-grid">
+                  <label
+                    v-for="portal in filteredResearchPortals"
                     :key="portal.id"
                     class="portal-setting-card"
                     :class="{ 'is-enabled': portal.enabled }"
-                    @click="togglePortal(portal.id)"
                   >
                     <div class="portal-card-header">
                       <div class="portal-header-left">
                         <input
                           type="checkbox"
                           :checked="portal.enabled"
-                          @click.stop="togglePortal(portal.id)"
+                          @change="onTogglePortal(portal.id)"
                           class="portal-checkbox"
                         />
                         <span class="portal-icon">{{ portal.icon || '🌐' }}</span>
@@ -461,13 +1572,16 @@ function onTreeSelectChange(event: Event) {
                     <p class="portal-desc-text">
                       {{ locale.startsWith('de') ? (portal.description_de || portal.description_en) : (portal.description_en || portal.description_de) }}
                     </p>
-                  </div>
+                  </label>
+                </div>
+                <div v-else class="portals-empty-state">
+                  {{ t('settings_portals_empty_filter') }}
                 </div>
               </div>
             </div>
           </div>
 
-          <!-- 5. Über LineageGraph & App-Aktualisierung -->
+          <!-- 6. Über LineageGraph & App-Aktualisierung -->
           <div v-if="activeTab === 'about'" class="settings-tab-pane about-tab-pane">
             <div class="about-container">
               <div class="about-hero">
@@ -480,7 +1594,6 @@ function onTreeSelectChange(event: Event) {
               </div>
 
               <div class="about-info-grid">
-                <!-- 1. Entwickler & Kontakt (Zusammengeführte Kachel) -->
                 <div class="about-info-card about-dev-card">
                   <span class="about-info-label">{{ t('about_developer_contact') }}</span>
                   <span class="about-info-value font-bold">{{ t('about_developer_name') }}</span>
@@ -494,26 +1607,22 @@ function onTreeSelectChange(event: Event) {
                   </a>
                 </div>
 
-                <!-- 2. Technologie-Stack -->
                 <div class="about-info-card">
                   <span class="about-info-label">{{ t('about_technology') }}</span>
                   <span class="about-info-value">{{ t('about_tech_stack') }}</span>
                 </div>
 
-                <!-- 3. Lizenz -->
                 <div class="about-info-card">
                   <span class="about-info-label">{{ t('about_license') }}</span>
                   <span class="about-info-value">{{ t('about_license_name') }}</span>
                 </div>
 
-                <!-- 4. Speicherung & Privatsphäre (Offline-First) -->
                 <div class="about-info-card">
                   <span class="about-info-label">{{ t('about_storage_privacy') }}</span>
                   <span class="about-info-value">{{ t('about_storage_privacy_desc') }}</span>
                 </div>
               </div>
 
-              <!-- Quick Links: Anwenderhandbuch, GitHub Repository & Issue Tracker -->
               <div class="about-links-row">
                 <button
                   type="button"
@@ -550,6 +1659,7 @@ function onTreeSelectChange(event: Event) {
                     </p>
                   </div>
                   <button
+                    type="button"
                     class="btn-updater-check"
                     :disabled="isChecking || isDownloading"
                     @click="checkForUpdates(true)"
@@ -582,7 +1692,6 @@ function onTreeSelectChange(event: Event) {
                 </div>
               </div>
 
-              <!-- Copyright & Datenschutzhinweis -->
               <div class="about-footer-meta">
                 <p class="about-copyright">{{ t('about_copyright') }}</p>
               </div>
@@ -592,7 +1701,17 @@ function onTreeSelectChange(event: Event) {
       </div>
 
       <div class="settings-footer-row">
-        <button class="btn-close" @click="emit('close')">{{ t('close') }}</button>
+        <div class="settings-footer-status">
+          <span v-if="showSavedFeedback" class="saved-feedback-pill">
+            {{ t('settings_saved_feedback') }}
+          </span>
+          <span v-else class="auto-save-hint-text">
+            {{ t('settings_auto_save_hint') }}
+          </span>
+        </div>
+        <button type="button" class="btn-close" @click="emit('close')">
+          {{ t('close') }}
+        </button>
       </div>
     </div>
   </div>
@@ -605,302 +1724,29 @@ function onTreeSelectChange(event: Event) {
   left: 0;
   width: 100vw;
   height: 100vh;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(15, 23, 42, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
 }
+
 .modal-content {
-  background: white;
-  padding: 2rem;
-  border-radius: 8px;
-  width: 450px;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-}
-.modal-content h2 {
-  margin-top: 0;
-  color: #2c3e50;
-  border-bottom: 2px solid #ecf0f1;
-  padding-bottom: 0.5rem;
-  font-size: 1.1rem;
-}
-.w-100 {
-  width: 100%;
-  padding: 0.4rem;
-  border: 1px solid #bdc3c7;
-  border-radius: 3px;
-  box-sizing: border-box;
-}
-.mt-1 {
-  margin-top: 1rem;
-  display: inline-block;
-}
-.mb-1 {
-  margin-bottom: 0.5rem;
-  display: inline-block;
-}
-.d-flex {
-  display: flex;
-  gap: 0.5rem;
-}
-.align-items-center {
-  align-items: center;
-}
-.flex-grow {
-  flex-grow: 1;
-  padding: 0.4rem;
-  border: 1px solid #bdc3c7;
-  border-radius: 3px;
-}
-button {
-  padding: 0.5rem 1rem;
-  background-color: #3498db;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: bold;
-}
-button:hover:not(:disabled) {
-  background-color: #2980b9;
-}
-button:disabled {
-  background-color: #95a5a6;
-  cursor: not-allowed;
-}
-.settings-section {
-  margin-top: 1.5rem;
-  background: #f8f9fa;
-  padding: 1rem;
-  border-radius: 4px;
-  border: 1px solid #e9ecef;
-}
-.settings-section:first-child {
-  margin-top: 0;
-}
-.settings-section h3 {
-  margin-top: 0;
-  font-size: 1rem;
-  color: #34495e;
-}
-.btn-full {
-  width: 100%;
-  margin-top: 1rem;
-}
-.btn-calculate {
-  background-color: #e67e22;
-}
-.btn-close {
-  width: 100%;
-  background-color: #7f8c8d;
-}
-.proband-list-box {
-  background: white;
-  border: 1px solid #bdc3c7;
-  border-radius: 4px;
-  padding: 0.5rem;
-  max-height: 150px;
-  overflow-y: auto;
-  width: 100%;
-  box-sizing: border-box;
-}
-.proband-list {
-  list-style: none;
-  padding: 0;
-  margin: 0.5rem 0 0 0;
-}
-.proband-list li {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.4rem 0;
-  border-bottom: 1px solid #ecf0f1;
-  font-size: 0.85rem;
-}
-.proband-info {
-  flex-grow: 1;
-}
-.btn-sm {
-  padding: 0.2rem 0.5rem;
-  font-size: 0.75rem;
-}
-.btn-danger {
-  background-color: #e74c3c;
-}
-.btn-danger:hover:not(:disabled) {
-  background-color: #c0392b;
-}
-.btn-delete-tree {
-  white-space: nowrap;
-  margin-left: 0.5rem;
-}
-.no-active-tree {
-  padding: 0.5rem 0.75rem;
-  background: #ecf0f1;
-  color: #7f8c8d;
-  border: 1px dashed #bdc3c7;
-  border-radius: 4px;
-  font-style: italic;
-  font-size: 0.9rem;
-}
-
-/* Custom Multi-Select Dropdown */
-.custom-multi-select {
-  position: relative;
-  width: 100%;
-}
-.select-header {
-  padding: 0.5rem;
-  text-align: left;
-  background: white;
-  border: 1px solid #bdc3c7;
-  border-radius: 4px;
-  cursor: pointer;
-  font-size: 0.9rem;
-}
-.select-dropdown {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  width: 100%;
-  background: white;
-  border: 1px solid #bdc3c7;
-  border-radius: 4px;
-  margin-top: 4px;
-  z-index: 100;
-  max-height: 260px;
-  overflow-y: auto;
-  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-}
-.select-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.4rem 0.8rem;
-  border-bottom: 1px solid #ecf0f1;
-  font-size: 0.85rem;
-}
-.select-item:last-child {
-  border-bottom: none;
-}
-.readonly-hint {
-  color: #95a5a6;
-  margin-left: 4px;
-  font-style: italic;
-}
-.order-btns button {
-  background: #7f8c8d;
-  padding: 2px 6px;
-  font-size: 0.6rem;
-  margin-left: 4px;
-  color: white;
-  border: none;
-  border-radius: 3px;
-  cursor: pointer;
-}
-.auto-calc-hint {
-  display: block;
-  margin-top: 6px;
-  font-size: 0.76rem;
-  color: #64748b;
-}
-.matrix-section {
-  padding: 14px;
-}
-.matrix-header-block h3 {
-  margin: 0 0 4px 0;
-  color: #0f172a;
-}
-.matrix-subtitle {
-  margin: 0 0 12px 0;
-  font-size: 0.82rem;
-  color: #64748b;
-}
-.matrix-table-wrap {
   background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 8px;
-  overflow: hidden;
-}
-.settings-matrix-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 0.85rem;
-}
-.settings-matrix-table th {
-  background: #f1f5f9;
-  color: #334155;
-  font-weight: 700;
-  font-size: 0.78rem;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  padding: 9px 12px;
-  border-bottom: 1px solid #cbd5e1;
-  text-align: left;
-}
-.settings-matrix-table td {
-  padding: 7px 12px;
-  border-bottom: 1px solid #f1f5f9;
-  color: #1e293b;
-}
-.settings-matrix-table tr:last-child td {
-  border-bottom: none;
-}
-.settings-matrix-table tr:hover td {
-  background: #f8fafc;
-}
-.center-col {
-  text-align: center !important;
-}
-.matrix-count-pill {
-  display: inline-block;
-  background: #dbeafe;
-  color: #1d4ed8;
-  font-size: 0.7rem;
-  padding: 1px 6px;
   border-radius: 10px;
-  margin-left: 4px;
-}
-.matrix-checkbox {
-  width: 16px;
-  height: 16px;
-  accent-color: #2563eb;
-  cursor: pointer;
-}
-.matrix-order-btns {
-  display: inline-flex;
-  gap: 4px;
-}
-.btn-matrix-order {
-  background: #f1f5f9;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  padding: 2px 7px;
-  font-size: 0.68rem;
-  cursor: pointer;
-}
-.btn-matrix-order:hover:not(:disabled) {
-  background: #2563eb;
-  border-color: #1d4ed8;
-  color: #ffffff;
-}
-.btn-matrix-order:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.22);
 }
 
-/* Settings Modal mit linker Navigationsleiste */
 .settings-modal-content.settings-layout-split {
-  width: 90vw;
-  max-width: 860px;
-  max-height: 85vh;
+  width: 92vw;
+  max-width: 900px;
+  max-height: 86vh;
   display: flex;
   flex-direction: column;
   padding: 0;
   overflow: hidden;
 }
+
 .settings-modal-header-row {
   display: flex;
   justify-content: space-between;
@@ -909,33 +1755,37 @@ button:disabled {
   background: #f8fafc;
   border-bottom: 1px solid #cbd5e1;
 }
+
 .settings-modal-header-row h2 {
   margin: 0;
   font-size: 1.15rem;
-  border-bottom: none;
-  padding-bottom: 0;
+  color: #0f172a;
 }
+
 .btn-close-icon {
   background: none;
   border: none;
-  font-size: 1.2rem;
+  font-size: 1.15rem;
   color: #64748b;
   cursor: pointer;
-  padding: 2px 8px;
-  border-radius: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
 }
+
 .btn-close-icon:hover {
   background: #e2e8f0;
   color: #0f172a;
 }
+
 .settings-split-body {
   display: flex;
   flex-grow: 1;
-  min-height: 420px;
+  min-height: 440px;
   overflow: hidden;
 }
+
 .settings-nav-sidebar {
-  width: 220px;
+  width: 230px;
   background: #f1f5f9;
   border-right: 1px solid #cbd5e1;
   display: flex;
@@ -944,6 +1794,7 @@ button:disabled {
   gap: 4px;
   flex-shrink: 0;
 }
+
 .settings-nav-item {
   display: flex;
   align-items: center;
@@ -959,308 +1810,716 @@ button:disabled {
   text-align: left;
   transition: all 0.15s ease;
 }
+
 .settings-nav-item:hover {
   background: #e2e8f0;
   color: #0f172a;
 }
+
 .settings-nav-item.active {
   background: #ffffff;
   color: #2563eb;
   border-color: #cbd5e1;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
 }
+
+.settings-nav-item-bottom {
+  margin-top: auto;
+  border-top: 1px solid #cbd5e1;
+  padding-top: 12px;
+}
+
 .settings-main-pane {
   flex-grow: 1;
   padding: 20px;
   overflow-y: auto;
   background: #ffffff;
 }
+
 .settings-footer-row {
   display: flex;
-  justify-content: flex-end;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
   padding: 12px 20px;
   background: #f8fafc;
   border-top: 1px solid #cbd5e1;
 }
 
-/* Konfiguration Kachelinhalte im Design-Mode */
-.line-config-card {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 8px 12px;
-}
-.line-config-header {
+.settings-footer-status {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  margin-bottom: 6px;
-  border-bottom: 1px solid #e2e8f0;
-  padding-bottom: 4px;
+  min-height: 24px;
 }
-.line-title {
-  font-weight: 700;
+
+.auto-save-hint-text {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.saved-feedback-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #15803d;
+  background: #dcfce7;
+  border: 1px solid #bbf7d0;
+  padding: 2px 10px;
+  border-radius: 12px;
+}
+
+/* Shared form & section styles */
+.settings-section {
+  margin-top: 1.25rem;
+  background: #f8fafc;
+  padding: 1rem 1.1rem;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+}
+
+.settings-section:first-child {
+  margin-top: 0;
+}
+
+.settings-section h3 {
+  margin: 0 0 8px 0;
+  font-size: 1rem;
+  color: #0f172a;
+}
+
+.section-desc {
+  margin: 0 0 12px 0;
+  font-size: 0.83rem;
+  color: #475569;
+  line-height: 1.45;
+}
+
+.section-hint {
+  margin: 8px 0 0 0;
+  font-size: 0.78rem;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.section-divider {
+  border: 0;
+  border-top: 1px solid #e2e8f0;
+  margin: 22px 0;
+}
+
+.field-label {
+  display: block;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 5px;
+}
+
+.w-100 {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  box-sizing: border-box;
+  font-size: 0.88rem;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.mt-2 {
+  margin-top: 0.75rem;
+}
+
+.mb-2 {
+  margin-bottom: 0.65rem;
+}
+
+.d-flex {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.align-items-center {
+  align-items: center;
+}
+
+.flex-grow {
+  flex-grow: 1;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  font-size: 0.88rem;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+button {
+  padding: 0.48rem 0.95rem;
+  background-color: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.84rem;
+  transition: background-color 0.15s ease;
+}
+
+button:hover:not(:disabled) {
+  background-color: #1d4ed8;
+}
+
+button:disabled {
+  background-color: #94a3b8;
+  cursor: not-allowed;
+}
+
+.btn-close {
+  background-color: #475569;
+  color: #ffffff;
+  padding: 0.48rem 1.25rem;
+}
+
+.btn-close:hover:not(:disabled) {
+  background-color: #334155;
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.btn-calculate {
+  background-color: #d97706;
+}
+
+.btn-calculate:hover:not(:disabled) {
+  background-color: #b45309;
+}
+
+.btn-sm {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+}
+
+.btn-danger {
+  background-color: #dc2626;
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: #b91c1c;
+}
+
+.btn-secondary-inline {
+  background-color: #e2e8f0;
+  color: #334155;
+}
+
+.btn-secondary-inline:hover:not(:disabled) {
+  background-color: #cbd5e1;
+  color: #0f172a;
+}
+
+.btn-delete-tree {
+  white-space: nowrap;
+}
+
+/* Date Format Preview */
+.date-format-preview {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  font-size: 0.84rem;
+  color: #334155;
+}
+
+/* Trees & Probands */
+.scope-banner {
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e40af;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+}
+
+.proband-list-box {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+  max-height: 170px;
+  overflow-y: auto;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.proband-list {
+  list-style: none;
+  padding: 0;
+  margin: 0.35rem 0 0 0;
+}
+
+.proband-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid #f1f5f9;
   font-size: 0.84rem;
   color: #1e293b;
 }
-.format-toggles {
-  display: flex;
-  gap: 4px;
-}
-.fmt-btn {
-  width: 24px;
-  height: 22px;
-  padding: 0;
-  font-size: 0.75rem;
-  border: 1px solid #cbd5e1;
-  border-radius: 3px;
-  background: #ffffff;
-  color: #475569;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: all 0.12s ease;
-}
-.fmt-btn:hover {
-  background: #f1f5f9;
-  border-color: #94a3b8;
-}
-.fmt-btn.active {
-  background: #2563eb;
-  color: #ffffff;
-  border-color: #1d4ed8;
-}
-.line-config-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 16px;
-}
-.line-grid-2col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 5px 12px;
-}
-.cfg-checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.78rem;
-  color: #334155;
-  cursor: pointer;
-}
-.cfg-checkbox-label input {
-  cursor: pointer;
-}
-.preview-tile-container {
-  background: #ffffff;
-  border: 2px solid #1e293b;
-  border-bottom: 3px solid #2980b9;
-  border-radius: 4px;
-  padding: 5px 6px;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  gap: 2px;
-  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
-}
-.preview-line-1 {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.65rem;
-  min-height: 16px;
-}
-.preview-card-name {
-  font-size: 0.78rem;
-  color: #1e293b;
-  white-space: normal;
-  word-break: break-word;
-  overflow-wrap: break-word;
-  text-align: center;
-  line-height: 1.25;
-  margin: 3px 0;
-}
-.preview-line-3 {
-  font-size: 0.64rem;
-  color: #475569;
-  text-align: center;
-  line-height: 1.2;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-.preview-marriages-block {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-top: 2px;
-  border-top: 1px dashed #cbd5e1;
-  padding-top: 2px;
-}
-.preview-marriage-entry {
-  display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 4px;
-  line-height: 1.2;
-}
-.preview-spouse-status-col {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-  padding-top: 1px;
-}
-.preview-spouse-status-icon {
-  font-size: 0.78rem;
-  line-height: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: #475569;
-  user-select: none;
-}
-.preview-spouse-status-icon.is-divorced {
-  color: #c0392b;
-}
-.preview-spouse-details-col {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  flex-grow: 1;
-  min-width: 0;
-  text-align: left;
-}
-.preview-spouse-name-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-  font-size: 0.66rem;
-  color: #1e293b;
-  line-height: 1.2;
-}
-.preview-spouse-dates-row {
-  font-size: 0.65rem;
-  color: #475569;
-  display: flex;
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-  line-height: 1.2;
-}
-.preview-spouse-dates-row.preview-spouse-dates-multi {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-}
-.d-divorce-badge {
-  color: #c0392b;
+
+.proband-list li:last-child {
+  border-bottom: none;
 }
 
-/* Expandable Sections im Stammbaum Design Mode */
-.design-expandables-container {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
+.proband-info {
+  flex-grow: 1;
 }
-.expandable-section {
+
+.inline-confirm-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.inline-confirm-text {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #b91c1c;
+}
+
+.proband-search-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.proband-search-header .field-label {
+  margin-bottom: 0;
+}
+
+.search-count-pill {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #475569;
+  background: #e2e8f0;
+  padding: 1px 8px;
+  border-radius: 10px;
+}
+
+.sub-empty {
+  color: #64748b;
+  font-size: 0.82rem;
+  font-style: italic;
+  padding: 4px 0;
+}
+
+.no-active-tree {
+  padding: 0.5rem 0.75rem;
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px dashed #cbd5e1;
+  border-radius: 5px;
+  font-style: italic;
+  font-size: 0.88rem;
+}
+
+.auto-calc-hint {
+  display: block;
+  margin-top: 6px;
+  font-size: 0.77rem;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+/* Table View Matrix */
+.matrix-section {
+  padding: 16px;
+}
+
+.matrix-header-block h3 {
+  margin: 0 0 4px 0;
+  color: #0f172a;
+}
+
+.matrix-subtitle {
+  margin: 0 0 12px 0;
+  font-size: 0.82rem;
+  color: #64748b;
+}
+
+.matrix-table-wrap {
   background: #ffffff;
   border: 1px solid #cbd5e1;
   border-radius: 8px;
   overflow: hidden;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.expandable-section.is-expanded {
-  border-color: #94a3b8;
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
-}
-.expandable-header {
+
+.settings-matrix-table {
   width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px;
-  background: #f8fafc;
-  color: #1e293b;
-  border: none;
-  border-radius: 0;
-  cursor: pointer;
-  text-align: left;
-  transition: background 0.15s ease;
+  border-collapse: collapse;
+  font-size: 0.85rem;
 }
-.expandable-header:hover {
-  background: #f1f5f9 !important;
-}
-.expandable-section.is-expanded .expandable-header {
+
+.settings-matrix-table th {
   background: #f1f5f9;
-  border-bottom: 1px solid #e2e8f0;
+  color: #334155;
+  font-weight: 700;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 9px 12px;
+  border-bottom: 1px solid #cbd5e1;
+  text-align: left;
 }
-.expandable-header-left {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  min-width: 0;
+
+.settings-matrix-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid #f1f5f9;
+  color: #1e293b;
 }
-.expandable-icon {
-  font-size: 1.15rem;
-  line-height: 1.3;
-  flex-shrink: 0;
+
+.settings-matrix-table tr:last-child td {
+  border-bottom: none;
 }
-.expandable-titles {
+
+.settings-matrix-table tr:hover td {
+  background: #f8fafc;
+}
+
+.center-col {
+  text-align: center !important;
+}
+
+.matrix-order-col {
+  width: 90px;
+}
+
+.matrix-th-stack {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+  align-items: center;
+  gap: 4px;
 }
-.expandable-title {
-  font-size: 0.96rem;
+
+.matrix-bulk-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.btn-matrix-bulk {
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.btn-matrix-bulk:hover:not(:disabled) {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.matrix-count-pill {
+  display: inline-block;
+  background: #dbeafe;
+  color: #1d4ed8;
+  font-size: 0.7rem;
   font-weight: 700;
-  color: #1e293b;
+  padding: 1px 6px;
+  border-radius: 10px;
+  margin-left: 4px;
 }
-.expandable-subtitle {
-  font-size: 0.78rem;
-  font-weight: 400;
+
+.readonly-hint {
+  color: #64748b;
+  margin-left: 4px;
+  font-style: italic;
+}
+
+.matrix-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #2563eb;
+  cursor: pointer;
+}
+
+.matrix-order-btns {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.btn-matrix-order {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.btn-matrix-order:hover:not(:disabled) {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+
+.btn-matrix-order:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: #f1f5f9;
+}
+
+/* Research Tab */
+.research-form-group {
+  margin-bottom: 18px;
+}
+
+.research-input-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.research-number-input {
+  width: 120px;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  font-size: 0.88rem;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.research-input-hint {
+  flex: 1;
+  min-width: 200px;
+  font-size: 0.81rem;
   color: #64748b;
   line-height: 1.35;
 }
-.expandable-chevron {
-  font-size: 0.82rem;
-  color: #475569;
-  flex-shrink: 0;
-  padding: 2px 6px;
+
+.portals-header-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
 }
-.expandable-body {
-  padding: 16px;
+
+.portals-title {
+  margin: 0 0 6px 0;
+  color: #0f172a;
+  font-size: 0.98rem;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.btn-reset-portals {
+  padding: 4px 10px;
+  font-size: 0.78rem;
   background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-/* App Updater in Settings */
-.settings-nav-item-bottom {
-  margin-top: auto !important;
-  border-top: 1px solid #cbd5e1 !important;
-  padding-top: 12px !important;
+.btn-reset-portals:hover {
+  background: #e2e8f0;
+  color: #0f172a;
 }
 
-/* About / Über LineageGraph Tab */
+.portals-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.portals-search-input {
+  flex: 1;
+  min-width: 180px;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  font-size: 0.84rem;
+  background: #ffffff;
+  color: #0f172a;
+}
+
+.portals-filter-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.filter-pill {
+  padding: 4px 9px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  background: #ffffff;
+  color: #475569;
+  border: 1px solid #cbd5e1;
+  border-radius: 14px;
+}
+
+.filter-pill:hover {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.filter-pill.active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #1d4ed8;
+}
+
+.portals-list-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.portal-setting-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  user-select: none;
+  display: flex;
+  flex-direction: column;
+}
+
+.portal-setting-card:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+}
+
+.portal-setting-card.is-enabled {
+  border-color: #3b82f6;
+  background: #f0f7ff;
+}
+
+.portal-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.portal-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.portal-checkbox {
+  cursor: pointer;
+  accent-color: #2563eb;
+}
+
+.portal-icon {
+  font-size: 1.05rem;
+}
+
+.portal-name {
+  font-size: 0.88rem;
+  color: #1e293b;
+}
+
+.portal-access-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 10px;
+  white-space: nowrap;
+}
+
+.badge-free {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.badge-free_registration {
+  background: #fef9c3;
+  color: #854d0e;
+}
+
+.badge-subscription {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.badge-freemium {
+  background: #e0f2fe;
+  color: #0369a1;
+}
+
+.portal-category-text {
+  font-size: 0.73rem;
+  font-weight: 600;
+  color: #64748b;
+  margin-left: 26px;
+  margin-bottom: 4px;
+}
+
+.portal-desc-text {
+  font-size: 0.76rem;
+  color: #475569;
+  line-height: 1.35;
+  margin: 0 0 0 26px;
+}
+
+.portals-empty-state {
+  padding: 18px;
+  text-align: center;
+  color: #64748b;
+  font-size: 0.84rem;
+  background: #ffffff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+}
+
+/* About Tab */
 .about-tab-pane {
   display: flex;
   flex-direction: column;
 }
+
 .about-container {
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 1.35rem;
   max-width: 600px;
   margin: 0 auto;
   width: 100%;
-  padding: 10px 0;
+  padding: 6px 0;
 }
+
 .about-hero {
   display: flex;
   align-items: center;
@@ -1268,35 +2527,39 @@ button:disabled {
   background: linear-gradient(135deg, #f8fafc 0%, #edf2f7 100%);
   border: 1px solid #e2e8f0;
   border-radius: 12px;
-  padding: 1.5rem;
+  padding: 1.35rem;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
+
 .about-logo {
-  width: 80px;
-  height: 80px;
+  width: 76px;
+  height: 76px;
   border-radius: 16px;
   object-fit: cover;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.22);
   background: #1a1d22;
   border: 1px solid #334155;
-  padding: 0;
 }
+
 .about-hero-info {
   display: flex;
   flex-direction: column;
   gap: 0.35rem;
 }
+
 .about-app-title {
   margin: 0;
-  font-size: 1.5rem;
-  color: #1e293b;
+  font-size: 1.45rem;
+  color: #0f172a;
   font-weight: 700;
 }
+
 .about-app-subtitle {
   margin: 0;
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   color: #64748b;
 }
+
 .about-version-badge {
   display: inline-block;
   align-self: flex-start;
@@ -1304,15 +2567,17 @@ button:disabled {
   color: #1d4ed8;
   font-family: monospace;
   font-weight: 700;
-  font-size: 0.85rem;
+  font-size: 0.84rem;
   padding: 0.2rem 0.6rem;
   border-radius: 4px;
 }
+
 .about-info-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 1rem;
 }
+
 .about-info-card {
   background: #f8fafc;
   border: 1px solid #e2e8f0;
@@ -1322,45 +2587,52 @@ button:disabled {
   flex-direction: column;
   gap: 0.3rem;
 }
+
 .about-info-label {
-  font-size: 0.75rem;
+  font-size: 0.74rem;
   color: #64748b;
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 600;
 }
+
 .about-info-value {
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   color: #1e293b;
 }
+
 .about-contact-link {
   color: #2563eb;
   text-decoration: none;
   font-weight: 600;
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   word-break: break-all;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  transition: color 0.15s ease;
   cursor: pointer;
 }
+
 .about-contact-link:hover {
   color: #1d4ed8;
   text-decoration: underline;
 }
+
 .font-bold {
   font-weight: 600;
 }
+
 .about-dev-card {
   border-left: 3px solid #2563eb;
 }
+
 .about-links-row {
   display: flex;
   align-items: center;
   gap: 0.75rem;
   flex-wrap: wrap;
 }
+
 .btn-about-link {
   display: inline-flex;
   align-items: center;
@@ -1376,225 +2648,479 @@ button:disabled {
   cursor: pointer;
   transition: all 0.15s ease;
 }
+
 .btn-about-link:hover {
   background: #e2e8f0;
   color: #0f172a;
   border-color: #94a3b8;
 }
+
 .btn-about-guide {
   background: #eff6ff;
   color: #1d4ed8;
   border-color: #bfdbfe;
 }
+
 .btn-about-guide:hover {
   background: #dbeafe;
   color: #1e40af;
   border-color: #93c5fd;
 }
+
 .about-footer-meta {
   text-align: center;
-  padding-top: 0.5rem;
+  padding-top: 0.25rem;
 }
+
 .about-copyright {
   margin: 0;
   font-size: 0.78rem;
-  color: #94a3b8;
+  color: #64748b;
   line-height: 1.4;
 }
+
 .about-update-card {
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 10px;
-  padding: 1.25rem;
+  padding: 1.15rem;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
 }
+
 .about-update-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 1rem;
 }
+
 .about-update-text h4 {
   margin: 0;
-  font-size: 1.05rem;
+  font-size: 1.02rem;
   color: #1e293b;
 }
+
 .about-update-hint {
   margin: 0.25rem 0 0 0;
-  font-size: 0.85rem;
+  font-size: 0.84rem;
   color: #64748b;
 }
-.updater-control-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 1rem;
-  background: #f8fafc;
-  padding: 0.75rem 1rem;
-  border-radius: 6px;
-  border: 1px solid #e2e8f0;
-}
-.updater-version-info {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.95rem;
-  color: #334155;
-}
-.version-tag {
-  background: #e2e8f0;
-  color: #1e293b;
-  font-family: monospace;
-  font-weight: 600;
-  padding: 0.15rem 0.5rem;
-  border-radius: 4px;
-  font-size: 0.85rem;
-}
+
 .btn-updater-check {
   padding: 0.45rem 1rem;
   background: #2563eb;
   color: #ffffff;
   border: none;
-  border-radius: 4px;
+  border-radius: 5px;
   font-weight: 600;
-  font-size: 0.85rem;
+  font-size: 0.84rem;
   cursor: pointer;
-  transition: background 0.15s;
 }
+
 .btn-updater-check:hover:not(:disabled) {
   background: #1d4ed8;
 }
-.btn-updater-check:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
+
 .updater-feedback {
   margin-top: 0.75rem;
   padding: 0.6rem 0.8rem;
   border-radius: 6px;
-  font-size: 0.85rem;
+  font-size: 0.84rem;
   line-height: 1.4;
 }
+
 .updater-feedback.success {
   background: #f0fdf4;
   border: 1px solid #bbf7d0;
   color: #166534;
 }
+
 .updater-feedback.warning {
   background: #fffbeb;
   border: 1px solid #fde68a;
   color: #92400e;
 }
+
 .updater-feedback.info {
   background: #eff6ff;
   border: 1px solid #bfdbfe;
   color: #1e40af;
 }
+
 .updater-feedback.error {
   background: #fef2f2;
   border: 1px solid #fecaca;
   color: #991b1b;
 }
 
-/* Portal Configuration in Research Tab */
-.btn-reset-portals {
-  padding: 4px 10px;
-  font-size: 0.78rem;
-  background: #f1f5f9;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  cursor: pointer;
-  font-weight: 500;
-  transition: all 0.15s ease;
-}
-.btn-reset-portals:hover {
-  background: #e2e8f0;
-  color: #1e293b;
-}
-.portals-list-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-  margin-top: 10px;
-}
-.portal-setting-card {
+/* Storage Settings */
+.storage-status-card {
   background: #ffffff;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #cbd5e1;
   border-radius: 6px;
   padding: 10px 12px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  user-select: none;
-  display: flex;
-  flex-direction: column;
+  margin-bottom: 12px;
 }
-.portal-setting-card:hover {
-  border-color: #94a3b8;
-  background: #f8fafc;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-}
-.portal-setting-card.is-enabled {
-  border-color: #3b82f6;
-  background: #f0f7ff;
-}
-.portal-card-header {
+
+.storage-status-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4px;
+  gap: 8px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
 }
-.portal-header-left {
+
+.storage-status-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #334155;
+}
+
+.storage-badges {
+  display: flex;
+  gap: 6px;
+}
+
+.storage-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 10px;
+}
+
+.badge-default {
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.badge-custom {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.badge-network {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.storage-path-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
-.portal-checkbox {
-  cursor: pointer;
-}
-.portal-icon {
-  font-size: 1.05rem;
-}
-.portal-name {
-  font-size: 0.88rem;
-  color: #1e293b;
-}
-.portal-access-badge {
-  font-size: 0.7rem;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 10px;
+
+.storage-path-box {
+  flex: 1;
+  min-width: 0;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  color: #0f172a;
+  overflow-x: auto;
   white-space: nowrap;
 }
-.badge-free {
-  background: #dcfce7;
+
+.btn-secondary-sm {
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.btn-secondary-sm:hover:not(:disabled) {
+  background: #e2e8f0;
+  color: #0f172a;
+}
+
+.storage-warning-banner {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 0.8rem;
+}
+
+.btn-reconnect {
+  background: #d97706;
+  white-space: nowrap;
+}
+
+.btn-reconnect:hover:not(:disabled) {
+  background: #b45309;
+}
+
+.storage-target-block {
+  margin-bottom: 12px;
+}
+
+.btn-browse-dir {
+  background: #475569;
+  white-space: nowrap;
+}
+
+.btn-browse-dir:hover:not(:disabled) {
+  background: #334155;
+}
+
+.storage-inspect-hint {
+  margin-top: 6px;
+  font-size: 0.78rem;
+  color: #64748b;
+}
+
+.storage-inspect-box {
+  margin-top: 6px;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
+  padding: 7px 10px;
+  font-size: 0.78rem;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.storage-inspect-line.text-ok {
   color: #15803d;
+  font-weight: 600;
 }
-.badge-free_registration {
-  background: #fef9c3;
-  color: #854d0e;
-}
-.badge-subscription {
-  background: #fee2e2;
+
+.storage-inspect-line.text-err {
   color: #b91c1c;
+  font-weight: 600;
 }
-.badge-freemium {
+
+.storage-inspect-line.text-net {
+  color: #0369a1;
+}
+
+.storage-inspect-line.text-info {
+  color: #334155;
+}
+
+.storage-mode-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.storage-radio-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font-size: 0.8rem;
+  color: #1e293b;
+}
+
+.storage-radio-option:hover {
+  border-color: #94a3b8;
+}
+
+.storage-radio-option input {
+  margin-top: 2px;
+}
+
+.storage-radio-desc {
+  font-size: 0.75rem;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.storage-overwrite-check {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 0.8rem;
+  color: #334155;
+  margin-bottom: 10px;
+  cursor: pointer;
+}
+
+.storage-actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btn-reset-storage {
+  background: #64748b;
+}
+
+.btn-reset-storage:hover:not(:disabled) {
+  background: #475569;
+}
+
+.storage-feedback-banner {
+  margin-top: 10px;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 0.8rem;
+}
+
+.storage-feedback-banner.feedback-ok {
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+
+.storage-feedback-banner.feedback-err {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+}
+
+/* Backup & Recovery */
+.backup-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.backup-section-header .section-desc {
+  margin-bottom: 0;
+}
+
+.backup-section-header button {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.backup-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.backup-list-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.backup-list-item:last-child {
+  border-bottom: none;
+}
+
+.backup-item-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.backup-item-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.backup-type-pill {
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: #e2e8f0;
+  color: #334155;
+}
+
+.backup-type-pill.type-manual {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.backup-type-pill.type-pre_restore {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.backup-type-pill.type-pre_merge {
   background: #e0f2fe;
   color: #0369a1;
 }
-.portal-category-text {
-  font-size: 0.73rem;
-  font-weight: 600;
-  color: #64748b;
-  margin-left: 26px;
-  margin-bottom: 4px;
+
+.backup-type-pill.type-pre_delete,
+.backup-type-pill.type-pre_delete_batch {
+  background: #fee2e2;
+  color: #b91c1c;
 }
-.portal-desc-text {
-  font-size: 0.76rem;
-  color: #475569;
-  line-height: 1.35;
-  margin: 0;
-  margin-left: 26px;
+
+.backup-date-text {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.backup-size-text {
+  font-size: 0.74rem;
+  color: #64748b;
+}
+
+.backup-filename-code {
+  font-size: 0.72rem;
+  color: #64748b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backup-item-actions {
+  display: inline-flex;
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+@media (max-width: 680px) {
+  .settings-split-body {
+    flex-direction: column;
+  }
+
+  .settings-nav-sidebar {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    border-right: none;
+    border-bottom: 1px solid #cbd5e1;
+    padding: 8px;
+    gap: 6px;
+  }
+
+  .settings-nav-item {
+    white-space: nowrap;
+    padding: 7px 10px;
+  }
+
+  .settings-nav-item-bottom {
+    margin-top: 0;
+    border-top: none;
+    padding-top: 7px;
+  }
 }
 </style>
-

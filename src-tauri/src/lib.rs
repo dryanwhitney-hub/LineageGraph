@@ -1,4 +1,5 @@
 pub mod db;
+pub mod gedcom_date;
 pub mod parser;
 pub mod gedcom_export;
 pub mod gedcom_import_merge;
@@ -10,11 +11,13 @@ use petgraph::algo::astar;
 use petgraph::graph::{DiGraph, NodeIndex};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use tera::{Context, Tera};
 use chrono::{Datelike, Timelike};
@@ -192,8 +195,205 @@ pub struct PersonEventDto {
 
 pub struct AppState {
     pub db: Mutex<Connection>,
-    pub app_dir: PathBuf,
+    pub default_app_dir: PathBuf,
+    pub app_dir: Mutex<PathBuf>,
     pub active_tree: Mutex<String>,
+    pub storage_warning: Mutex<Option<String>>,
+    pub instance_id: String,
+    pub hostname: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+pub struct PeerSessionDto {
+    pub instance_id: String,
+    pub hostname: String,
+    pub active_tree: String,
+    pub is_editing: bool,
+    pub active_design_doc_id: Option<String>,
+    pub active_design_doc_name: Option<String>,
+    pub last_seen_ms: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StorageSyncStateDto {
+    pub active_tree: String,
+    pub trees: Vec<String>,
+    pub is_network_path: bool,
+    pub genealogy_fingerprint: String,
+    pub design_doc_timestamps: HashMap<String, String>,
+    pub active_peers: Vec<PeerSessionDto>,
+}
+
+fn detect_hostname() -> String {
+    std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "Unbekannter-PC".to_string())
+}
+
+fn current_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, Default)]
+pub struct StorageConfigFile {
+    pub custom_data_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct StorageInfoDto {
+    pub current_data_dir: String,
+    pub default_data_dir: String,
+    pub configured_custom_dir: Option<String>,
+    pub is_custom: bool,
+    pub is_network_path: bool,
+    pub is_fallback_active: bool,
+    pub storage_warning: Option<String>,
+    pub trees: Vec<String>,
+    pub active_tree: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct TargetDirInspectionDto {
+    pub path: String,
+    pub exists: bool,
+    pub is_writable: bool,
+    pub is_network_path: bool,
+    pub existing_trees: Vec<String>,
+    pub error: Option<String>,
+}
+
+fn storage_config_path(default_app_dir: &Path) -> PathBuf {
+    default_app_dir.join("storage_config.json")
+}
+
+fn load_storage_config(default_app_dir: &Path) -> StorageConfigFile {
+    let cfg_path = storage_config_path(default_app_dir);
+    if let Ok(raw) = fs::read_to_string(&cfg_path) {
+        if let Ok(parsed) = serde_json::from_str::<StorageConfigFile>(&raw) {
+            return parsed;
+        }
+    }
+    StorageConfigFile::default()
+}
+
+fn save_storage_config(default_app_dir: &Path, cfg: &StorageConfigFile) -> Result<(), String> {
+    let cfg_path = storage_config_path(default_app_dir);
+    let json = serde_json::to_string_pretty(cfg)
+        .map_err(|e| format!("Fehler beim Serialisieren der Speicherkonfiguration: {}", e))?;
+    fs::write(&cfg_path, json)
+        .map_err(|e| format!("Speicherkonfiguration konnte nicht geschrieben werden: {}", e))?;
+    Ok(())
+}
+
+fn normalize_path_for_compare(p: &Path) -> String {
+    let mut s = p.to_string_lossy().trim().replace('\\', "/");
+    if let Some(rest) = s.strip_prefix("//?/UNC/") {
+        s = format!("//{}", rest);
+    } else if let Some(rest) = s.strip_prefix("//?/unc/") {
+        s = format!("//{}", rest);
+    } else if let Some(rest) = s.strip_prefix("//?/") {
+        s = rest.to_string();
+    }
+    while s.len() > 1 && s.ends_with('/') {
+        if s.len() == 3 && s.as_bytes()[1] == b':' {
+            break;
+        }
+        s.pop();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        s.to_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        s
+    }
+}
+
+fn paths_are_equal(a: &Path, b: &Path) -> bool {
+    normalize_path_for_compare(a) == normalize_path_for_compare(b)
+}
+
+fn write_probe_in_dir(dir: &Path) -> Result<(), String> {
+    let probe = dir.join(format!(".lg_write_test_{}.tmp", uuid::Uuid::new_v4().simple()));
+    fs::write(&probe, b"ok")
+        .map_err(|e| format!("Keine Schreibrechte im Verzeichnis '{}': {}", dir.display(), e))?;
+    let _ = fs::remove_file(&probe);
+    Ok(())
+}
+
+fn verify_directory_writable(dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(dir).map_err(|e| {
+        format!(
+            "Verzeichnis '{}' konnte nicht erstellt oder geöffnet werden: {}",
+            dir.display(),
+            e
+        )
+    })?;
+    if !dir.is_dir() {
+        return Err(format!("Pfad '{}' ist kein Verzeichnis.", dir.display()));
+    }
+    write_probe_in_dir(dir)
+}
+
+fn probe_writable_without_creating(dir: &Path) -> Result<(), String> {
+    if dir.exists() {
+        if !dir.is_dir() {
+            return Err(format!("Pfad '{}' ist kein Verzeichnis.", dir.display()));
+        }
+        return write_probe_in_dir(dir);
+    }
+
+    for ancestor in dir.ancestors().skip(1) {
+        if ancestor.exists() {
+            if !ancestor.is_dir() {
+                return Err(format!("Pfad '{}' ist kein Verzeichnis.", ancestor.display()));
+            }
+            return write_probe_in_dir(ancestor);
+        }
+    }
+
+    Err(format!(
+        "Zielpfad '{}' oder übergeordnetes Verzeichnis ist nicht erreichbar.",
+        dir.display()
+    ))
+}
+
+fn remove_file_with_retry(path: &Path) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    for attempt in 0..10 {
+        match fs::remove_file(path) {
+            Ok(_) => return Ok(()),
+            Err(_) if attempt < 9 => {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Konnte Datei '{}' nicht löschen: {}",
+                    path.display(),
+                    e
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_db_sidecars(db_path: &Path) -> Result<(), String> {
+    let base = db_path.to_string_lossy();
+    for suffix in ["-wal", "-shm", "-journal"] {
+        let sidecar = PathBuf::from(format!("{}{}", base, suffix));
+        remove_file_with_retry(&sidecar)?;
+    }
+    Ok(())
 }
 
 /// Validates a tree name against empty strings, path separators, and traversal sequences.
@@ -280,13 +480,15 @@ fn escape_latex(input: &str) -> String {
 
 #[tauri::command]
 fn get_trees(state: State<AppState>) -> Result<Vec<String>, String> {
-    Ok(list_tree_names(&state.app_dir, None))
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    Ok(list_tree_names(&app_dir, None))
 }
 
 #[tauri::command]
 fn switch_tree(state: State<AppState>, tree_name: String) -> Result<(), String> {
     let valid_name = validate_tree_name(&tree_name)?;
-    let db_path = state.app_dir.join(format!("{}.db", valid_name));
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let db_path = app_dir.join(format!("{}.db", valid_name));
     let new_conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     *conn = new_conn;
@@ -335,16 +537,17 @@ pub fn delete_tree_internal(
     }
 
     for path in files_to_delete {
-        for attempt in 0..10 {
-            match fs::remove_file(&path) {
-                Ok(_) => break,
-                Err(_) if attempt < 9 => {
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-                Err(e) => {
-                    return Err(format!("Konnte Datei '{}' nicht löschen: {}", path.display(), e));
+        if let Err(err) = remove_file_with_retry(&path) {
+            let restore_path = app_dir.join(format!("{}.db", valid_name));
+            if restore_path.exists() {
+                if let Ok(restored_conn) = db::init_database(&restore_path) {
+                    *conn = restored_conn;
                 }
             }
+            return Err(format!(
+                "Stammbaum '{}' konnte nicht gelöscht werden (möglicherweise ist er noch auf einem anderen Rechner geöffnet): {}",
+                valid_name, err
+            ));
         }
     }
 
@@ -366,9 +569,690 @@ pub fn delete_tree_internal(
 
 #[tauri::command]
 fn delete_tree(state: State<AppState>, tree_name: String) -> Result<Vec<String>, String> {
+    let valid_name = validate_tree_name(&tree_name)?;
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let peers = find_active_peer_hostnames(
+        &app_dir,
+        &state.instance_id,
+        Some(&valid_name),
+        current_epoch_ms(),
+    );
+    if !peers.is_empty() {
+        return Err(format!(
+            "Stammbaum '{}' kann nicht gelöscht werden, da er aktuell auf {} geöffnet ist.",
+            valid_name,
+            peers.join(", ")
+        ));
+    }
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut active = state.active_tree.lock().map_err(|e| e.to_string())?;
-    delete_tree_internal(&state.app_dir, &mut conn, &mut active, &tree_name)
+    delete_tree_internal(&app_dir, &mut conn, &mut active, &valid_name)
+}
+
+fn build_storage_info_dto(
+    default_app_dir: &Path,
+    current_dir: &Path,
+    active_tree: &str,
+    warning: Option<String>,
+) -> StorageInfoDto {
+    let cfg = load_storage_config(default_app_dir);
+    let is_custom = !paths_are_equal(current_dir, default_app_dir);
+    let is_fallback_active = cfg
+        .custom_data_dir
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+        && !is_custom;
+    let is_network = db::is_network_path(current_dir);
+    let trees = list_tree_names(current_dir, None);
+
+    StorageInfoDto {
+        current_data_dir: current_dir.to_string_lossy().to_string(),
+        default_data_dir: default_app_dir.to_string_lossy().to_string(),
+        configured_custom_dir: cfg.custom_data_dir,
+        is_custom,
+        is_network_path: is_network,
+        is_fallback_active,
+        storage_warning: warning,
+        trees,
+        active_tree: active_tree.to_string(),
+    }
+}
+
+#[tauri::command]
+fn get_storage_info(state: State<AppState>) -> Result<StorageInfoDto, String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
+    let warning = state.storage_warning.lock().map_err(|e| e.to_string())?.clone();
+    Ok(build_storage_info_dto(
+        &state.default_app_dir,
+        &app_dir,
+        &active_tree,
+        warning,
+    ))
+}
+
+#[tauri::command]
+fn inspect_storage_directory(path: String) -> Result<TargetDirInspectionDto, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed.contains('\0') {
+        return Err("Ungültiger Verzeichnispfad.".into());
+    }
+    let target = PathBuf::from(trimmed);
+    let exists = target.exists();
+    let is_network = db::is_network_path(&target);
+    let existing_trees = if exists && target.is_dir() {
+        list_tree_names(&target, None)
+    } else {
+        Vec::new()
+    };
+
+    match probe_writable_without_creating(&target) {
+        Ok(()) => Ok(TargetDirInspectionDto {
+            path: target.to_string_lossy().to_string(),
+            exists,
+            is_writable: true,
+            is_network_path: is_network,
+            existing_trees,
+            error: None,
+        }),
+        Err(err) => Ok(TargetDirInspectionDto {
+            path: target.to_string_lossy().to_string(),
+            exists,
+            is_writable: false,
+            is_network_path: is_network,
+            existing_trees,
+            error: Some(err),
+        }),
+    }
+}
+
+pub fn change_storage_directory_internal(
+    default_app_dir: &Path,
+    app_dir_mutex: &Mutex<PathBuf>,
+    conn_mutex: &Mutex<Connection>,
+    active_tree_mutex: &Mutex<String>,
+    warning_mutex: &Mutex<Option<String>>,
+    new_path: Option<String>,
+    transfer_mode: &str,
+    overwrite_existing: bool,
+) -> Result<StorageInfoDto, String> {
+    if !matches!(transfer_mode, "move" | "copy" | "switch") {
+        return Err(format!("Ungültiger Übertragungsmodus '{}'.", transfer_mode));
+    }
+
+    let target_dir = match new_path {
+        Some(ref s) => {
+            if s.contains('\0') {
+                return Err("Ungültiger Verzeichnispfad.".into());
+            }
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                default_app_dir.to_path_buf()
+            } else {
+                PathBuf::from(trimmed)
+            }
+        }
+        None => default_app_dir.to_path_buf(),
+    };
+
+    verify_directory_writable(&target_dir)?;
+
+    let mut app_dir = app_dir_mutex.lock().map_err(|e| e.to_string())?;
+    let mut conn = conn_mutex.lock().map_err(|e| e.to_string())?;
+    let mut active_tree = active_tree_mutex.lock().map_err(|e| e.to_string())?;
+    let mut storage_warning = warning_mutex.lock().map_err(|e| e.to_string())?;
+
+    let old_dir = app_dir.clone();
+    let prev_active = active_tree.clone();
+
+    if !paths_are_equal(&old_dir, &target_dir) {
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        *conn = db::init_in_memory_database().map_err(|e| e.to_string())?;
+
+        if transfer_mode == "move" || transfer_mode == "copy" {
+            let trees_to_transfer = list_tree_names(&old_dir, None);
+            for tree_name in &trees_to_transfer {
+                let src_db = old_dir.join(format!("{}.db", tree_name));
+                let dst_db = target_dir.join(format!("{}.db", tree_name));
+
+                db::prepare_db_for_transfer(&src_db).map_err(|e| {
+                    format!(
+                        "Konnte Datenbank '{}' nicht für Übertragung vorbereiten: {}",
+                        tree_name, e
+                    )
+                })?;
+
+                if dst_db.exists() && !overwrite_existing {
+                    continue;
+                }
+
+                remove_db_sidecars(&dst_db)?;
+                fs::copy(&src_db, &dst_db).map_err(|e| {
+                    format!("Fehler beim Kopieren von '{}': {}", tree_name, e)
+                })?;
+
+                let src_len = fs::metadata(&src_db).map(|m| m.len()).unwrap_or(0);
+                let dst_len = fs::metadata(&dst_db).map(|m| m.len()).unwrap_or(0);
+                if !dst_db.exists() || dst_len != src_len {
+                    return Err(format!(
+                        "Kopierte Datenbank '{}' ist unvollständig.",
+                        tree_name
+                    ));
+                }
+
+                if transfer_mode == "move" {
+                    remove_file_with_retry(&src_db)?;
+                    remove_db_sidecars(&src_db)?;
+                }
+            }
+
+            if let Ok(entries) = fs::read_dir(&old_dir) {
+                for entry in entries.flatten() {
+                    let src_path = entry.path();
+                    if let Some(file_name) = src_path.file_name().and_then(|s| s.to_str()) {
+                        if file_name.ends_with(".db.bak") && src_path.is_file() {
+                            let dst_path = target_dir.join(file_name);
+                            if dst_path.exists() && !overwrite_existing {
+                                continue;
+                            }
+                            if fs::copy(&src_path, &dst_path).is_ok() && transfer_mode == "move" {
+                                let _ = remove_file_with_retry(&src_path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let custom_data_dir = if paths_are_equal(&target_dir, default_app_dir) {
+        None
+    } else {
+        Some(target_dir.to_string_lossy().to_string())
+    };
+    save_storage_config(default_app_dir, &StorageConfigFile { custom_data_dir })?;
+
+    *app_dir = target_dir.clone();
+    *storage_warning = None;
+
+    let new_trees = list_tree_names(&target_dir, None);
+    if !prev_active.is_empty() && new_trees.contains(&prev_active) {
+        let db_path = target_dir.join(format!("{}.db", prev_active));
+        *conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
+        *active_tree = prev_active;
+    } else if let Some(first) = new_trees.first() {
+        let db_path = target_dir.join(format!("{}.db", first));
+        *conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
+        *active_tree = first.clone();
+    } else {
+        *conn = db::init_in_memory_database().map_err(|e| e.to_string())?;
+        active_tree.clear();
+    }
+
+    Ok(build_storage_info_dto(
+        default_app_dir,
+        &app_dir,
+        &active_tree,
+        storage_warning.clone(),
+    ))
+}
+
+#[tauri::command]
+fn change_storage_directory(
+    state: State<AppState>,
+    new_path: Option<String>,
+    transfer_mode: String,
+    overwrite_existing: Option<bool>,
+) -> Result<StorageInfoDto, String> {
+    let old_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    if transfer_mode == "move" {
+        let peers =
+            find_active_peer_hostnames(&old_dir, &state.instance_id, None, current_epoch_ms());
+        if !peers.is_empty() {
+            return Err(format!(
+                "Speicherort kann im Modus 'Verschieben' nicht geändert werden, solange andere Instanzen ({}) verbunden sind. Bitte schließen Sie diese zuerst oder wählen Sie 'Daten kopieren' bzw. 'Nur Verzeichnis wechseln'.",
+                peers.join(", ")
+            ));
+        }
+    }
+    let res = change_storage_directory_internal(
+        &state.default_app_dir,
+        &state.app_dir,
+        &state.db,
+        &state.active_tree,
+        &state.storage_warning,
+        new_path,
+        &transfer_mode,
+        overwrite_existing.unwrap_or(false),
+    )?;
+    let new_dir = PathBuf::from(&res.current_data_dir);
+    if !paths_are_equal(&old_dir, &new_dir) {
+        remove_peer_session_file(&old_dir, &state.instance_id);
+    }
+    Ok(res)
+}
+
+fn peer_sessions_dir(app_dir: &Path) -> PathBuf {
+    app_dir.join(".lg_sessions")
+}
+
+pub fn remove_peer_session_file(app_dir: &Path, instance_id: &str) {
+    let path = peer_sessions_dir(app_dir).join(format!("{}.json", instance_id));
+    if path.exists() {
+        let _ = fs::remove_file(path);
+    }
+}
+
+/// Writes the local instance heartbeat file into `.lg_sessions/` and returns active peer sessions
+/// viewing the same tree, pruning expired session files older than 60 seconds.
+#[allow(clippy::too_many_arguments)]
+pub fn update_and_read_peer_sessions(
+    app_dir: &Path,
+    instance_id: &str,
+    hostname: &str,
+    active_tree: &str,
+    is_editing: bool,
+    active_design_doc_id: Option<String>,
+    active_design_doc_name: Option<String>,
+    now_ms: u64,
+) -> Vec<PeerSessionDto> {
+    let sessions_dir = peer_sessions_dir(app_dir);
+    if fs::create_dir_all(&sessions_dir).is_err() {
+        return Vec::new();
+    }
+
+    let own_session = PeerSessionDto {
+        instance_id: instance_id.to_string(),
+        hostname: hostname.to_string(),
+        active_tree: active_tree.to_string(),
+        is_editing,
+        active_design_doc_id,
+        active_design_doc_name,
+        last_seen_ms: now_ms,
+    };
+
+    let own_path = sessions_dir.join(format!("{}.json", instance_id));
+    if let Ok(json) = serde_json::to_string(&own_session) {
+        let _ = fs::write(&own_path, json);
+    }
+
+    let mut peers = Vec::new();
+    if let Ok(entries) = fs::read_dir(&sessions_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("json") || !path.is_file() {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(peer) = serde_json::from_str::<PeerSessionDto>(&raw) else {
+                continue;
+            };
+            if peer.instance_id == instance_id {
+                continue;
+            }
+            let age_ms = now_ms.saturating_sub(peer.last_seen_ms);
+            if age_ms > 60_000 {
+                let _ = fs::remove_file(&path);
+                continue;
+            }
+            if age_ms > 25_000 {
+                continue;
+            }
+            if !active_tree.is_empty() && peer.active_tree == active_tree {
+                peers.push(peer);
+            }
+        }
+    }
+
+    peers.sort_by(|a, b| {
+        a.hostname
+            .cmp(&b.hostname)
+            .then_with(|| a.instance_id.cmp(&b.instance_id))
+    });
+    peers
+}
+
+pub fn find_active_peer_hostnames(
+    app_dir: &Path,
+    exclude_instance_id: &str,
+    filter_tree: Option<&str>,
+    now_ms: u64,
+) -> Vec<String> {
+    let sessions_dir = peer_sessions_dir(app_dir);
+    let Ok(entries) = fs::read_dir(&sessions_dir) else {
+        return Vec::new();
+    };
+    let mut hostnames = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") || !path.is_file() {
+            continue;
+        }
+        let Ok(raw) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(peer) = serde_json::from_str::<PeerSessionDto>(&raw) else {
+            continue;
+        };
+        if peer.instance_id == exclude_instance_id {
+            continue;
+        }
+        if now_ms.saturating_sub(peer.last_seen_ms) > 25_000 {
+            continue;
+        }
+        if let Some(tree) = filter_tree {
+            if peer.active_tree != tree {
+                continue;
+            }
+        }
+        if !hostnames.contains(&peer.hostname) {
+            hostnames.push(peer.hostname);
+        }
+    }
+    hostnames.sort();
+    hostnames
+}
+
+fn feed_hash_str(hasher: &mut Sha256, val: &str) {
+    hasher.update((val.len() as u64).to_le_bytes());
+    hasher.update(val.as_bytes());
+}
+
+/// Computes a deterministic SHA-256 fingerprint of all genealogy tables plus the per-document
+/// `updated_at` timestamps from `design_documents` so clients can detect external writes.
+pub fn compute_db_sync_fingerprints(
+    conn: &Connection,
+) -> Result<(String, HashMap<String, String>), String> {
+    let mut hasher = Sha256::new();
+
+    {
+        feed_hash_str(&mut hasher, "INDIVIDUALS");
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, COALESCE(given_name,''), COALESCE(surname,''), COALESCE(sex,''),
+                        COALESCE(birth_date,''), COALESCE(birth_place,''),
+                        COALESCE(death_date,''), COALESCE(death_place,''), json_data
+                 FROM individuals ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                    r.get::<_, String>(8)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, g, s, sex, bd, bp, dd, dp, j) = row.map_err(|e| e.to_string())?;
+            for field in [&id, &g, &s, &sex, &bd, &bp, &dd, &dp, &j] {
+                feed_hash_str(&mut hasher, field);
+            }
+        }
+    }
+
+    {
+        feed_hash_str(&mut hasher, "FAMILIES");
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, COALESCE(husband_id,''), COALESCE(wife_id,''),
+                        COALESCE(marriage_date,''), COALESCE(divorce_date,''),
+                        is_divorced, json_data
+                 FROM families ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, bool>(5)?,
+                    r.get::<_, String>(6)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, h, w, md, dd, div, j) = row.map_err(|e| e.to_string())?;
+            for field in [&id, &h, &w, &md, &dd, &j] {
+                feed_hash_str(&mut hasher, field);
+            }
+            hasher.update([if div { 1 } else { 0 }]);
+        }
+    }
+
+    {
+        feed_hash_str(&mut hasher, "PARENT_CHILD");
+        let mut stmt = conn
+            .prepare("SELECT family_id, child_id FROM parent_child ORDER BY family_id, child_id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (fid, cid) = row.map_err(|e| e.to_string())?;
+            feed_hash_str(&mut hasher, &fid);
+            feed_hash_str(&mut hasher, &cid);
+        }
+    }
+
+    {
+        feed_hash_str(&mut hasher, "ROOT_ANCESTORS");
+        let mut stmt = conn
+            .prepare("SELECT person_id, starting_code FROM root_ancestors ORDER BY person_id")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (pid, code) = row.map_err(|e| e.to_string())?;
+            feed_hash_str(&mut hasher, &pid);
+            feed_hash_str(&mut hasher, &code);
+        }
+    }
+
+    {
+        feed_hash_str(&mut hasher, "HENRY_CODES");
+        let mut stmt = conn
+            .prepare(
+                "SELECT proband_id, person_id, henry_code, generation
+                 FROM proband_henry_codes ORDER BY proband_id, person_id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, i32>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (prob, pid, code, gen_num) = row.map_err(|e| e.to_string())?;
+            feed_hash_str(&mut hasher, &prob);
+            feed_hash_str(&mut hasher, &pid);
+            feed_hash_str(&mut hasher, &code);
+            hasher.update(gen_num.to_le_bytes());
+        }
+    }
+
+    {
+        feed_hash_str(&mut hasher, "EVENTS");
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, owner_id, tag, COALESCE(date_str,''), COALESCE(place,''), json_data
+                 FROM events ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, owner, tag, ds, pl, j) = row.map_err(|e| e.to_string())?;
+            for field in [&id, &owner, &tag, &ds, &pl, &j] {
+                feed_hash_str(&mut hasher, field);
+            }
+        }
+    }
+
+    {
+        feed_hash_str(&mut hasher, "RESEARCH_TASKS");
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, status, priority_score, COALESCE(notes,''), updated_at
+                 FROM research_tasks ORDER BY id",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i32>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, status, prio, notes, updated) = row.map_err(|e| e.to_string())?;
+            feed_hash_str(&mut hasher, &id);
+            feed_hash_str(&mut hasher, &status);
+            hasher.update(prio.to_le_bytes());
+            feed_hash_str(&mut hasher, &notes);
+            feed_hash_str(&mut hasher, &updated);
+        }
+    }
+
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut hex, "{:02x}", b);
+    }
+
+    let mut design_doc_timestamps = HashMap::new();
+    {
+        let mut stmt = conn
+            .prepare("SELECT id, updated_at FROM design_documents")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (id, ts) = row.map_err(|e| e.to_string())?;
+            design_doc_timestamps.insert(id, ts);
+        }
+    }
+
+    Ok((hex, design_doc_timestamps))
+}
+
+#[tauri::command]
+fn poll_storage_sync_state(
+    state: State<AppState>,
+    is_editing: Option<bool>,
+    active_design_doc_id: Option<String>,
+    active_design_doc_name: Option<String>,
+    peer_display_name: Option<String>,
+) -> Result<StorageSyncStateDto, String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
+    let trees = list_tree_names(&app_dir, None);
+    let is_network = db::is_network_path(&app_dir);
+
+    let (genealogy_fingerprint, design_doc_timestamps) = {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        compute_db_sync_fingerprints(&conn)?
+    };
+
+    let effective_peer_name = peer_display_name
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| state.hostname.clone());
+
+    let active_peers = update_and_read_peer_sessions(
+        &app_dir,
+        &state.instance_id,
+        &effective_peer_name,
+        &active_tree,
+        is_editing.unwrap_or(false),
+        active_design_doc_id.filter(|s| !s.trim().is_empty()),
+        active_design_doc_name.filter(|s| !s.trim().is_empty()),
+        current_epoch_ms(),
+    );
+
+    Ok(StorageSyncStateDto {
+        active_tree,
+        trees,
+        is_network_path: is_network,
+        genealogy_fingerprint,
+        design_doc_timestamps,
+        active_peers,
+    })
+}
+
+#[tauri::command]
+fn close_peer_session(state: State<AppState>) -> Result<(), String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    remove_peer_session_file(&app_dir, &state.instance_id);
+    Ok(())
+}
+
+#[tauri::command]
+async fn open_storage_directory(state: State<'_, AppState>) -> Result<(), String> {
+    let dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        #[cfg(target_os = "windows")]
+        {
+            Command::new("explorer")
+                .arg(&dir)
+                .spawn()
+                .map_err(|e| format!("Explorer konnte nicht gestartet werden: {}", e))?;
+            Ok(())
+        }
+        #[cfg(target_os = "macos")]
+        {
+            Command::new("open")
+                .arg(&dir)
+                .spawn()
+                .map_err(|e| format!("Finder konnte nicht gestartet werden: {}", e))?;
+            Ok(())
+        }
+        #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+        {
+            Command::new("xdg-open")
+                .arg(&dir)
+                .spawn()
+                .map_err(|e| format!("Dateimanager konnte nicht gestartet werden: {}", e))?;
+            Ok(())
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -829,84 +1713,7 @@ fn calculate_henry_codes_from_roots(state: State<AppState>) -> Result<(), String
 /// Parses heterogeneous date strings (ISO, German DD.MM.YYYY, and GEDCOM date tokens)
 /// into a comparable `(year, month, day)` tuple for chronological sibling sorting.
 fn parse_birth_sort_key(date: &str) -> (i32, i32, i32) {
-    let s = date.trim().to_uppercase();
-    if s.is_empty() {
-        return (9999, 99, 99);
-    }
-
-    // 1. ISO-Format: YYYY-MM-DD oder YYYY/MM/DD
-    let parts_dash: Vec<&str> = s.split(|c| c == '-' || c == '/').collect();
-    if parts_dash.len() >= 2 && parts_dash[0].len() == 4 {
-        if let Ok(y) = parts_dash[0].parse::<i32>() {
-            let m = parts_dash
-                .get(1)
-                .and_then(|v| v.parse::<i32>().ok())
-                .unwrap_or(99);
-            let d = parts_dash
-                .get(2)
-                .and_then(|v| v.split_whitespace().next()?.parse::<i32>().ok())
-                .unwrap_or(99);
-            return (y, m, d);
-        }
-    }
-
-    // 2. Deutsches Format: DD.MM.YYYY
-    let parts_dot: Vec<&str> = s.split('.').collect();
-    if parts_dot.len() == 3 {
-        let y_str = parts_dot[2].split_whitespace().next().unwrap_or("");
-        if y_str.len() == 4 {
-            if let Ok(y) = y_str.parse::<i32>() {
-                let m = parts_dot[1].trim().parse::<i32>().unwrap_or(99);
-                let d = parts_dot[0].trim().parse::<i32>().unwrap_or(99);
-                return (y, m, d);
-            }
-        }
-    }
-
-    // 3. GEDCOM-Format (z.B. "20 MAY 1950", "ABT 1890")
-    let mut year = 9999;
-    let mut month = 99;
-    let mut day = 99;
-
-    for token in s.split(|c: char| !c.is_alphanumeric()) {
-        if token.is_empty() {
-            continue;
-        }
-        if token.len() == 4 && token.chars().all(|c| c.is_ascii_digit()) {
-            if let Ok(y) = token.parse::<i32>() {
-                year = y;
-                continue;
-            }
-        }
-        let m_val = match token {
-            "JAN" | "JANUAR" | "JANUARY" => Some(1),
-            "FEB" | "FEBRUAR" | "FEBRUARY" => Some(2),
-            "MAR" | "MÄR" | "MAER" | "MÄRZ" | "MARCH" => Some(3),
-            "APR" | "APRIL" => Some(4),
-            "MAY" | "MAI" => Some(5),
-            "JUN" | "JUNI" | "JUNE" => Some(6),
-            "JUL" | "JULI" | "JULY" => Some(7),
-            "AUG" | "AUGUST" => Some(8),
-            "SEP" | "SEPT" | "SEPTEMBER" => Some(9),
-            "OCT" | "OKT" | "OKTOBER" | "OCTOBER" => Some(10),
-            "NOV" | "NOVEMBER" => Some(11),
-            "DEC" | "DEZ" | "DEZEMBER" | "DECEMBER" => Some(12),
-            _ => None,
-        };
-        if let Some(m) = m_val {
-            month = m;
-            continue;
-        }
-        if token.len() <= 2 && token.chars().all(|c| c.is_ascii_digit()) {
-            if let Ok(d) = token.parse::<i32>() {
-                if (1..=31).contains(&d) && day == 99 {
-                    day = d;
-                }
-            }
-        }
-    }
-
-    (year, month, day)
+    gedcom_date::parse_sort_key(date)
 }
 
 /// Computes Henry codes for all configured root ancestors (proband_henry_codes table).
@@ -989,7 +1796,7 @@ fn calculate_henry_codes_internal(conn: &mut Connection) -> Result<(), String> {
         }
     }
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM proband_henry_codes", [])
         .map_err(|e| e.to_string())?;
 
@@ -1181,7 +1988,7 @@ fn update_person_parents(
         }
     }
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(&mut conn).map_err(|e| e.to_string())?;
 
     // Bisherige Elternschaften des Kindes lösen
     tx.execute(
@@ -1278,7 +2085,7 @@ pub fn update_family_marriage_internal(
     divorce_date: Option<String>,
     is_divorced: bool,
 ) -> Result<(), String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     let (husband_id, wife_id, current_json): (Option<String>, Option<String>, String) = tx
         .query_row(
@@ -1291,11 +2098,7 @@ pub fn update_family_marriage_internal(
     let mut json_obj: serde_json::Map<String, serde_json::Value> =
         serde_json::from_str(&current_json).unwrap_or_default();
 
-    let m_opt = marriage_date
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let m_opt = gedcom_date::normalize_date_for_storage(marriage_date.as_deref());
     if let Some(ref m_date) = m_opt {
         let mut marr_map = match json_obj.remove("MARR") {
             Some(serde_json::Value::Object(map)) => map,
@@ -1310,11 +2113,7 @@ pub fn update_family_marriage_internal(
         }
     }
 
-    let d_opt = divorce_date
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let d_opt = gedcom_date::normalize_date_for_storage(divorce_date.as_deref());
     let divorced_flag = is_divorced || d_opt.is_some();
     if divorced_flag {
         let mut div_map = match json_obj.remove("DIV") {
@@ -1385,7 +2184,7 @@ pub fn link_spouses_internal(
         return Err("Eine Person kann nicht mit sich selbst verheiratet werden.".to_string());
     }
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     let p1_sex: String = tx
         .query_row(
@@ -1473,7 +2272,7 @@ pub fn unlink_family_internal(
     conn: &mut Connection,
     family_id: &str,
 ) -> Result<(), String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     let (husband_id, wife_id): (Option<String>, Option<String>) = tx
         .query_row(
@@ -1552,7 +2351,7 @@ pub fn add_child_link_internal(
         );
     }
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     let already_linked: bool = tx
         .query_row(
@@ -1651,7 +2450,7 @@ pub fn remove_child_link_internal(
     parent_id: &str,
     child_id: &str,
 ) -> Result<(), String> {
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     tx.execute(
         "DELETE FROM parent_child 
@@ -1759,8 +2558,41 @@ fn add_person(
     death_date: Option<String>,
     death_place: Option<String>,
     custom_id: Option<String>,
+    is_auto_id: Option<bool>,
 ) -> Result<String, String> {
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    add_person_internal(
+        &mut conn,
+        target_person_id,
+        relation_type,
+        given_name,
+        surname,
+        sex,
+        birth_date,
+        birth_place,
+        death_date,
+        death_place,
+        custom_id,
+        is_auto_id.unwrap_or(false),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_person_internal(
+    conn: &mut Connection,
+    target_person_id: Option<String>,
+    relation_type: Option<String>,
+    given_name: String,
+    surname: String,
+    sex: String,
+    birth_date: Option<String>,
+    birth_place: Option<String>,
+    death_date: Option<String>,
+    death_place: Option<String>,
+    custom_id: Option<String>,
+    is_auto_id: bool,
+) -> Result<String, String> {
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     let new_id = if let Some(cid) = custom_id.filter(|s| !s.trim().is_empty()) {
         let trimmed = cid.trim();
@@ -1771,7 +2603,7 @@ fn add_person(
             ));
         }
         let normalized = normalize_gedcom_xref(trimmed);
-        let existing: Option<(Option<String>, Option<String>)> = conn
+        let existing: Option<(Option<String>, Option<String>)> = tx
             .query_row(
                 "SELECT given_name, surname FROM individuals WHERE id = ?1",
                 [&normalized],
@@ -1779,18 +2611,21 @@ fn add_person(
             )
             .ok();
         if let Some((g, s)) = existing {
-            let name = format_person_name(g.as_deref(), s.as_deref());
-            return Err(format!(
-                "Die ID '{}' wird bereits von '{}' verwendet.",
-                normalized, name
-            ));
+            if is_auto_id {
+                crate::db::get_next_individual_id(&tx)?
+            } else {
+                let name = format_person_name(g.as_deref(), s.as_deref());
+                return Err(format!(
+                    "Die ID '{}' wird bereits von '{}' verwendet.",
+                    normalized, name
+                ));
+            }
+        } else {
+            normalized
         }
-        normalized
     } else {
-        crate::db::get_next_individual_id(&conn)?
+        crate::db::get_next_individual_id(&tx)?
     };
-
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     let name_val = format!("{} /{}//", given_name, surname);
     let chan = current_gedcom_chan();
@@ -1798,9 +2633,12 @@ fn add_person(
         "NAME": name_val, "GIVN": given_name, "SURN": surname, "SEX": sex, "CHAN": chan
     });
 
+    let norm_birth_date = gedcom_date::normalize_date_for_storage(birth_date.as_deref());
+    let norm_death_date = gedcom_date::normalize_date_for_storage(death_date.as_deref());
+
     tx.execute(
         "INSERT INTO individuals (id, xref_id, given_name, surname, sex, birth_date, birth_place, death_date, death_place, json_data) VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        rusqlite::params![new_id, given_name, surname, sex, birth_date, birth_place, death_date, death_place, json_val.to_string()],
+        rusqlite::params![new_id, given_name, surname, sex, norm_birth_date, birth_place, norm_death_date, death_place, json_val.to_string()],
     )
     .map_err(|e| e.to_string())?;
 
@@ -1883,7 +2721,7 @@ fn add_person(
     }
 
     tx.commit().map_err(|e| e.to_string())?;
-    calculate_henry_codes_internal(&mut conn)?;
+    calculate_henry_codes_internal(conn)?;
     Ok(new_id)
 }
 
@@ -1981,34 +2819,56 @@ fn update_persons_batch_internal(
         target_id_map.insert(u.person.id.clone(), name);
     }
 
-    // 3. Gesamtheitliche Konsistenz: Kollision gegen bestehende, unberührte Personen in DB prüfen
-    let batch_orig_ids: HashSet<&str> = updates.iter().map(|u| u.original_id.as_str()).collect();
-    for u in &updates {
-        let new_id = u.person.id.as_str();
-        if new_id != u.original_id && !batch_orig_ids.contains(new_id) {
-            let existing: Option<(Option<String>, Option<String>)> = conn
-                .query_row(
-                    "SELECT given_name, surname FROM individuals WHERE id = ?1",
-                    [new_id],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .ok();
-            if let Some((g, s)) = existing {
-                let name = format_person_name(g.as_deref(), s.as_deref());
-                return Err(format!(
-                    "Die ID '{}' wird bereits von '{}' verwendet.",
-                    new_id, name
-                ));
-            }
-        }
-    }
-
-    // 4. Durchführung der Änderungen mit 2-Phasen Rename (unter Deaktivierung der Fremdschlüssel-Prüfung)
+    // 3. Durchführung der Änderungen mit 2-Phasen Rename (unter Deaktivierung der Fremdschlüssel-Prüfung)
     conn.execute_batch("PRAGMA foreign_keys = OFF;")
         .map_err(|e| e.to_string())?;
 
     let res = (|| -> Result<(), String> {
-        let tx = conn.transaction().map_err(|e| e.to_string())?;
+        let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
+
+        // Prüfen innerhalb der Schreibtransaktion, dass alle original_ids noch existieren
+        for u in &updates {
+            let name = format_person_name(
+                u.person.given_name.as_deref(),
+                u.person.surname.as_deref(),
+            );
+            let orig_exists: bool = tx
+                .query_row(
+                    "SELECT count(*) FROM individuals WHERE id = ?1",
+                    [&u.original_id],
+                    |r| r.get::<_, i64>(0),
+                )
+                .map_err(|e| e.to_string())?
+                > 0;
+            if !orig_exists {
+                return Err(format!(
+                    "Speicherkonflikt: Die Person '{}' ({}) wurde zwischenzeitlich auf einem anderen Rechner gelöscht, zusammengeführt oder umbenannt.",
+                    name, u.original_id
+                ));
+            }
+        }
+
+        // Kollision gegen bestehende, unberührte Personen in DB innerhalb der Transaktion prüfen
+        let batch_orig_ids: HashSet<&str> = updates.iter().map(|u| u.original_id.as_str()).collect();
+        for u in &updates {
+            let new_id = u.person.id.as_str();
+            if new_id != u.original_id && !batch_orig_ids.contains(new_id) {
+                let existing: Option<(Option<String>, Option<String>)> = tx
+                    .query_row(
+                        "SELECT given_name, surname FROM individuals WHERE id = ?1",
+                        [new_id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .ok();
+                if let Some((g, s)) = existing {
+                    let name = format_person_name(g.as_deref(), s.as_deref());
+                    return Err(format!(
+                        "Die ID '{}' wird bereits von '{}' verwendet.",
+                        new_id, name
+                    ));
+                }
+            }
+        }
 
         // Phase 1: Vorübergehend auf eindeutige Temp-IDs umbenennen (verhindert Primary-Key-Konflikte bei Zyklen & Tausch)
         let mut temp_renames: Vec<(&PersonUpdate, String)> = Vec::new();
@@ -2032,18 +2892,33 @@ fn update_persons_batch_internal(
                 serde_json::Value::Object(ref map) => map.clone(),
                 _ => serde_json::Map::new(),
             };
+            // Normalize any DATE sub-fields in extra_map (e.g., CHR.DATE, BURI.DATE)
+            for (tag_key, tag_val) in extra_map.iter_mut() {
+                if tag_key.eq_ignore_ascii_case("CHAN") {
+                    continue;
+                }
+                if let Some(sub_obj) = tag_val.as_object_mut() {
+                    if let Some(d_str) = sub_obj.get("DATE").and_then(|v| v.as_str()).map(str::to_string) {
+                        if let Some(norm) = gedcom_date::normalize_date_for_storage(Some(&d_str)) {
+                            sub_obj.insert("DATE".to_string(), serde_json::Value::String(norm));
+                        }
+                    }
+                }
+            }
             extra_map.insert("CHAN".to_string(), chan.clone());
             let json_str = serde_json::to_string(&extra_map)
                 .unwrap_or_else(|_| "{}".to_string());
+            let norm_birth_date = gedcom_date::normalize_date_for_storage(u.person.birth_date.as_deref());
+            let norm_death_date = gedcom_date::normalize_date_for_storage(u.person.death_date.as_deref());
             tx.execute(
                 "UPDATE individuals SET given_name = ?1, surname = ?2, sex = ?3, birth_date = ?4, birth_place = ?5, death_date = ?6, death_place = ?7, json_data = ?8 WHERE id = ?9",
                 rusqlite::params![
                     u.person.given_name,
                     u.person.surname,
                     u.person.sex,
-                    u.person.birth_date,
+                    norm_birth_date,
                     u.person.birth_place,
-                    u.person.death_date,
+                    norm_death_date,
                     u.person.death_place,
                     json_str,
                     u.person.id
@@ -2095,16 +2970,220 @@ fn backup_current_tree_db(app_dir: &std::path::Path, active_tree: &str, action_p
     if active_tree.is_empty() {
         return Ok(String::new());
     }
-    let db_dir = app_dir.join("databases");
-    let src_path = db_dir.join(format!("{}.db", active_tree));
-    if !src_path.exists() {
-        return Ok(String::new());
-    }
+    let direct_path = app_dir.join(format!("{}.db", active_tree));
+    let (src_dir, src_path) = if direct_path.exists() {
+        (app_dir.to_path_buf(), direct_path)
+    } else {
+        let legacy_dir = app_dir.join("databases");
+        let legacy_path = legacy_dir.join(format!("{}.db", active_tree));
+        if !legacy_path.exists() {
+            return Ok(String::new());
+        }
+        (legacy_dir, legacy_path)
+    };
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
     let backup_filename = format!("{}_{}_{}.db.bak", active_tree, action_prefix, timestamp);
-    let backup_path = db_dir.join(&backup_filename);
+    let backup_path = src_dir.join(&backup_filename);
     std::fs::copy(&src_path, &backup_path).map_err(|e| format!("Backup fehlgeschlagen: {}", e))?;
     Ok(backup_filename)
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TreeBackupInfoDto {
+    filename: String,
+    action_type: String,
+    created_at_ms: u64,
+    size_bytes: u64,
+}
+
+fn resolve_tree_db_dir(app_dir: &Path, active_tree: &str) -> Option<(PathBuf, PathBuf)> {
+    let direct_path = app_dir.join(format!("{}.db", active_tree));
+    if direct_path.exists() {
+        return Some((app_dir.to_path_buf(), direct_path));
+    }
+    let legacy_dir = app_dir.join("databases");
+    let legacy_path = legacy_dir.join(format!("{}.db", active_tree));
+    if legacy_path.exists() {
+        return Some((legacy_dir, legacy_path));
+    }
+    None
+}
+
+fn parse_backup_action_type(filename: &str, active_tree: &str) -> String {
+    let prefix = format!("{}_", active_tree);
+    let rest = filename
+        .strip_prefix(&prefix)
+        .and_then(|s| s.strip_suffix(".db.bak"))
+        .unwrap_or("");
+    for known in ["manual", "pre_restore", "pre_delete_batch", "pre_delete", "pre_merge"] {
+        if rest.starts_with(known) {
+            return known.to_string();
+        }
+    }
+    "other".to_string()
+}
+
+fn validate_backup_filename(filename: &str, active_tree: &str) -> Result<(), String> {
+    if active_tree.is_empty() {
+        return Err("Kein aktiver Stammbaum ausgewählt.".to_string());
+    }
+    if filename.contains('/') || filename.contains('\\') || filename.contains("..") {
+        return Err("Ungültiger Backup-Dateiname.".to_string());
+    }
+    let expected_prefix = format!("{}_", active_tree);
+    if !filename.starts_with(&expected_prefix) || !filename.ends_with(".db.bak") {
+        return Err("Backup-Datei gehört nicht zum aktiven Stammbaum.".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn list_tree_backups(state: State<AppState>) -> Result<Vec<TreeBackupInfoDto>, String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
+    if active_tree.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let Some((src_dir, _)) = resolve_tree_db_dir(&app_dir, &active_tree) else {
+        return Ok(Vec::new());
+    };
+
+    let prefix = format!("{}_", active_tree);
+    let mut backups = Vec::new();
+    if let Ok(entries) = fs::read_dir(&src_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if !name.starts_with(&prefix) || !name.ends_with(".db.bak") {
+                continue;
+            }
+            let Ok(meta) = entry.metadata() else {
+                continue;
+            };
+            let created_at_ms = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            backups.push(TreeBackupInfoDto {
+                filename: name.to_string(),
+                action_type: parse_backup_action_type(name, &active_tree),
+                created_at_ms,
+                size_bytes: meta.len(),
+            });
+        }
+    }
+
+    backups.sort_by(|a, b| {
+        b.created_at_ms
+            .cmp(&a.created_at_ms)
+            .then_with(|| b.filename.cmp(&a.filename))
+    });
+    Ok(backups)
+}
+
+#[tauri::command]
+fn create_tree_backup(state: State<AppState>) -> Result<String, String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
+    if active_tree.is_empty() {
+        return Err("Kein aktiver Stammbaum ausgewählt.".to_string());
+    }
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+    backup_current_tree_db(&app_dir, &active_tree, "manual")
+}
+
+#[tauri::command]
+fn restore_tree_backup(state: State<AppState>, filename: String) -> Result<String, String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
+    validate_backup_filename(&filename, &active_tree)?;
+
+    let (src_dir, db_path) = resolve_tree_db_dir(&app_dir, &active_tree)
+        .ok_or_else(|| "Datenbankdatei für den aktiven Stammbaum nicht gefunden.".to_string())?;
+    let backup_path = src_dir.join(&filename);
+    if !backup_path.is_file() {
+        return Err("Ausgewählte Backup-Datei existiert nicht.".to_string());
+    }
+
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    *conn = db::init_in_memory_database().map_err(|e| e.to_string())?;
+
+    let safety_backup = backup_current_tree_db(&app_dir, &active_tree, "pre_restore")?;
+
+    for suffix in ["-wal", "-shm"] {
+        let sidecar = src_dir.join(format!("{}.db{}", active_tree, suffix));
+        if sidecar.exists() {
+            let _ = fs::remove_file(&sidecar);
+        }
+    }
+
+    if let Err(err) = fs::copy(&backup_path, &db_path) {
+        if let Ok(reopened) = db::init_database(&db_path) {
+            *conn = reopened;
+        }
+        return Err(format!("Wiederherstellung fehlgeschlagen: {}", err));
+    }
+
+    *conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
+    Ok(safety_backup)
+}
+
+#[tauri::command]
+fn delete_tree_backup(state: State<AppState>, filename: String) -> Result<(), String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
+    validate_backup_filename(&filename, &active_tree)?;
+
+    let (src_dir, _) = resolve_tree_db_dir(&app_dir, &active_tree)
+        .ok_or_else(|| "Stammbaumverzeichnis nicht gefunden.".to_string())?;
+    let backup_path = src_dir.join(&filename);
+    if backup_path.is_file() {
+        fs::remove_file(&backup_path).map_err(|e| format!("Löschen fehlgeschlagen: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn backup_all_databases(state: State<AppState>, target_dir: String) -> Result<usize, String> {
+    let trimmed = target_dir.trim();
+    if trimmed.is_empty() {
+        return Err("Kein Zielordner angegeben.".to_string());
+    }
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    {
+        let conn = state.db.lock().map_err(|e| e.to_string())?;
+        let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+    }
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let dest_root = PathBuf::from(trimmed).join(format!("LineageGraph_Backup_{}", timestamp));
+    fs::create_dir_all(&dest_root)
+        .map_err(|e| format!("Zielordner konnte nicht erstellt werden: {}", e))?;
+
+    let trees = list_tree_names(&app_dir, None);
+    let mut copied_count = 0usize;
+    for tree in trees {
+        if let Some((_, db_path)) = resolve_tree_db_dir(&app_dir, &tree) {
+            let dest_file = dest_root.join(format!("{}.db", tree));
+            fs::copy(&db_path, &dest_file)
+                .map_err(|e| format!("Fehler beim Sichern von '{}': {}", tree, e))?;
+            copied_count += 1;
+        }
+    }
+
+    Ok(copied_count)
 }
 
 pub fn delete_persons_batch_internal(
@@ -2115,7 +3194,7 @@ pub fn delete_persons_batch_internal(
         return Ok(());
     }
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     for pid in person_ids {
         // 1. Research tasks
@@ -2213,7 +3292,7 @@ pub fn merge_persons_internal(
         return Err("Ziel- und Quellperson dürfen nicht identisch sein.".to_string());
     }
 
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let tx = db::begin_write_tx(conn).map_err(|e| e.to_string())?;
 
     let target_exists: bool = tx
         .query_row("SELECT count(*) FROM individuals WHERE id = ?1", [target_id], |r| r.get::<_, i64>(0))
@@ -2509,8 +3588,9 @@ fn delete_person(
     state: State<AppState>,
     person_id: String,
 ) -> Result<(), String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
     let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
-    let _ = backup_current_tree_db(&state.app_dir, &active_tree, "pre_delete");
+    let _ = backup_current_tree_db(&app_dir, &active_tree, "pre_delete");
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     delete_person_internal(&mut conn, &person_id)
 }
@@ -2520,8 +3600,9 @@ fn delete_persons_batch(
     state: State<AppState>,
     person_ids: Vec<String>,
 ) -> Result<(), String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
     let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
-    let _ = backup_current_tree_db(&state.app_dir, &active_tree, "pre_delete_batch");
+    let _ = backup_current_tree_db(&app_dir, &active_tree, "pre_delete_batch");
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     delete_persons_batch_internal(&mut conn, &person_ids)
 }
@@ -2533,8 +3614,9 @@ fn merge_persons(
     source_id: String,
     fields: PersonMergeFieldsDto,
 ) -> Result<(), String> {
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
     let active_tree = state.active_tree.lock().map_err(|e| e.to_string())?.clone();
-    let _ = backup_current_tree_db(&state.app_dir, &active_tree, "pre_merge");
+    let _ = backup_current_tree_db(&app_dir, &active_tree, "pre_merge");
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     merge_persons_internal(&mut conn, &target_id, &source_id, &fields)
 }
@@ -2551,6 +3633,7 @@ fn get_person_events(
 #[tauri::command]
 fn import_gedcom_file(state: State<AppState>, file_path: String) -> Result<usize, String> {
     let path = validate_user_file_path(&file_path, &["ged", "gedcom"])?;
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
     let mut active = state.active_tree.lock().map_err(|e| e.to_string())?;
 
@@ -2561,7 +3644,7 @@ fn import_gedcom_file(state: State<AppState>, file_path: String) -> Result<usize
             .and_then(|s| validate_tree_name(s).ok())
             .unwrap_or("lineagegraph")
             .to_string();
-        let db_path = state.app_dir.join(format!("{}.db", tree_name));
+        let db_path = app_dir.join(format!("{}.db", tree_name));
         *conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
         *active = tree_name;
     }
@@ -2867,9 +3950,17 @@ fn save_design_document_v2(
     state: State<'_, AppState>,
     document: design_repo::DesignDocumentDto,
     overwrite_same_name: Option<bool>,
+    expected_updated_at: Option<String>,
+    force_overwrite: Option<bool>,
 ) -> Result<design_repo::DesignDocumentSummaryDto, String> {
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
-    design_repo::save_design_document(&mut conn, document, overwrite_same_name.unwrap_or(false))
+    design_repo::save_design_document_checked(
+        &mut conn,
+        document,
+        overwrite_same_name.unwrap_or(false),
+        expected_updated_at.as_deref(),
+        force_overwrite.unwrap_or(false),
+    )
 }
 
 #[tauri::command]
@@ -2925,7 +4016,8 @@ fn import_encrypted_project(
     let valid_name = validate_tree_name(&target_tree_name)?.to_string();
     let db_bytes = design_repo::decrypt_project_to_temp_db(src_path, &password)?;
 
-    let final_db_path = state.app_dir.join(format!("{}.db", valid_name));
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let final_db_path = app_dir.join(format!("{}.db", valid_name));
     if final_db_path.exists() {
         return Err(format!(
             "Ein Stammbaum mit dem Namen '{}' existiert bereits.",
@@ -2933,24 +4025,33 @@ fn import_encrypted_project(
         ));
     }
 
-    let tmp_path = state
-        .app_dir
-        .join(format!(".import_{}_{}.tmp", valid_name, uuid::Uuid::new_v4().simple()));
+    let tmp_path = app_dir.join(format!(
+        ".import_{}_{}.tmp",
+        valid_name,
+        uuid::Uuid::new_v4().simple()
+    ));
     fs::write(&tmp_path, &db_bytes).map_err(|e| format!("Fehler beim Schreiben: {}", e))?;
 
     let test_conn = match db::init_database(&tmp_path) {
         Ok(c) => c,
         Err(e) => {
-            let _ = fs::remove_file(&tmp_path);
+            let _ = remove_file_with_retry(&tmp_path);
+            let _ = remove_db_sidecars(&tmp_path);
             return Err(format!("Ungültige importierte Datenbank: {}", e));
         }
     };
     drop(test_conn);
+    let _ = db::prepare_db_for_transfer(&tmp_path);
+    let _ = remove_db_sidecars(&tmp_path);
 
-    fs::rename(&tmp_path, &final_db_path).map_err(|e| {
-        let _ = fs::remove_file(&tmp_path);
-        format!("Konnte Zieldatei nicht anlegen: {}", e)
-    })?;
+    if db::is_network_path(&final_db_path) || fs::rename(&tmp_path, &final_db_path).is_err() {
+        fs::copy(&tmp_path, &final_db_path).map_err(|e| {
+            let _ = remove_file_with_retry(&tmp_path);
+            let _ = remove_db_sidecars(&tmp_path);
+            format!("Konnte Zieldatei nicht anlegen: {}", e)
+        })?;
+        let _ = remove_file_with_retry(&tmp_path);
+    }
 
     let new_conn = db::init_database(&final_db_path).map_err(|e| e.to_string())?;
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -3132,7 +4233,8 @@ fn create_tree_and_import(
 ) -> Result<usize, String> {
     let path = validate_user_file_path(&file_path, &["ged", "gedcom"])?;
     let valid_name = validate_tree_name(&tree_name)?;
-    let db_path = state.app_dir.join(format!("{}.db", valid_name));
+    let app_dir = state.app_dir.lock().map_err(|e| e.to_string())?.clone();
+    let db_path = app_dir.join(format!("{}.db", valid_name));
     let new_conn = db::init_database(&db_path).map_err(|e| e.to_string())?;
 
     let mut conn = state.db.lock().map_err(|e| e.to_string())?;
@@ -3415,17 +4517,40 @@ fn get_isolated_branches(
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
-            let app_dir = app
+            let default_app_dir = app
                 .path()
                 .app_data_dir()
                 .map_err(|e| format!("Kein App-Verzeichnis verfügbar: {}", e))?;
-            fs::create_dir_all(&app_dir)
+            fs::create_dir_all(&default_app_dir)
                 .map_err(|e| format!("App-Verzeichnis konnte nicht erstellt werden: {}", e))?;
 
-            let existing_trees = list_tree_names(&app_dir, None);
+            let storage_cfg = load_storage_config(&default_app_dir);
+            let mut storage_warning: Option<String> = None;
+
+            let active_app_dir = if let Some(custom_str) = storage_cfg
+                .custom_data_dir
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let custom_path = PathBuf::from(custom_str);
+                if verify_directory_writable(&custom_path).is_ok() {
+                    custom_path
+                } else {
+                    storage_warning = Some(format!(
+                        "Das konfigurierte Speicherverzeichnis '{}' ist aktuell nicht erreichbar oder nicht beschreibbar. Es wird vorübergehend das lokale Standardverzeichnis verwendet.",
+                        custom_str
+                    ));
+                    default_app_dir.clone()
+                }
+            } else {
+                default_app_dir.clone()
+            };
+
+            let existing_trees = list_tree_names(&active_app_dir, None);
 
             let (conn, initial_tree) = if let Some(first) = existing_trees.first() {
-                let c = crate::db::init_database(&app_dir.join(format!("{}.db", first)))
+                let c = crate::db::init_database(&active_app_dir.join(format!("{}.db", first)))
                     .map_err(|e| format!("DB Init Fehler: {}", e))?;
                 (c, first.clone())
             } else {
@@ -3436,8 +4561,12 @@ pub fn run() {
 
             app.manage(AppState {
                 db: Mutex::new(conn),
-                app_dir,
+                default_app_dir,
+                app_dir: Mutex::new(active_app_dir),
                 active_tree: Mutex::new(initial_tree),
+                storage_warning: Mutex::new(storage_warning),
+                instance_id: uuid::Uuid::new_v4().simple().to_string(),
+                hostname: detect_hostname(),
             });
             Ok(())
         })
@@ -3448,6 +4577,17 @@ pub fn run() {
             get_trees,
             switch_tree,
             delete_tree,
+            list_tree_backups,
+            create_tree_backup,
+            restore_tree_backup,
+            delete_tree_backup,
+            backup_all_databases,
+            get_storage_info,
+            inspect_storage_directory,
+            change_storage_directory,
+            open_storage_directory,
+            poll_storage_sync_state,
+            close_peer_session,
             get_all_persons,
             get_person_details,
             find_relationship_path,
@@ -4344,12 +5484,14 @@ mod tests {
                     target_db_id: "I10".to_string(),
                     field_choices,
                     extra_action: "append".to_string(),
+                    expected_db_values: HashMap::new(),
                 },
                 gedcom_import_merge::PersonResolution {
                     staged_xref: "C1".to_string(),
                     target_db_id: "C1".to_string(),
                     field_choices: HashMap::new(),
                     extra_action: "db".to_string(),
+                    expected_db_values: HashMap::new(),
                 },
             ],
             new_person_xrefs: vec!["IMP2".to_string(), "NEW_C".to_string()],
@@ -4786,5 +5928,519 @@ mod tests {
         assert!(&decrypted_bytes[0..16] == b"SQLite format 3\0");
 
         let _ = fs::remove_file(&temp_proj);
+    }
+
+    #[test]
+    fn test_is_network_path_detection() {
+        assert!(db::is_network_path(Path::new(r"\\NAS\Share\LineageGraph")));
+        assert!(db::is_network_path(Path::new("//nas/share/data")));
+        assert!(db::is_network_path(Path::new(r"\\?\UNC\Server\Share\Data")));
+        assert!(!db::is_network_path(Path::new(r"C:\Users\Test\AppData\Local\LineageGraph")));
+        assert!(!db::is_network_path(Path::new(r"\\?\C:\Users\Test\Data")));
+    }
+
+    #[test]
+    fn test_change_storage_directory_move_copy_switch_and_reset() {
+        let base_temp = std::env::temp_dir().join(format!(
+            "test_lg_storage_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let default_dir = base_temp.join("default_app");
+        let custom_dir_1 = base_temp.join("custom_1");
+        let custom_dir_2 = base_temp.join("custom_2");
+        let empty_dir = base_temp.join("empty_target");
+
+        fs::create_dir_all(&default_dir).unwrap();
+
+        let db_path = default_dir.join("baum_test.db");
+        let initial_conn = db::init_database(&db_path).unwrap();
+        initial_conn
+            .execute(
+                "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Max', 'Mustermann', 'M', '{}')",
+                [],
+            )
+            .unwrap();
+
+        let app_dir_mutex = Mutex::new(default_dir.clone());
+        let conn_mutex = Mutex::new(initial_conn);
+        let active_tree_mutex = Mutex::new("baum_test".to_string());
+        let warning_mutex = Mutex::new(None);
+
+        // 1. Move from default_dir to custom_dir_1
+        let info1 = change_storage_directory_internal(
+            &default_dir,
+            &app_dir_mutex,
+            &conn_mutex,
+            &active_tree_mutex,
+            &warning_mutex,
+            Some(custom_dir_1.to_string_lossy().to_string()),
+            "move",
+            false,
+        )
+        .unwrap();
+
+        assert!(info1.is_custom);
+        assert_eq!(info1.active_tree, "baum_test");
+        assert_eq!(info1.trees, vec!["baum_test".to_string()]);
+        assert!(!default_dir.join("baum_test.db").exists());
+        assert!(custom_dir_1.join("baum_test.db").exists());
+        assert!(default_dir.join("storage_config.json").exists());
+
+        let cfg1 = load_storage_config(&default_dir);
+        assert_eq!(
+            cfg1.custom_data_dir.as_deref(),
+            Some(custom_dir_1.to_string_lossy().as_ref())
+        );
+
+        {
+            let conn_guard = conn_mutex.lock().unwrap();
+            let count: i64 = conn_guard
+                .query_row("SELECT count(*) FROM individuals WHERE id = 'I1'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+
+        // 2. Copy from custom_dir_1 to custom_dir_2
+        let info2 = change_storage_directory_internal(
+            &default_dir,
+            &app_dir_mutex,
+            &conn_mutex,
+            &active_tree_mutex,
+            &warning_mutex,
+            Some(custom_dir_2.to_string_lossy().to_string()),
+            "copy",
+            false,
+        )
+        .unwrap();
+
+        assert!(info2.is_custom);
+        assert!(custom_dir_1.join("baum_test.db").exists());
+        assert!(custom_dir_2.join("baum_test.db").exists());
+        assert_eq!(info2.trees, vec!["baum_test".to_string()]);
+
+        // Verify source DB was checkpointed to rollback mode (header bytes 18..20 == [1, 1]) before transfer
+        let header_bytes = fs::read(custom_dir_1.join("baum_test.db")).unwrap();
+        assert!(header_bytes.len() >= 20);
+        assert_eq!(header_bytes[18], 1);
+        assert_eq!(header_bytes[19], 1);
+        assert!(!custom_dir_1.join("baum_test.db-wal").exists());
+        assert!(!custom_dir_1.join("baum_test.db-shm").exists());
+
+        // 3. Switch to empty_dir without copying/moving
+        let info3 = change_storage_directory_internal(
+            &default_dir,
+            &app_dir_mutex,
+            &conn_mutex,
+            &active_tree_mutex,
+            &warning_mutex,
+            Some(empty_dir.to_string_lossy().to_string()),
+            "switch",
+            false,
+        )
+        .unwrap();
+
+        assert!(info3.is_custom);
+        assert!(info3.trees.is_empty());
+        assert_eq!(info3.active_tree, "");
+        assert!(custom_dir_2.join("baum_test.db").exists());
+
+        // 4. Switch back to custom_dir_2 and then reset to default_dir with move
+        change_storage_directory_internal(
+            &default_dir,
+            &app_dir_mutex,
+            &conn_mutex,
+            &active_tree_mutex,
+            &warning_mutex,
+            Some(custom_dir_2.to_string_lossy().to_string()),
+            "switch",
+            false,
+        )
+        .unwrap();
+
+        let info_reset = change_storage_directory_internal(
+            &default_dir,
+            &app_dir_mutex,
+            &conn_mutex,
+            &active_tree_mutex,
+            &warning_mutex,
+            None,
+            "move",
+            false,
+        )
+        .unwrap();
+
+        assert!(!info_reset.is_custom);
+        assert_eq!(info_reset.configured_custom_dir, None);
+        assert_eq!(info_reset.active_tree, "baum_test");
+        assert!(default_dir.join("baum_test.db").exists());
+        assert!(!custom_dir_2.join("baum_test.db").exists());
+
+        {
+            let conn_guard = conn_mutex.lock().unwrap();
+            let count: i64 = conn_guard
+                .query_row("SELECT count(*) FROM individuals WHERE id = 'I1'", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(count, 1);
+        }
+
+        // Release DB lock before cleanup
+        *conn_mutex.lock().unwrap() = db::init_in_memory_database().unwrap();
+        let _ = fs::remove_dir_all(&base_temp);
+    }
+
+    #[test]
+    fn test_parallel_connections_immediate_tx_and_design_conflict_detection() {
+        let base_temp = std::env::temp_dir().join(format!(
+            "test_lg_parallel_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&base_temp).unwrap();
+        let db_path = base_temp.join("parallel.db");
+
+        let mut conn_a = db::init_database(&db_path).unwrap();
+        let mut conn_b = db::init_database(&db_path).unwrap();
+
+        {
+            let tx = db::begin_write_tx(&mut conn_a).unwrap();
+            tx.execute(
+                "INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Max', 'Mustermann', 'M', '{}')",
+                [],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let count_b: i64 = conn_b
+            .query_row("SELECT count(*) FROM individuals WHERE id = 'I1'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count_b, 1);
+
+        let (fp1, _) = compute_db_sync_fingerprints(&conn_a).unwrap();
+        {
+            let tx = db::begin_write_tx(&mut conn_b).unwrap();
+            tx.execute(
+                "UPDATE individuals SET surname = 'Froning' WHERE id = 'I1'",
+                [],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let (fp2, _) = compute_db_sync_fingerprints(&conn_a).unwrap();
+        assert_ne!(fp1, fp2);
+
+        let initial_doc = design_repo::DesignDocumentDto {
+            id: String::new(),
+            name: "Parallel Stammtafel".to_string(),
+            root_person_id: "I1".to_string(),
+            document_kind: "master".to_string(),
+            growth_direction: "bottom_up".to_string(),
+            lineage_policy: "patrilinear".to_string(),
+            routing_style: "orthogonal_bus".to_string(),
+            enable_line_bridges: true,
+            card_density_profile: "standard".to_string(),
+            card_config_json: "{}".to_string(),
+            bg_asset_id: None,
+            bg_config_json: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+            person_rules: Vec::new(),
+            group_rules: Vec::new(),
+            subtree_mounts: Vec::new(),
+            edge_waypoints: Vec::new(),
+        };
+
+        let summary_a = design_repo::save_design_document_checked(
+            &mut conn_a,
+            initial_doc.clone(),
+            false,
+            None,
+            false,
+        )
+        .unwrap();
+
+        let (_, ts_map_b) = compute_db_sync_fingerprints(&conn_b).unwrap();
+        assert_eq!(
+            ts_map_b.get(&summary_a.id).map(String::as_str),
+            Some(summary_a.updated_at.as_str())
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let mut doc_from_b = initial_doc.clone();
+        doc_from_b.id = summary_a.id.clone();
+        doc_from_b.name = "Parallel Stammtafel B".to_string();
+        let summary_b = design_repo::save_design_document_checked(
+            &mut conn_b,
+            doc_from_b,
+            false,
+            Some(&summary_a.updated_at),
+            false,
+        )
+        .unwrap();
+        assert_ne!(summary_b.updated_at, summary_a.updated_at);
+
+        let mut stale_doc_from_a = initial_doc;
+        stale_doc_from_a.id = summary_a.id.clone();
+        stale_doc_from_a.name = "Parallel Stammtafel A Konflikt".to_string();
+        let conflict_res = design_repo::save_design_document_checked(
+            &mut conn_a,
+            stale_doc_from_a.clone(),
+            false,
+            Some(&summary_a.updated_at),
+            false,
+        );
+        assert!(conflict_res.is_err());
+        assert!(
+            conflict_res
+                .unwrap_err()
+                .starts_with("DESIGN_CONFLICT:")
+        );
+
+        let forced_res = design_repo::save_design_document_checked(
+            &mut conn_a,
+            stale_doc_from_a,
+            false,
+            Some(&summary_a.updated_at),
+            true,
+        )
+        .unwrap();
+        assert_eq!(forced_res.name, "Parallel Stammtafel A Konflikt");
+
+        drop(conn_a);
+        drop(conn_b);
+        let _ = fs::remove_dir_all(&base_temp);
+    }
+
+    #[test]
+    fn test_peer_session_heartbeat_and_cleanup() {
+        let base_temp = std::env::temp_dir().join(format!(
+            "test_lg_peers_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&base_temp).unwrap();
+
+        let peers_for_a_initial = update_and_read_peer_sessions(
+            &base_temp,
+            "inst_a",
+            "PC-A",
+            "baum_x",
+            true,
+            None,
+            None,
+            1_000_000,
+        );
+        assert!(peers_for_a_initial.is_empty());
+
+        let peers_for_b = update_and_read_peer_sessions(
+            &base_temp,
+            "inst_b",
+            "PC-B",
+            "baum_x",
+            false,
+            Some("doc_1".to_string()),
+            Some("Design 1".to_string()),
+            1_005_000,
+        );
+        assert_eq!(peers_for_b.len(), 1);
+        assert_eq!(peers_for_b[0].instance_id, "inst_a");
+        assert_eq!(peers_for_b[0].hostname, "PC-A");
+        assert!(peers_for_b[0].is_editing);
+
+        let peers_for_a_after_b = update_and_read_peer_sessions(
+            &base_temp,
+            "inst_a",
+            "PC-A",
+            "baum_x",
+            true,
+            None,
+            None,
+            1_006_000,
+        );
+        assert_eq!(peers_for_a_after_b.len(), 1);
+        assert_eq!(peers_for_a_after_b[0].instance_id, "inst_b");
+        assert_eq!(
+            peers_for_a_after_b[0].active_design_doc_name.as_deref(),
+            Some("Design 1")
+        );
+
+        remove_peer_session_file(&base_temp, "inst_a");
+        assert!(!peer_sessions_dir(&base_temp).join("inst_a.json").exists());
+
+        let peers_after_remove = update_and_read_peer_sessions(
+            &base_temp,
+            "inst_b",
+            "PC-B",
+            "baum_x",
+            false,
+            None,
+            None,
+            1_010_000,
+        );
+        assert!(peers_after_remove.is_empty());
+
+        let _ = fs::remove_dir_all(&base_temp);
+    }
+
+    #[test]
+    fn test_auto_id_collision_recovery_and_active_peer_move_protection() {
+        let base_temp = std::env::temp_dir().join(format!(
+            "test_lg_conflicts_{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&base_temp).unwrap();
+        let db_path = base_temp.join("conflicts.db");
+
+        let mut conn_a = db::init_database(&db_path).unwrap();
+        let mut conn_b = db::init_database(&db_path).unwrap();
+
+        // Beide sehen initial I1 als nächste freie ID; A legt I1 an
+        let id_a = add_person_internal(
+            &mut conn_a,
+            None,
+            None,
+            "Anna".to_string(),
+            "Froning".to_string(),
+            "F".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some("I1".to_string()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(id_a, "I1");
+
+        // Manuelles Anlegen mit bereits belegter ID (is_auto_id = false) muss fehlschlagen
+        let manual_dup = add_person_internal(
+            &mut conn_b,
+            None,
+            None,
+            "Bernd".to_string(),
+            "Froning".to_string(),
+            "M".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some("I1".to_string()),
+            false,
+        );
+        assert!(manual_dup.is_err());
+
+        // Auto-ID-Anlage (is_auto_id = true) weicht transaktional automatisch auf I2 aus
+        let id_b = add_person_internal(
+            &mut conn_b,
+            None,
+            None,
+            "Bernd".to_string(),
+            "Froning".to_string(),
+            "M".to_string(),
+            None,
+            None,
+            None,
+            None,
+            Some("I1".to_string()),
+            true,
+        )
+        .unwrap();
+        assert_eq!(id_b, "I2");
+
+        // update_persons_batch_internal muss mit klarer Meldung abbrechen, wenn original_id gelöscht wurde
+        conn_a
+            .execute("DELETE FROM individuals WHERE id = 'I2'", [])
+            .unwrap();
+        let stale_update = vec![PersonUpdate {
+            original_id: "I2".to_string(),
+            person: Person {
+                id: "I2".to_string(),
+                given_name: Some("Bernd-Neu".to_string()),
+                surname: Some("Froning".to_string()),
+                sex: Some("M".to_string()),
+                birth_date: None,
+                birth_place: None,
+                death_date: None,
+                death_place: None,
+                father_id: None,
+                mother_id: None,
+                proband_data: HashMap::new(),
+                gedcom_extra: serde_json::json!({}),
+                spouses: Vec::new(),
+                parent_ids: Vec::new(),
+                children_ids: Vec::new(),
+            },
+        }];
+        let update_res = update_persons_batch_internal(&mut conn_b, stale_update);
+        assert!(update_res.is_err());
+        assert!(update_res.unwrap_err().contains("Speicherkonflikt"));
+
+        // find_active_peer_hostnames erkennt Peers auf demselben Baum bzw. im Speicherverzeichnis
+        update_and_read_peer_sessions(
+            &base_temp,
+            "inst_peer",
+            "BUERO-PC",
+            "conflicts",
+            false,
+            None,
+            None,
+            1_000_000,
+        );
+        assert_eq!(
+            find_active_peer_hostnames(&base_temp, "inst_self", Some("conflicts"), 1_005_000),
+            vec!["BUERO-PC".to_string()]
+        );
+        assert!(
+            find_active_peer_hostnames(&base_temp, "inst_self", Some("other_tree"), 1_005_000)
+                .is_empty()
+        );
+        assert_eq!(
+            find_active_peer_hostnames(&base_temp, "inst_self", None, 1_005_000),
+            vec!["BUERO-PC".to_string()]
+        );
+
+        // GEDCOM-Merge muss GEDCOM_MERGE_CONFLICT liefern, wenn DB-Wert veraltet ist oder Person gelöscht wurde
+        let mut stale_choices = HashMap::new();
+        stale_choices.insert("surname".to_string(), "import".to_string());
+        let mut stale_expected = HashMap::new();
+        stale_expected.insert("surname".to_string(), Some("AltName".to_string()));
+        let staged_dummy = gedcom_import_merge::StagedGedcomData {
+            individuals: vec![gedcom_import_merge::StagedPerson {
+                xref: "I1".to_string(),
+                given_name: Some("Anna".to_string()),
+                surname: Some("ImportName".to_string()),
+                sex: "F".to_string(),
+                birth_date: None,
+                birth_place: None,
+                death_date: None,
+                death_place: None,
+                uid: None,
+                json_data: serde_json::json!({}),
+                famc: None,
+                fams: Vec::new(),
+            }],
+            families: Vec::new(),
+        };
+        let merge_conflict_res = gedcom_import_merge::execute_gedcom_merge(
+            &mut conn_b,
+            &staged_dummy,
+            &gedcom_import_merge::GedcomMergeResolution {
+                file_path: String::new(),
+                mappings: vec![gedcom_import_merge::PersonResolution {
+                    staged_xref: "I1".to_string(),
+                    target_db_id: "I1".to_string(),
+                    field_choices: stale_choices,
+                    extra_action: "db".to_string(),
+                    expected_db_values: stale_expected,
+                }],
+                new_person_xrefs: Vec::new(),
+                ignored_xrefs: Vec::new(),
+            },
+        );
+        assert!(merge_conflict_res.is_err());
+        assert!(merge_conflict_res.unwrap_err().contains("GEDCOM_MERGE_CONFLICT"));
+
+        drop(conn_a);
+        drop(conn_b);
+        let _ = fs::remove_dir_all(&base_temp);
     }
 }

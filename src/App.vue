@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import LanguageSelector from './components/common/LanguageSelector.vue';
+import { formatDisplayDate } from './composables/useDateFormat';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import DesignTree from './components/DesignTree.vue';
@@ -41,12 +42,50 @@ const {
   dismissConfirmModal,
 } = useAppUpdater();
 
-const currentView = ref<'table' | 'tree' | 'design' | 'export' | 'research' | 'stats'>('table');
+type AppView = 'table' | 'tree' | 'design' | 'export' | 'research' | 'stats';
+const VALID_STARTUP_VIEWS: ReadonlySet<string> = new Set(['table', 'tree', 'design', 'research']);
+
+function resolveInitialView(): AppView {
+  try {
+    const pref = localStorage.getItem('lineagegraph_startup_view') || 'last';
+    if (pref === 'last') {
+      const last = localStorage.getItem('lineagegraph_last_view') || 'table';
+      return (VALID_STARTUP_VIEWS.has(last) ? last : 'table') as AppView;
+    }
+    return (VALID_STARTUP_VIEWS.has(pref) ? pref : 'table') as AppView;
+  } catch {
+    return 'table';
+  }
+}
+
+const currentView = ref<AppView>(resolveInitialView());
+
+watch(currentView, newView => {
+  if (VALID_STARTUP_VIEWS.has(newView)) {
+    try {
+      localStorage.setItem('lineagegraph_last_view', newView);
+    } catch {}
+  }
+});
 const currentTreeRootId = ref<string | null>(null);
 const freeInitialRootId = ref<string | null>(null);
 const showSettings = ref<boolean>(false);
 const activeSettingsTab = ref<SettingsTab>('general');
 const isDetailsOpen = ref<boolean>(true);
+const isNavCollapsed = ref<boolean>((() => {
+  try {
+    return localStorage.getItem('lineagegraph_nav_collapsed') === 'true';
+  } catch {
+    return false;
+  }
+})());
+
+function toggleNavCollapsed() {
+  isNavCollapsed.value = !isNavCollapsed.value;
+  try {
+    localStorage.setItem('lineagegraph_nav_collapsed', String(isNavCollapsed.value));
+  } catch {}
+}
 
 const expandedNodes = ref<Map<string, boolean>>(new Map());
 const expandedSideNodes = ref<Map<string, { spouses: boolean; parents: boolean }>>(new Map());
@@ -73,6 +112,7 @@ const {
   rootSearchQuery,
   activeProbandTab,
   isEditing,
+  hasExternalEditConflict,
   saveErrorAlert,
   statusMessage,
   isLoading,
@@ -138,6 +178,7 @@ const {
   deletePersonsBatch,
   mergePersons,
   loadPersons,
+  syncFromExternalChanges,
 } = usePersons(t, {
   onIdRenamed: (oldId, newId) => {
     if (currentTreeRootId.value === oldId) {
@@ -212,7 +253,7 @@ function onProbandSelectChange(val: string) {
 
 async function onQuickTreeSelectChange(val: string) {
   if (val === '__manage__') {
-    activeSettingsTab.value = 'general';
+    activeSettingsTab.value = 'trees';
     showSettings.value = true;
     await loadRootAncestors();
     return;
@@ -231,6 +272,11 @@ async function openUserGuide() {
       window.open('https://github.com/dryanwhitney-hub/LineageGraph/blob/main/USER_GUIDE.md', '_blank');
     }
   }
+}
+
+function openAboutSettings() {
+  activeSettingsTab.value = 'about';
+  showSettings.value = true;
 }
 
 const {
@@ -456,9 +502,203 @@ watch(selectedPerson, newVal => {
   }
 });
 
-onMounted(() => {
-  initTrees();
+interface PeerSessionDto {
+  instance_id: string;
+  hostname: string;
+  active_tree: string;
+  is_editing: boolean;
+  active_design_doc_id: string | null;
+  active_design_doc_name: string | null;
+  last_seen_ms: number;
+}
+
+interface StorageSyncStateDto {
+  active_tree: string;
+  trees: string[];
+  is_network_path: boolean;
+  genealogy_fingerprint: string;
+  design_doc_timestamps: Record<string, string>;
+  active_peers: PeerSessionDto[];
+}
+
+const activePeers = ref<PeerSessionDto[]>([]);
+const isNetworkStorage = ref(false);
+let lastSyncedTree = '';
+let lastGenealogyFingerprint = '';
+let isSyncPolling = false;
+let pendingBaselineReset = false;
+let isApplyingExternalSync = false;
+let syncTimerId: number | null = null;
+
+const peersOnSameTree = computed(() =>
+  activePeers.value.filter(p => !activeTree.value || p.active_tree === activeTree.value)
+);
+
+const peerTooltipText = computed(() => {
+  if (peersOnSameTree.value.length === 0) return '';
+  const lines = peersOnSameTree.value.map(p => {
+    const activity = p.is_editing
+      ? t('sync_peer_editing')
+      : p.active_design_doc_name
+        ? t('sync_peer_designing', { name: p.active_design_doc_name })
+        : t('sync_peer_viewing');
+    return `• ${p.hostname}: ${activity}`;
+  });
+  return `${t('sync_peers_tooltip_title')}\n${lines.join('\n')}`;
+});
+
+async function runSyncPoll(resetBaseline = false) {
+  if (isSyncPolling) {
+    if (resetBaseline) pendingBaselineReset = true;
+    return;
+  }
+  isSyncPolling = true;
+  try {
+    const activeDesignDocId =
+      currentView.value === 'design' ? designTreeRef.value?.activeDocumentId || null : null;
+    const activeDesignDocName =
+      currentView.value === 'design' ? designTreeRef.value?.activeDocumentName || null : null;
+
+    let peerDisplayName: string | null = null;
+    try {
+      const savedName = localStorage.getItem('lineagegraph_peer_display_name');
+      if (savedName && savedName.trim()) {
+        peerDisplayName = savedName.trim();
+      }
+    } catch {}
+
+    const state = await invoke<StorageSyncStateDto>('poll_storage_sync_state', {
+      isEditing: isEditing.value,
+      activeDesignDocId,
+      activeDesignDocName,
+      peerDisplayName,
+    });
+
+    activePeers.value = state.active_peers || [];
+    isNetworkStorage.value = Boolean(state.is_network_path);
+
+    if (
+      state.trees &&
+      (state.trees.length !== trees.value.length ||
+        state.trees.some((tr, i) => trees.value[i] !== tr))
+    ) {
+      const hadNoActiveTree = !activeTree.value;
+      trees.value = state.trees;
+      if (hadNoActiveTree && state.trees.length > 0) {
+        await initTrees();
+        lastSyncedTree = state.active_tree;
+        lastGenealogyFingerprint = state.genealogy_fingerprint;
+        return;
+      }
+    }
+
+    if (resetBaseline || pendingBaselineReset || state.active_tree !== lastSyncedTree) {
+      lastSyncedTree = state.active_tree;
+      lastGenealogyFingerprint = state.genealogy_fingerprint;
+      pendingBaselineReset = false;
+    } else if (
+      state.genealogy_fingerprint &&
+      state.genealogy_fingerprint !== lastGenealogyFingerprint
+    ) {
+      lastGenealogyFingerprint = state.genealogy_fingerprint;
+      isApplyingExternalSync = true;
+      try {
+        await syncFromExternalChanges();
+        if (currentView.value === 'research') {
+          await loadResearchTasks();
+          await loadIsolatedBranches();
+        }
+      } finally {
+        isApplyingExternalSync = false;
+      }
+    }
+
+    if (currentView.value === 'design' && designTreeRef.value?.handleExternalDesignSync) {
+      await designTreeRef.value.handleExternalDesignSync(state.design_doc_timestamps || {});
+    }
+  } catch (err) {
+    console.warn('Sync-Polling fehlgeschlagen:', err);
+  } finally {
+    isSyncPolling = false;
+  }
+}
+
+function onWindowFocus() {
+  runSyncPoll(false);
+}
+
+function onBeforeUnload() {
+  invoke('close_peer_session').catch(() => {});
+}
+
+async function handleUpdateResearchTask(
+  task: Parameters<typeof updateResearchTask>[0],
+  newStatus: Parameters<typeof updateResearchTask>[1],
+  newNotes?: Parameters<typeof updateResearchTask>[2]
+) {
+  await updateResearchTask(task, newStatus, newNotes);
+  await runSyncPoll(true);
+}
+
+watch(persons, nextPersons => {
+  if (showMergePickerModal.value && mergePickerInitiatorPerson.value) {
+    const updated = nextPersons.find(p => p.id === mergePickerInitiatorPerson.value!.id);
+    if (updated) {
+      mergePickerInitiatorPerson.value = updated;
+    } else {
+      showMergePickerModal.value = false;
+      mergePickerInitiatorPerson.value = null;
+    }
+  }
+  if (showMergeModal.value) {
+    const nextTarget = mergeTargetPerson.value
+      ? nextPersons.find(p => p.id === mergeTargetPerson.value!.id) || null
+      : null;
+    const nextSource = mergeSourcePerson.value
+      ? nextPersons.find(p => p.id === mergeSourcePerson.value!.id) || null
+      : null;
+    if (!nextTarget || !nextSource) {
+      showMergeModal.value = false;
+    }
+    mergeTargetPerson.value = nextTarget;
+    mergeSourcePerson.value = nextSource;
+  }
+});
+
+watch(
+  [activeTree, persons, rootAncestors],
+  () => {
+    if (!isApplyingExternalSync) {
+      runSyncPoll(true);
+    }
+  }
+);
+
+watch([isEditing, currentView], () => {
+  runSyncPoll(false);
+});
+
+onMounted(async () => {
+  await initTrees();
+  await runSyncPoll(true);
   checkForUpdates(false);
+  syncTimerId = window.setInterval(() => {
+    if (!document.hidden) {
+      runSyncPoll(false);
+    }
+  }, 4000);
+  window.addEventListener('focus', onWindowFocus);
+  window.addEventListener('beforeunload', onBeforeUnload);
+});
+
+onUnmounted(() => {
+  if (syncTimerId !== null) {
+    window.clearInterval(syncTimerId);
+    syncTimerId = null;
+  }
+  window.removeEventListener('focus', onWindowFocus);
+  window.removeEventListener('beforeunload', onBeforeUnload);
+  invoke('close_peer_session').catch(() => {});
 });
 </script>
 
@@ -467,10 +707,16 @@ onMounted(() => {
     <!-- Zeile 1: Globale Navigations- & Projekt-Leiste -->
     <header class="top-navbar">
       <div class="brand-and-tree">
-        <div class="brand-logo">
+        <a
+          href="#about"
+          class="brand-logo"
+          :title="t('settings_tab_about')"
+          :aria-label="t('settings_tab_about')"
+          @click.prevent="openAboutSettings"
+        >
           <span class="brand-icon">🌳</span>
           <h1 class="brand-title">{{ t('title') }}</h1>
-        </div>
+        </a>
 
         <div class="quick-tree-wrapper" :title="t('quick_tree_switch_tooltip')">
           <span class="folder-icon">📁</span>
@@ -483,6 +729,16 @@ onMounted(() => {
             <option v-for="tr in trees" :key="tr" :value="tr">{{ tr }}</option>
             <option value="__manage__">{{ t('manage_trees_option') }}</option>
           </select>
+        </div>
+
+        <div
+          v-if="peersOnSameTree.length > 0"
+          class="peer-presence-badge"
+          :class="{ 'has-editor': peersOnSameTree.some(p => p.is_editing || p.active_design_doc_id), 'is-network': isNetworkStorage }"
+          :title="peerTooltipText"
+        >
+          <span class="peer-dot"></span>
+          <span>{{ t('sync_peers_badge_label', { count: peersOnSameTree.length }) }}</span>
         </div>
       </div>
 
@@ -499,54 +755,76 @@ onMounted(() => {
     </header>
 
     <div class="app-body">
-      <aside class="nav-rail" :aria-label="t('view_navigation_aria')">
+      <aside
+        class="nav-rail"
+        :class="{ collapsed: isNavCollapsed }"
+        :aria-label="t('view_navigation_aria')"
+      >
         <button
           @click="currentView = 'table'"
           :class="{ active: currentView === 'table' }"
           :title="t('view_table')"
+          :aria-label="t('view_table')"
         >
           <span class="rail-icon">📋</span>
-          <span class="rail-label">{{ t('view_table') }}</span>
+          <span v-if="!isNavCollapsed" class="rail-label">{{ t('view_table') }}</span>
         </button>
         <button
           @click="currentView = 'tree'"
           :class="{ active: currentView === 'tree' }"
           :title="t('view_tree')"
+          :aria-label="t('view_tree')"
         >
           <span class="rail-icon">🌳</span>
-          <span class="rail-label">{{ t('view_tree') }}</span>
+          <span v-if="!isNavCollapsed" class="rail-label">{{ t('view_tree') }}</span>
         </button>
         <button
           @click="currentView = 'design'"
           :class="{ active: currentView === 'design' }"
           :title="t('view_design')"
+          :aria-label="t('view_design')"
         >
           <span class="rail-icon">📐</span>
-          <span class="rail-label">{{ t('view_design') }}</span>
+          <span v-if="!isNavCollapsed" class="rail-label">{{ t('view_design') }}</span>
         </button>
         <button
           @click="currentView = 'export'"
           :class="{ active: currentView === 'export' }"
           :title="t('view_export')"
+          :aria-label="t('view_export')"
         >
           <span class="rail-icon">📦</span>
-          <span class="rail-label">{{ t('view_export') }}</span>
+          <span v-if="!isNavCollapsed" class="rail-label">{{ t('view_export') }}</span>
         </button>
         <button
           @click="currentView = 'research'"
           :class="{ active: currentView === 'research' }"
           :title="t('view_research')"
+          :aria-label="t('view_research')"
         >
           <span class="rail-icon">🔬</span>
-          <span class="rail-label">{{ t('view_research') }}</span>
+          <span v-if="!isNavCollapsed" class="rail-label">{{ t('view_research') }}</span>
         </button>
         <button
           @click="currentView = 'stats'"
           :class="{ active: currentView === 'stats' }"
           :title="t('view_stats')"
+          :aria-label="t('view_stats')"
         >
           <span class="rail-icon">📊</span>
-          <span class="rail-label">{{ t('view_stats') }}</span>
+          <span v-if="!isNavCollapsed" class="rail-label">{{ t('view_stats') }}</span>
+        </button>
+
+        <button
+          type="button"
+          class="nav-rail-toggle"
+          @click="toggleNavCollapsed"
+          :title="isNavCollapsed ? t('nav_expand') : t('nav_collapse')"
+          :aria-label="isNavCollapsed ? t('nav_expand') : t('nav_collapse')"
+          :aria-expanded="!isNavCollapsed"
+        >
+          <span class="rail-icon">{{ isNavCollapsed ? '»' : '«' }}</span>
+          <span v-if="!isNavCollapsed" class="rail-label">{{ t('nav_collapse') }}</span>
         </button>
       </aside>
 
@@ -597,6 +875,15 @@ onMounted(() => {
       </div>
     </div>
 
+    <div v-if="isEditing && hasExternalEditConflict" class="edit-conflict-banner">
+      <span>⚠️ {{ t('sync_edit_conflict_banner') }}</span>
+      <div class="edit-conflict-actions">
+        <button type="button" class="ecb-btn" @click="toggleEditMode">
+          {{ t('sync_discard_local_edits') }}
+        </button>
+      </div>
+    </div>
+
     <!-- Modal: Person anlegen -->
     <AddPersonModal
       :visible="showAddModal"
@@ -633,6 +920,8 @@ onMounted(() => {
       @add-root-ancestor="addRootAncestor"
       @remove-root-ancestor="removeRootAncestor"
       @calculate-codes="calculateCodes"
+      @storage-changed="async () => { await initTrees(); await runSyncPoll(true); }"
+      @backup-restored="async () => { await handleTreeSwitch(); await runSyncPoll(true); }"
     />
 
     <!-- Modal: Stammbaum entfernen -->
@@ -725,9 +1014,9 @@ onMounted(() => {
               <span class="cand-id">({{ cand.id }})</span>
             </div>
             <div class="cand-meta">
-              <span v-if="cand.birth_date">⭐ {{ cand.birth_date }}</span>
+              <span v-if="cand.birth_date">⭐ {{ formatDisplayDate(cand.birth_date) }}</span>
               <span v-if="cand.birth_place">({{ cand.birth_place }})</span>
-              <span v-if="cand.death_date">✝ {{ cand.death_date }}</span>
+              <span v-if="cand.death_date">✝ {{ formatDisplayDate(cand.death_date) }}</span>
             </div>
           </div>
           <div v-if="mergePickerCandidates.length === 0" class="picker-no-results">
@@ -806,6 +1095,7 @@ onMounted(() => {
       <DesignTree
         v-if="currentView === 'design'"
         ref="designTreeRef"
+        :active-tree="activeTree"
         :persons="persons"
         :root-ancestors="rootAncestors"
         :active-proband-id="activeProbandTab"
@@ -821,7 +1111,7 @@ onMounted(() => {
         @select="p => { selectedPerson = p; if (!p) activePartnerPath = []; }"
         @clear-selection="() => { selectedPerson = null; activePartnerPath = []; }"
         @select-proband="pid => setProbandTab(pid)"
-        @open-settings="showSettings = true; activeSettingsTab = 'general'; loadRootAncestors()"
+        @open-settings="showSettings = true; activeSettingsTab = 'trees'; loadRootAncestors()"
         @open-details="pid => {
           const p = persons.find(x => x.id === pid);
           if (p) {
@@ -879,7 +1169,7 @@ onMounted(() => {
         }"
         @refresh="loadResearchTasks"
         @refresh-isolated="loadIsolatedBranches"
-        @update-task="updateResearchTask"
+        @update-task="handleUpdateResearchTask"
         @navigate-tree="onResearchNavigateTree"
         @navigate-table="onResearchNavigateTable"
         @open-details="onResearchOpenDetails"
@@ -1002,6 +1292,21 @@ html, body, #app {
   display: flex;
   align-items: center;
   gap: 0.45rem;
+  text-decoration: none;
+  padding: 0.2rem 0.45rem;
+  margin-left: -0.45rem;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.brand-logo:hover {
+  background-color: rgba(255, 255, 255, 0.08);
+}
+
+.brand-logo:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
 }
 
 .brand-icon {
@@ -1060,7 +1365,8 @@ html, body, #app {
 }
 
 .nav-rail {
-  width: 70px;
+  width: 224px;
+  box-sizing: border-box;
   flex-shrink: 0;
   background: #0f172a;
   border-right: 1px solid #1e293b;
@@ -1068,39 +1374,55 @@ html, body, #app {
   flex-direction: column;
   align-items: stretch;
   gap: 0.35rem;
-  padding: 0.65rem 0.4rem;
+  padding: 0.65rem 0.5rem;
   overflow-y: auto;
+  overflow-x: hidden;
+  transition: width 0.18s ease;
+}
+
+.nav-rail.collapsed {
+  width: 60px;
+  padding: 0.65rem 0.4rem;
 }
 
 .nav-rail button {
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
-  justify-content: center;
-  gap: 0.22rem;
+  justify-content: flex-start;
+  gap: 0.65rem;
   background: transparent;
   color: #94a3b8;
   border: none;
-  padding: 0.55rem 0.25rem;
+  padding: 0.6rem 0.7rem;
   border-radius: 8px;
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
+.nav-rail.collapsed button {
+  justify-content: center;
+  padding: 0.6rem 0;
+}
+
 .nav-rail button .rail-icon {
   font-size: 1.15rem;
   line-height: 1;
+  flex-shrink: 0;
 }
 
 .nav-rail button .rail-label {
-  font-size: 0.65rem;
+  flex: 1;
+  min-width: 0;
+  font-size: 0.83rem;
   font-weight: 600;
-  line-height: 1.1;
-  text-align: center;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.25;
+  text-align: left;
+  white-space: normal;
+  overflow-wrap: break-word;
 }
 
 .nav-rail button:hover:not(.active) {
@@ -1113,6 +1435,36 @@ html, body, #app {
   color: #ffffff;
   font-weight: 700;
   box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35);
+}
+
+.nav-rail .nav-rail-toggle {
+  margin-top: auto;
+  border-top: 1px solid #1e293b;
+  border-radius: 6px;
+  padding-top: 0.65rem;
+  color: #64748b;
+  font-size: 0.8rem;
+}
+
+.nav-rail .nav-rail-toggle .rail-label {
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+@media (max-width: 768px) {
+  .nav-rail {
+    width: 60px;
+    padding: 0.65rem 0.4rem;
+  }
+
+  .nav-rail button {
+    justify-content: center;
+    padding: 0.6rem 0;
+  }
+
+  .nav-rail button .rail-label {
+    display: none;
+  }
 }
 
 .app-main-column {
@@ -1451,5 +1803,69 @@ html, body, #app {
 }
 .btn-picker-cancel:hover {
   background: #f1f5f9;
+}
+
+.peer-presence-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(16, 185, 129, 0.45);
+  color: #a7f3d0;
+  font-size: 0.74rem;
+  font-weight: 600;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.peer-presence-badge.has-editor {
+  background: rgba(245, 158, 11, 0.18);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: #fde68a;
+}
+
+.peer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.edit-conflict-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.45rem 1.25rem;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
+  color: #92400e;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.edit-conflict-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.ecb-btn {
+  padding: 0.25rem 0.7rem;
+  border-radius: 6px;
+  border: 1px solid #d97706;
+  background: #ffffff;
+  color: #92400e;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ecb-btn:hover {
+  background: #fef3c7;
 }
 </style>

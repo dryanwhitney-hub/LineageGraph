@@ -196,6 +196,125 @@ export function clonePerson(p: Person): Person {
   };
 }
 
+function isPersonModified(a: Person, b: Person): boolean {
+  return (
+    a.id !== b.id ||
+    a.given_name !== b.given_name ||
+    a.surname !== b.surname ||
+    a.sex !== b.sex ||
+    a.birth_date !== b.birth_date ||
+    a.birth_place !== b.birth_place ||
+    a.death_date !== b.death_date ||
+    a.death_place !== b.death_place ||
+    (a.father_id || null) !== (b.father_id || null) ||
+    (a.mother_id || null) !== (b.mother_id || null) ||
+    JSON.stringify(a.gedcom_extra || {}) !== JSON.stringify(b.gedcom_extra || {})
+  );
+}
+
+function cloneExtraValue<T>(val: T): T {
+  if (val && typeof val === 'object') {
+    return JSON.parse(JSON.stringify(val));
+  }
+  return val;
+}
+
+function mergePersonFieldsThreeWay(
+  baseP: Person,
+  localP: Person,
+  remoteP: Person,
+  drawerFatherId?: string | null,
+  drawerMotherId?: string | null
+): {
+  merged: Person;
+  hasConflict: boolean;
+  updatedFatherId: string | null;
+  updatedMotherId: string | null;
+} {
+  const merged = clonePerson(remoteP);
+  let hasConflict = false;
+
+  const norm = (val: string | null | undefined) =>
+    val === undefined || val === null ? '' : String(val);
+
+  const mergeScalar = (
+    baseVal: string | null | undefined,
+    localVal: string | null | undefined,
+    remoteVal: string | null | undefined
+  ): string | null => {
+    const b = norm(baseVal);
+    const l = norm(localVal);
+    const r = norm(remoteVal);
+    if (l === b) return remoteVal ?? null;
+    if (r === b || l === r) return localVal ?? null;
+    hasConflict = true;
+    return localVal ?? null;
+  };
+
+  merged.id = mergeScalar(baseP.id, localP.id, remoteP.id) || localP.id;
+  merged.given_name = mergeScalar(baseP.given_name, localP.given_name, remoteP.given_name);
+  merged.surname = mergeScalar(baseP.surname, localP.surname, remoteP.surname);
+  merged.sex = mergeScalar(baseP.sex, localP.sex, remoteP.sex);
+  merged.birth_date = mergeScalar(baseP.birth_date, localP.birth_date, remoteP.birth_date);
+  merged.birth_place = mergeScalar(baseP.birth_place, localP.birth_place, remoteP.birth_place);
+  merged.death_date = mergeScalar(baseP.death_date, localP.death_date, remoteP.death_date);
+  merged.death_place = mergeScalar(baseP.death_place, localP.death_place, remoteP.death_place);
+
+  const effectiveLocalFather =
+    drawerFatherId !== undefined && norm(drawerFatherId) !== norm(baseP.father_id)
+      ? drawerFatherId || null
+      : localP.father_id || null;
+  const effectiveLocalMother =
+    drawerMotherId !== undefined && norm(drawerMotherId) !== norm(baseP.mother_id)
+      ? drawerMotherId || null
+      : localP.mother_id || null;
+
+  merged.father_id = mergeScalar(baseP.father_id, effectiveLocalFather, remoteP.father_id);
+  merged.mother_id = mergeScalar(baseP.mother_id, effectiveLocalMother, remoteP.mother_id);
+
+  const baseExtra = baseP.gedcom_extra || {};
+  const localExtra = localP.gedcom_extra || {};
+  const remoteExtra = remoteP.gedcom_extra || {};
+  const mergedExtra: Record<string, any> = {};
+  const allExtraKeys = new Set([
+    ...Object.keys(baseExtra),
+    ...Object.keys(localExtra),
+    ...Object.keys(remoteExtra),
+  ]);
+
+  for (const k of allExtraKeys) {
+    if (k === 'CHAN' || k === '_UID') {
+      if (Object.prototype.hasOwnProperty.call(remoteExtra, k)) {
+        mergedExtra[k] = cloneExtraValue(remoteExtra[k]);
+      }
+      continue;
+    }
+    const bHas = Object.prototype.hasOwnProperty.call(baseExtra, k);
+    const lHas = Object.prototype.hasOwnProperty.call(localExtra, k);
+    const rHas = Object.prototype.hasOwnProperty.call(remoteExtra, k);
+    const bStr = bHas ? JSON.stringify(baseExtra[k]) : '__MISSING__';
+    const lStr = lHas ? JSON.stringify(localExtra[k]) : '__MISSING__';
+    const rStr = rHas ? JSON.stringify(remoteExtra[k]) : '__MISSING__';
+
+    if (lStr === bStr) {
+      if (rHas) mergedExtra[k] = cloneExtraValue(remoteExtra[k]);
+    } else if (rStr === bStr || lStr === rStr) {
+      if (lHas) mergedExtra[k] = cloneExtraValue(localExtra[k]);
+    } else {
+      hasConflict = true;
+      if (lHas) mergedExtra[k] = cloneExtraValue(localExtra[k]);
+    }
+  }
+  merged.gedcom_extra = mergedExtra;
+
+  return {
+    merged,
+    hasConflict,
+    updatedFatherId: merged.father_id || null,
+    updatedMotherId: merged.mother_id || null,
+  };
+}
+
 export function extractYear(val: any): number {
   if (!val) return 0;
   const match = String(val).match(/\d{4}/);
@@ -395,6 +514,7 @@ export function usePersons(
   });
   const rootAncestors = ref<RootAncestorConfig[]>([]);
   const editedPersons = ref<Map<string, Person>>(new Map());
+  const baseEditedPersons = ref<Map<string, Person>>(new Map());
   const selectedPerson = ref<Person | null>(null);
   const personDetails = ref<PersonDetails | null>(null);
 
@@ -411,6 +531,7 @@ export function usePersons(
   const activeProbandTab = ref<string | null>(null);
 
   const isEditing = ref<boolean>(false);
+  const hasExternalEditConflict = ref<boolean>(false);
   const saveErrorAlert = ref<string>('');
   const statusMessage = ref<string>('');
   const isLoading = ref<boolean>(false);
@@ -993,6 +1114,7 @@ export function usePersons(
       persons.value = res;
       syncDynamicColumns(res);
       editedPersons.value = new Map(res.map(p => [p.id, clonePerson(p)]));
+      baseEditedPersons.value = new Map(res.map(p => [p.id, clonePerson(p)]));
       if (selectedPerson.value) {
         const updatedSelected = res.find(p => p.id === selectedPerson.value!.id);
         selectedPerson.value = updatedSelected || null;
@@ -1058,6 +1180,126 @@ export function usePersons(
       personDetails.value = await invoke<PersonDetails>('get_person_details', { personId });
       initEditedSpouses(personDetails.value?.spouses);
     } catch (error) {}
+  }
+
+  async function syncFromExternalChanges() {
+    try {
+      if (!isEditing.value) {
+        await loadPersons();
+        await loadRootAncestors();
+        if (selectedPerson.value) {
+          await loadDetails(selectedPerson.value.id);
+        }
+        return;
+      }
+
+      const prevPersonsMap = new Map(persons.value.map(p => [p.id, p]));
+      const [freshPersons, freshRoots] = await Promise.all([
+        invoke<Person[]>('get_all_persons'),
+        invoke<RootAncestorConfig[]>('get_root_ancestors'),
+      ]);
+      rootAncestors.value = freshRoots;
+
+      const freshMap = new Map(freshPersons.map(p => [p.id, p]));
+      let conflictDetected = false;
+
+      for (const [origId, editedPerson] of Array.from(editedPersons.value.entries())) {
+        const baseOrig = baseEditedPersons.value.get(origId) || prevPersonsMap.get(origId);
+        const freshOrig = freshMap.get(origId);
+        const isSelected = selectedPerson.value?.id === origId;
+
+        if (freshOrig) {
+          if (baseOrig) {
+            const mergeRes = mergePersonFieldsThreeWay(
+              baseOrig,
+              editedPerson,
+              freshOrig,
+              isSelected ? selectedFatherId.value || null : undefined,
+              isSelected ? selectedMotherId.value || null : undefined
+            );
+            editedPersons.value.set(origId, mergeRes.merged);
+            baseEditedPersons.value.set(origId, clonePerson(freshOrig));
+            if (isSelected) {
+              selectedFatherId.value = mergeRes.updatedFatherId || '';
+              selectedMotherId.value = mergeRes.updatedMotherId || '';
+            }
+            if (mergeRes.hasConflict) {
+              conflictDetected = true;
+            }
+          } else {
+            // Lokal nicht veränderte oder neu gesyncte Zeile aktualisieren
+            editedPersons.value.set(origId, clonePerson(freshOrig));
+            baseEditedPersons.value.set(origId, clonePerson(freshOrig));
+          }
+        } else {
+          // Person wurde extern gelöscht, zusammengeführt oder umbenannt
+          const parentEditedInDrawer =
+            isSelected &&
+            baseOrig !== undefined &&
+            ((selectedFatherId.value || null) !== (baseOrig.father_id || null) ||
+              (selectedMotherId.value || null) !== (baseOrig.mother_id || null));
+          const isRowDirty = baseOrig
+            ? isPersonModified(editedPerson, baseOrig) || parentEditedInDrawer
+            : true;
+          if (isRowDirty) {
+            conflictDetected = true;
+          } else {
+            editedPersons.value.delete(origId);
+            baseEditedPersons.value.delete(origId);
+          }
+        }
+      }
+
+      for (const freshP of freshPersons) {
+        if (!editedPersons.value.has(freshP.id)) {
+          editedPersons.value.set(freshP.id, clonePerson(freshP));
+        }
+        if (!baseEditedPersons.value.has(freshP.id)) {
+          baseEditedPersons.value.set(freshP.id, clonePerson(freshP));
+        }
+      }
+
+      editedPersons.value = new Map(editedPersons.value);
+      persons.value = freshPersons;
+      syncDynamicColumns(freshPersons);
+
+      if (selectedPerson.value) {
+        const updatedSel = freshMap.get(selectedPerson.value.id) || null;
+        selectedPerson.value = updatedSel;
+        if (updatedSel && personDetails.value) {
+          const origSpouses = personDetails.value.spouses || [];
+          const hasDirtySpouse = origSpouses.some(sp => {
+            const cur = editedSpouses.value.get(sp.family_id);
+            if (!cur) return false;
+            return (
+              (cur.marriage_date.trim() || null) !== (sp.marriage_date || null) ||
+              (cur.divorce_date.trim() || null) !== (sp.divorce_date || null) ||
+              Boolean(cur.is_divorced) !== Boolean(sp.is_divorced)
+            );
+          });
+          if (!hasDirtySpouse) {
+            await loadDetails(updatedSel.id);
+          } else {
+            try {
+              const latestDetails = await invoke<PersonDetails>('get_person_details', {
+                personId: updatedSel.id,
+              });
+              if (JSON.stringify(latestDetails.spouses || []) !== JSON.stringify(origSpouses)) {
+                conflictDetected = true;
+              }
+            } catch {}
+          }
+        } else if (!updatedSel) {
+          personDetails.value = null;
+        }
+      }
+
+      if (conflictDetected) {
+        hasExternalEditConflict.value = true;
+      }
+    } catch (e) {
+      console.error('Fehler beim Hintergrund-Abgleich (Personen):', e);
+    }
   }
 
   const selectedImportFilePath = ref<string>('');
@@ -1253,10 +1495,12 @@ export function usePersons(
   }
 
   function toggleEditMode() {
+    hasExternalEditConflict.value = false;
     if (isEditing.value) {
       saveErrorAlert.value = '';
       editedPersons.value = new Map(persons.value.map(p => [p.id, clonePerson(p)]));
     }
+    baseEditedPersons.value = new Map(persons.value.map(p => [p.id, clonePerson(p)]));
     isEditing.value = !isEditing.value;
     parentEditError.value = '';
     marriageEditError.value = '';
@@ -1350,6 +1594,7 @@ export function usePersons(
 
     if (updates.length === 0) {
       isEditing.value = false;
+      hasExternalEditConflict.value = false;
       statusMessage.value = t('changes_saved');
       if (parentsUpdated && rootAncestors.value.length > 0) {
         await invoke('calculate_henry_codes_from_roots');
@@ -1442,6 +1687,7 @@ export function usePersons(
 
       statusMessage.value = t('changes_saved');
       isEditing.value = false;
+      hasExternalEditConflict.value = false;
       saveErrorAlert.value = '';
       await loadPersons();
       await loadRootAncestors();
@@ -1513,6 +1759,7 @@ export function usePersons(
     selectedPerson.value = null;
     personDetails.value = null;
     isEditing.value = false;
+    hasExternalEditConflict.value = false;
     parentEditError.value = '';
     rootSearchQuery.value = '';
     selectedRootId.value = '';
@@ -1532,6 +1779,7 @@ export function usePersons(
       if (!activeTree.value) {
         persons.value = [];
         editedPersons.value = new Map();
+        baseEditedPersons.value = new Map();
         rootAncestors.value = [];
         options?.onEnsureTableView?.();
         return;
@@ -1592,6 +1840,7 @@ export function usePersons(
         resetPersonViewState();
         persons.value = [];
         editedPersons.value = new Map();
+        baseEditedPersons.value = new Map();
         rootAncestors.value = [];
         options?.onEnsureTableView?.();
       }
@@ -1629,6 +1878,7 @@ export function usePersons(
         deathDate: payload.deathDate,
         deathPlace: payload.deathPlace,
         customId: payload.customId,
+        isAutoId: Boolean(payload.isAutoId),
       });
 
       // Zusätzliche Tabellenfelder (z. B. Religion, Beruf, Wohnort, Taufe, Bestattung, Notiz, Quelle etc.) speichern
@@ -1738,12 +1988,13 @@ export function usePersons(
   async function initTrees() {
     await loadTrees();
     if (trees.value.length > 0) {
-      activeTree.value = trees.value[0];
+      if (!activeTree.value || !trees.value.includes(activeTree.value)) {
+        activeTree.value = trees.value[0];
+      }
       await handleTreeSwitch();
     } else {
       activeTree.value = '';
-      persons.value = [];
-      rootAncestors.value = [];
+      await handleTreeSwitch();
     }
   }
 
@@ -1764,6 +2015,7 @@ export function usePersons(
     rootSearchQuery,
     activeProbandTab,
     isEditing,
+    hasExternalEditConflict,
     saveErrorAlert,
     statusMessage,
     isLoading,
@@ -1799,6 +2051,7 @@ export function usePersons(
     loadTrees,
     loadPersons,
     loadRootAncestors,
+    syncFromExternalChanges,
     addRootAncestor,
     removeRootAncestor,
     calculateCodes,

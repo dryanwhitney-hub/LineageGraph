@@ -3,6 +3,7 @@ import { ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { invoke } from '@tauri-apps/api/core';
 import type { Person, PersonMergeFieldsDto, PersonEventDto, SpouseResolution } from '../../composables/usePersons';
+import { formatDisplayDate } from '../../composables/useDateFormat';
 
 const props = defineProps<{
   visible: boolean;
@@ -342,13 +343,13 @@ function getParentsSummary(person: Person | null): string {
                 <td>
                   <label class="radio-label">
                     <input type="radio" value="target" v-model="selectedBirthDate" @change="updateGeneratedAuditNote" />
-                    <span class="val-text">{{ currentTarget.birth_date || '—' }}</span>
+                    <span class="val-text">{{ formatDisplayDate(currentTarget.birth_date) || '—' }}</span>
                   </label>
                 </td>
                 <td>
                   <label class="radio-label">
                     <input type="radio" value="source" v-model="selectedBirthDate" @change="updateGeneratedAuditNote" />
-                    <span class="val-text">{{ currentSource.birth_date || '—' }}</span>
+                    <span class="val-text">{{ formatDisplayDate(currentSource.birth_date) || '—' }}</span>
                   </label>
                 </td>
               </tr>
@@ -376,13 +377,13 @@ function getParentsSummary(person: Person | null): string {
                 <td>
                   <label class="radio-label">
                     <input type="radio" value="target" v-model="selectedDeathDate" @change="updateGeneratedAuditNote" />
-                    <span class="val-text">{{ currentTarget.death_date || '—' }}</span>
+                    <span class="val-text">{{ formatDisplayDate(currentTarget.death_date) || '—' }}</span>
                   </label>
                 </td>
                 <td>
                   <label class="radio-label">
                     <input type="radio" value="source" v-model="selectedDeathDate" @change="updateGeneratedAuditNote" />
-                    <span class="val-text">{{ currentSource.death_date || '—' }}</span>
+                    <span class="val-text">{{ formatDisplayDate(currentSource.death_date) || '—' }}</span>
                   </label>
                 </td>
               </tr>
@@ -486,7 +487,7 @@ function getParentsSummary(person: Person | null): string {
                 {{ targetEvents.some(te => te.id === ev.id) ? t('merge_target_short', 'Ziel') : t('merge_source_short', 'Quelle') }}
               </span>
               <span class="event-type"><strong>{{ ev.tag }}</strong></span>
-              <span class="event-date-place">{{ ev.date_str || '' }} {{ ev.place ? `(${ev.place})` : '' }}</span>
+              <span class="event-date-place">{{ formatDisplayDate(ev.date_str) || '' }} {{ ev.place ? `(${ev.place})` : '' }}</span>
               <span v-if="ev.description" class="event-desc">{{ ev.description }}</span>
             </div>
           </div>

@@ -10,6 +10,8 @@ import {
   type ColumnConfig,
   type ColumnFilter,
 } from '../../composables/usePersons';
+import DateInput from '../common/DateInput.vue';
+import { formatDisplayDate } from '../../composables/useDateFormat';
 
 const props = withDefaults(
   defineProps<{
@@ -466,6 +468,9 @@ watch(
                   </template>
                   <span v-else class="text-muted">-</span>
                 </div>
+                <span v-else-if="col.isDate || col.key.includes('date') || col.key === 'chan'">
+                  {{ formatDisplayDate(getPersonAttr(person, col.key)) || '-' }}
+                </span>
                 <span v-else>
                   {{ getPersonAttr(person, col.key) || (col.key === 'given_name' ? 'N.N.' : '-') }}
                 </span>
@@ -798,6 +803,12 @@ watch(
                     </div>
                   </div>
                 </div>
+                <DateInput
+                  v-else-if="col.isDate || col.key.includes('date')"
+                  :modelValue="getPersonAttr(editedPersons.get(person.id)!, col.key) ?? ''"
+                  @update:modelValue="setPersonAttr(editedPersons.get(person.id)!, col.key, $event)"
+                  @click.stop
+                />
                 <input
                   v-else
                   :value="getPersonAttr(editedPersons.get(person.id)!, col.key) ?? ''"

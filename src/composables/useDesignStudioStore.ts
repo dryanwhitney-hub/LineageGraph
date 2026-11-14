@@ -295,13 +295,14 @@ export interface UseDesignStudioOptions {
   activeProbandId: Ref<string | null>;
   initialCardConfig?: Ref<DesignCardConfig>;
   locale: Ref<string>;
+  activeTree?: Ref<string>;
 }
 
 const DRAFT_STORAGE_PREFIX = 'lineagegraph_design_v2_draft_';
 const MAX_HISTORY = 50;
 
 export function useDesignStudioStore(options: UseDesignStudioOptions) {
-  const { persons, rootAncestors, activeProbandId, initialCardConfig, locale } = options;
+  const { persons, rootAncestors, activeProbandId, initialCardConfig, locale, activeTree } = options;
 
   // Zentrale Dokumenten-Registry (alle im aktiven Bundle geladenen Master + Sub-Bäume)
   const documentsById = ref<Record<string, DesignDocumentModel>>({});
@@ -326,6 +327,9 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
   const errorToast = ref<string>('');
   const isDirty = ref<boolean>(false);
   const isLoading = ref<boolean>(false);
+  const baseUpdatedAtById = ref<Record<string, string>>({});
+  const hasExternalDesignConflict = ref<boolean>(false);
+  let lastSeenDbDesignTimestamps: Record<string, string> = {};
 
   // Transientes 60fps Drag Preview
   const dragPreview = ref<{ kind: 'group' | 'edge'; key: string; dx: number; dy: number } | null>(null);
@@ -540,6 +544,11 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
     saveDraftToLocal();
   }
 
+  function getDraftStorageKey(rootPersonId: string): string {
+    const treeScope = (activeTree?.value || 'default').trim() || 'default';
+    return `${DRAFT_STORAGE_PREFIX}${treeScope}__${rootPersonId}`;
+  }
+
   function saveDraftToLocal() {
     layoutRevision.value++;
     const rootDoc =
@@ -547,21 +556,25 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
         ? documentsById.value[breadcrumbStack.value[0].documentId]
         : activeDocument.value;
     if (!rootDoc || !rootDoc.rootPersonId) return;
+    if (!isDirty.value) {
+      clearDraftForRoot(rootDoc.rootPersonId);
+      return;
+    }
     try {
       const payload = {
+        isDirty: true,
+        baseUpdatedAtById: baseUpdatedAtById.value,
         activeDocumentId: activeDocumentId.value,
         breadcrumbStack: breadcrumbStack.value,
         documentsById: documentsById.value,
       };
-      localStorage.setItem(
-        `${DRAFT_STORAGE_PREFIX}${rootDoc.rootPersonId}`,
-        JSON.stringify(payload)
-      );
+      localStorage.setItem(getDraftStorageKey(rootDoc.rootPersonId), JSON.stringify(payload));
     } catch {}
   }
 
   function clearDraftForRoot(rootPersonId: string) {
     try {
+      localStorage.removeItem(getDraftStorageKey(rootPersonId));
       localStorage.removeItem(`${DRAFT_STORAGE_PREFIX}${rootPersonId}`);
     } catch {}
   }
@@ -659,6 +672,18 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
     syncLineageRulesToDocs(rootModel, subModels);
     documentsById.value = docs;
 
+    const nextBase: Record<string, string> = {};
+    if (rootModel.id && !rootModel.id.startsWith('draft_') && rootModel.updatedAt) {
+      nextBase[rootModel.id] = rootModel.updatedAt;
+    }
+    for (const subModel of subModels) {
+      if (subModel.id && !subModel.id.startsWith('draft_') && subModel.updatedAt) {
+        nextBase[subModel.id] = subModel.updatedAt;
+      }
+    }
+    baseUpdatedAtById.value = nextBase;
+    hasExternalDesignConflict.value = false;
+
     const assets: Record<string, string> = {};
     for (const [aid, dataUrl] of Object.entries(bundleDto.media_assets || {})) {
       assets[aid] = dataUrl;
@@ -704,15 +729,33 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
       await migrateLegacyIndexedDbIfPresent();
       await refreshDocumentCatalogs();
 
-      // 1. Entwurf aus localStorage prüfen (falls Nutzer gerade zwischen App-Tabs gewechselt hat)
-      const draftRaw = localStorage.getItem(`${DRAFT_STORAGE_PREFIX}${rootId}`);
+      // 1. Nur echte ungesicherte Entwürfe aus localStorage wiederherstellen (verhindert Überschreiben durch fremde PCs)
+      const draftRaw = localStorage.getItem(getDraftStorageKey(rootId));
       if (draftRaw) {
         try {
           const parsed = JSON.parse(draftRaw);
-          if (parsed?.activeDocumentId && parsed?.documentsById?.[parsed.activeDocumentId]) {
+          if (
+            parsed?.isDirty === true &&
+            parsed?.activeDocumentId &&
+            parsed?.documentsById?.[parsed.activeDocumentId]
+          ) {
             documentsById.value = parsed.documentsById;
             breadcrumbStack.value = parsed.breadcrumbStack || [];
             activeDocumentId.value = parsed.activeDocumentId;
+            baseUpdatedAtById.value = parsed.baseUpdatedAtById || {};
+            isDirty.value = true;
+
+            const summaryMap = new Map<string, string>();
+            for (const m of savedMasterList.value) summaryMap.set(m.id, m.updated_at);
+            for (const s of allSubtreeSummaries.value) summaryMap.set(s.id, s.updated_at);
+            hasExternalDesignConflict.value = Object.entries(baseUpdatedAtById.value).some(
+              ([docId, baseTs]) => {
+                if (docId.startsWith('draft_')) return false;
+                const remoteTs = summaryMap.get(docId);
+                return Boolean(baseTs && remoteTs !== baseTs);
+              }
+            );
+
             // Fehlende Media-Assets nachladen
             const assetIds = new Set<string>();
             for (const d of Object.values(documentsById.value)) {
@@ -738,7 +781,15 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
             }
             isLoading.value = false;
             return;
+          } else {
+            clearDraftForRoot(rootId);
           }
+        } catch {
+          clearDraftForRoot(rootId);
+        }
+      } else {
+        try {
+          localStorage.removeItem(`${DRAFT_STORAGE_PREFIX}${rootId}`);
         } catch {}
       }
 
@@ -773,6 +824,8 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
       undoStack.value = [];
       redoStack.value = [];
       isDirty.value = false;
+      baseUpdatedAtById.value = {};
+      hasExternalDesignConflict.value = false;
     } finally {
       isLoading.value = false;
     }
@@ -795,7 +848,10 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
     }
   }
 
-  async function saveActiveDocument(asNewName?: string): Promise<DesignDocumentSummaryDto | null> {
+  async function saveActiveDocument(
+    asNewName?: string,
+    forceOverwrite = false
+  ): Promise<DesignDocumentSummaryDto | null> {
     const doc = activeDocument.value;
     if (!doc) return null;
     try {
@@ -809,9 +865,14 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
         toSave.id = '';
       }
 
+      const expectedUpdatedAt =
+        !asNewName && !isNewDraft ? baseUpdatedAtById.value[doc.id] || doc.updatedAt || null : null;
+
       const summary = await invoke<DesignDocumentSummaryDto>('save_design_document_v2', {
         document: modelToDto(toSave),
         overwriteSameName: !asNewName && isNewDraft,
+        expectedUpdatedAt,
+        forceOverwrite,
       });
 
       const prevId = doc.id;
@@ -820,6 +881,7 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
 
       if (prevId !== summary.id) {
         delete documentsById.value[prevId];
+        delete baseUpdatedAtById.value[prevId];
         // Referenzen in Breadcrumbs & Parent-Mounts aktualisieren
         for (const bc of breadcrumbStack.value) {
           if (bc.documentId === prevId) {
@@ -841,27 +903,105 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
       }
 
       documentsById.value[summary.id] = toSave;
+      baseUpdatedAtById.value[summary.id] = summary.updated_at;
+      lastSeenDbDesignTimestamps[summary.id] = summary.updated_at;
 
       // Mitgeänderte Sub-Bäume des aktuellen Bundles beim Speichern ebenfalls in SQLite sichern
       if (!asNewName) {
         for (const [otherId, otherDoc] of Object.entries(documentsById.value)) {
           if (otherId === prevId || otherId === summary.id || otherId.startsWith('draft_')) continue;
+          const otherExpectedUpdatedAt =
+            baseUpdatedAtById.value[otherDoc.id] || otherDoc.updatedAt || null;
           const otherSummary = await invoke<DesignDocumentSummaryDto>('save_design_document_v2', {
             document: modelToDto(cloneDocModel(otherDoc)),
             overwriteSameName: false,
+            expectedUpdatedAt: otherExpectedUpdatedAt,
+            forceOverwrite,
           });
           otherDoc.updatedAt = otherSummary.updated_at;
+          baseUpdatedAtById.value[otherDoc.id] = otherSummary.updated_at;
+          lastSeenDbDesignTimestamps[otherDoc.id] = otherSummary.updated_at;
         }
       }
 
       isDirty.value = false;
+      hasExternalDesignConflict.value = false;
       saveDraftToLocal();
       await refreshDocumentCatalogs();
       showStatus(`Arbeitsstand "${summary.name}" gespeichert.`);
       return summary;
     } catch (err) {
-      showError(`Speichern fehlgeschlagen: ${String(err)}`);
+      const errStr = String(err);
+      if (errStr.includes('DESIGN_CONFLICT')) {
+        hasExternalDesignConflict.value = true;
+        showError('Speicherkonflikt: Dieses Design wurde zwischenzeitlich extern geändert.');
+      } else {
+        showError(`Speichern fehlgeschlagen: ${errStr}`);
+      }
       return null;
+    }
+  }
+
+  async function reloadActiveFromDisk() {
+    const rootId = effectiveRootId.value;
+    const currentId = activeDocumentId.value;
+    if (rootId) {
+      clearDraftForRoot(rootId);
+    }
+    isDirty.value = false;
+    hasExternalDesignConflict.value = false;
+    await refreshDocumentCatalogs();
+    const stillExists =
+      currentId &&
+      !currentId.startsWith('draft_') &&
+      (savedMasterList.value.some(m => m.id === currentId) ||
+        allSubtreeSummaries.value.some(s => s.id === currentId));
+    if (stillExists) {
+      await loadDocumentById(currentId);
+    } else {
+      await initStudioForActiveRoot();
+    }
+  }
+
+  async function forceOverwriteActiveDocument(): Promise<DesignDocumentSummaryDto | null> {
+    return saveActiveDocument(undefined, true);
+  }
+
+  async function handleExternalDesignSync(dbTimestamps: Record<string, string>) {
+    const prevEntries = Object.entries(lastSeenDbDesignTimestamps);
+    const nextEntries = Object.entries(dbTimestamps || {});
+    const timestampsChanged =
+      prevEntries.length !== nextEntries.length ||
+      nextEntries.some(([id, ts]) => lastSeenDbDesignTimestamps[id] !== ts);
+
+    if (timestampsChanged) {
+      lastSeenDbDesignTimestamps = { ...(dbTimestamps || {}) };
+      await refreshDocumentCatalogs();
+    }
+
+    const activeDocsChanged = Object.entries(baseUpdatedAtById.value).some(([docId, baseTs]) => {
+      if (docId.startsWith('draft_')) return false;
+      return dbTimestamps[docId] !== baseTs;
+    });
+
+    if (activeDocsChanged) {
+      if (!isDirty.value) {
+        await reloadActiveFromDisk();
+        showStatus('Design wurde extern aktualisiert und neu geladen.');
+      } else {
+        hasExternalDesignConflict.value = true;
+      }
+      return;
+    }
+
+    if (
+      timestampsChanged &&
+      !isDirty.value &&
+      (!activeDocument.value || activeDocument.value.id.startsWith('draft_')) &&
+      savedMasterList.value.length > 0
+    ) {
+      await loadDocumentById(savedMasterList.value[0].id);
+      showStatus('Design wurde extern erstellt und geladen.');
     }
   }
 
@@ -1643,9 +1783,13 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
       const summary = await invoke<DesignDocumentSummaryDto>('save_design_document_v2', {
         document: modelToDto(freshSub),
         overwriteSameName: false,
+        expectedUpdatedAt: null,
+        forceOverwrite: false,
       });
       freshSub.id = summary.id;
       freshSub.updatedAt = summary.updated_at;
+      baseUpdatedAtById.value[freshSub.id] = summary.updated_at;
+      lastSeenDbDesignTimestamps[freshSub.id] = summary.updated_at;
 
       pushUndoSnapshot();
       documentsById.value[freshSub.id] = freshSub;
@@ -1683,9 +1827,15 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
       pushUndoSnapshot();
       const loadedSubs: DesignDocumentModel[] = [subRoot];
       documentsById.value[subRoot.id] = subRoot;
+      if (subRoot.updatedAt) {
+        baseUpdatedAtById.value[subRoot.id] = subRoot.updatedAt;
+      }
       for (const [sid, sdto] of Object.entries(bundle.sub_documents || {})) {
         const subModel = dtoToModel(sdto);
         documentsById.value[sid] = subModel;
+        if (subModel.updatedAt) {
+          baseUpdatedAtById.value[sid] = subModel.updatedAt;
+        }
         loadedSubs.push(subModel);
       }
       syncLineageRulesToDocs(doc, loadedSubs);
@@ -1735,9 +1885,15 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
 
       const loadedSubs: DesignDocumentModel[] = [subRoot];
       documentsById.value[subRoot.id] = subRoot;
+      if (subRoot.updatedAt) {
+        baseUpdatedAtById.value[subRoot.id] = subRoot.updatedAt;
+      }
       for (const [sid, sdto] of Object.entries(bundle.sub_documents || {})) {
         const subModel = dtoToModel(sdto);
         documentsById.value[sid] = subModel;
+        if (subModel.updatedAt) {
+          baseUpdatedAtById.value[sid] = subModel.updatedAt;
+        }
         loadedSubs.push(subModel);
       }
       const syncSource = currentMaster || activeDocument.value;
@@ -1790,6 +1946,7 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
       undoStack.value = [];
       redoStack.value = [];
       isDirty.value = false;
+      hasExternalDesignConflict.value = false;
       selectedPersonId.value = '';
       selectedGroupKey.value = '';
       selectedEdgeKey.value = '';
@@ -1832,9 +1989,15 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
         const loadedRoot = dtoToModel(bundle.root_document);
         const loadedSubs: DesignDocumentModel[] = [loadedRoot];
         documentsById.value[subDocumentId] = loadedRoot;
+        if (loadedRoot.updatedAt) {
+          baseUpdatedAtById.value[subDocumentId] = loadedRoot.updatedAt;
+        }
         for (const [sid, sdto] of Object.entries(bundle.sub_documents || {})) {
           const subModel = dtoToModel(sdto);
           documentsById.value[sid] = subModel;
+          if (subModel.updatedAt) {
+            baseUpdatedAtById.value[sid] = subModel.updatedAt;
+          }
           loadedSubs.push(subModel);
         }
         if (activeDocument.value) {
@@ -2085,6 +2248,17 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
     }
   });
 
+  if (activeTree) {
+    watch(activeTree, (nextTree, prevTree) => {
+      if (nextTree && nextTree !== prevTree) {
+        baseUpdatedAtById.value = {};
+        hasExternalDesignConflict.value = false;
+        lastSeenDbDesignTimestamps = {};
+        initStudioForActiveRoot();
+      }
+    });
+  }
+
   return {
     // State
     activeDocument,
@@ -2110,12 +2284,16 @@ export function useDesignStudioStore(options: UseDesignStudioOptions) {
     canRedo,
     isInSubtreeMode,
     effectiveRootId,
+    hasExternalDesignConflict,
 
     // Lifecycle & Persistence
     initStudioForActiveRoot,
     refreshDocumentCatalogs,
     loadDocumentById,
     saveActiveDocument,
+    reloadActiveFromDisk,
+    forceOverwriteActiveDocument,
+    handleExternalDesignSync,
     deleteSavedDocument,
     resetToDefaultLayout,
 

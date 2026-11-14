@@ -26,7 +26,9 @@ const props = withDefaults(defineProps<{
   bridgeRadius?: number;
   minimizeBridges?: boolean;
   cardConfig?: DesignCardConfig;
+  activeTree?: string;
 }>(), {
+  activeTree: '',
   horizontalLaneGap: 16,
   autoSubLanes: true,
   enableLineBridges: true,
@@ -58,6 +60,7 @@ const isBgPopoverOpen = ref(false);
 const personsRef = toRef(props, 'persons');
 const rootAncestorsRef = toRef(props, 'rootAncestors');
 const activeProbandIdRef = toRef(props, 'activeProbandId');
+const activeTreeRef = toRef(props, 'activeTree');
 const initialCardCfgRef = computed<DesignCardConfig>(
   () => props.cardConfig || DEFAULT_CARD_CONFIG
 );
@@ -68,6 +71,7 @@ const store = useDesignStudioStore({
   activeProbandId: activeProbandIdRef,
   initialCardConfig: initialCardCfgRef,
   locale,
+  activeTree: activeTreeRef,
 });
 
 const navigation = useDesignNavigation({
@@ -121,8 +125,14 @@ function focusPersonIfVisible(personId: string, rightDrawerOpen: boolean = false
   return true;
 }
 
+const activeDocumentName = computed(() => store.activeDocument.value?.name || null);
+
 defineExpose({
   focusPersonIfVisible,
+  handleExternalDesignSync: store.handleExternalDesignSync,
+  activeDocumentId: store.activeDocumentId,
+  activeDocumentName,
+  isDirty: store.isDirty,
 });
 
 watch(
