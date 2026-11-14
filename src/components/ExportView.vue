@@ -147,7 +147,7 @@ watch(
       @select-proband="id => emit('select-proband', id)"
     />
 
-    <!-- Modul-Ansicht 2: Stammbaum Design Mode Bild-Export -->
+    <!-- Modul-Ansicht 2: Design Studio Bild-Export -->
     <DesignImageExportPane
       v-else-if="activeExportModuleTab === 'design_image'"
       :persons="persons"

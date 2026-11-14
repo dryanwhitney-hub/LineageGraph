@@ -3,6 +3,8 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useI18n } from 'vue-i18n';
+import ExportLanguageSelect, { type ExportLocaleSelection } from '../common/ExportLanguageSelect.vue';
+import { FALLBACK_LOCALE, formatDateByLocale, resolveLocale } from '../../locales/registry';
 import type { ExportPersonInput } from '../../utils/htmlExport';
 import LatexConfigModal from './LatexConfigModal.vue';
 import {
@@ -74,6 +76,13 @@ const latexPreviewMode = ref<'visual' | 'source'>('visual');
 const latexActiveFileIdx = ref<number>(0);
 const isSavingLatex = ref<boolean>(false);
 const showLatexConfigModal = ref<boolean>(false);
+const exportLangOverride = ref<ExportLocaleSelection>('auto');
+
+const effectiveExportLocale = computed(() =>
+  exportLangOverride.value === 'auto'
+    ? (resolveLocale(locale.value) ?? FALLBACK_LOCALE)
+    : exportLangOverride.value
+);
 
 const LOCAL_STORAGE_LATEX_TEMPLATES_KEY = 'stammbaum_latex_templates_v1';
 
@@ -81,7 +90,7 @@ function formatLayoutDate(isoStr: string): string {
   if (!isoStr) return '';
   try {
     const d = new Date(isoStr);
-    return d.toLocaleDateString(locale.value === 'en' ? 'en-US' : 'de-DE', {
+    return formatDateByLocale(d, locale.value, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -273,7 +282,7 @@ const latexExportResult = computed<LatexExportResult | null>(() => {
     customDocumentTitle: latexCustomDocTitle.value,
     customDocumentSubtitle: latexCustomDocSubtitle.value,
     template: latexActiveTemplate.value,
-    locale: locale.value === 'en' ? 'en' : 'de',
+    locale: effectiveExportLocale.value,
   });
 });
 
@@ -775,6 +784,10 @@ onMounted(() => {
               class="export-input"
               :placeholder="t('export_latex_subtitle_placeholder')"
             />
+          </div>
+
+          <div class="export-form-row">
+            <ExportLanguageSelect v-model="exportLangOverride" />
           </div>
 
           <!-- Vorlagen-Zusammenfassung & Modal-Öffnen-Button -->

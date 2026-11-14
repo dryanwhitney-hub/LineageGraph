@@ -267,6 +267,40 @@ const availablePartnerCandidates = computed<Person[]>(() => {
   return list.slice(0, 60);
 });
 
+const allPersonsMap = computed<Map<string, Person>>(() => {
+  const map = new Map<string, Person>();
+  for (const p of props.allPersons || []) {
+    map.set(p.id, p);
+  }
+  return map;
+});
+
+function getOtherParents(childId: string): Person[] {
+  const child = allPersonsMap.value.get(childId);
+  const currentId = props.selectedPerson?.id;
+  if (!child || !currentId) return [];
+
+  const candidateIds = new Set<string>();
+  for (const pid of child.parent_ids || []) {
+    if (pid && pid !== currentId) candidateIds.add(pid);
+  }
+  if (child.father_id && child.father_id !== currentId) candidateIds.add(child.father_id);
+  if (child.mother_id && child.mother_id !== currentId) candidateIds.add(child.mother_id);
+
+  const result: Person[] = [];
+  for (const pid of candidateIds) {
+    const parent = allPersonsMap.value.get(pid);
+    if (parent) result.push(parent);
+  }
+  return result;
+}
+
+function getParentRoleLabel(parent: Person): string {
+  if (parent.sex === 'M') return t('father');
+  if (parent.sex === 'F') return t('mother');
+  return t('other_parent');
+}
+
 const availableChildCandidates = computed<Person[]>(() => {
   if (!props.allPersons || !props.selectedPerson) return [];
   const currentChildIds = new Set(
@@ -336,12 +370,13 @@ function handleRemoveChild(childId: string) {
 
 <template>
   <aside
-    v-if="currentView !== 'design' && currentView !== 'export'"
+    v-if="currentView !== 'export'"
     class="details-pane"
     :class="{
       'is-open': isDetailsOpen && !!selectedPerson,
       'has-person': !!selectedPerson,
-      'is-tree-mode': currentView === 'tree',
+      'is-tree-mode': currentView === 'tree' || currentView === 'design',
+      'is-design-mode': currentView === 'design',
     }"
     @click="openPicker = null"
   >
@@ -869,6 +904,23 @@ function handleRemoveChild(childId: string) {
               <div class="marriage-info">
                 * {{ c.birth_date || '?' }}<span v-if="c.death_date"> · † {{ c.death_date }}</span>
               </div>
+              <div class="child-other-parents">
+                <template v-if="getOtherParents(c.id).length > 0">
+                  <button
+                    v-for="op in getOtherParents(c.id)"
+                    :key="'op-' + c.id + '-' + op.id"
+                    type="button"
+                    class="btn-other-parent-link"
+                    :title="t('select_prompt')"
+                    @click.stop="emit('jump-to', op.id)"
+                  >
+                    {{ getParentRoleLabel(op) }}: {{ op.surname || 'N.N.' }}, {{ op.given_name || 'N.N.' }} ↪
+                  </button>
+                </template>
+                <span v-else class="other-parent-unknown">
+                  {{ t('other_parent') }}: ?
+                </span>
+              </div>
             </li>
           </ul>
           <p v-else class="sub-empty">-</p>
@@ -967,6 +1019,12 @@ function handleRemoveChild(childId: string) {
 
 .details-pane.is-tree-mode.is-open {
   transform: translateX(0);
+}
+
+.details-pane.is-design-mode .details-toggle-btn {
+  top: 50%;
+  bottom: auto;
+  transform: translateY(-50%);
 }
 
 .details-inner {
@@ -1486,6 +1544,38 @@ function handleRemoveChild(childId: string) {
 
 .btn-unlink-child:hover:not(:disabled) {
   background: #fecaca;
+}
+
+.child-other-parents {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-top: 0.28rem;
+}
+
+.btn-other-parent-link {
+  background: #f1f5f9;
+  color: #334155;
+  border: 1px solid #cbd5e1;
+  border-radius: 4px;
+  padding: 0.12rem 0.42rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+.btn-other-parent-link:hover {
+  background: #e0f2fe;
+  border-color: #7dd3fc;
+  color: #0369a1;
+}
+
+.other-parent-unknown {
+  font-size: 0.72rem;
+  color: #94a3b8;
+  font-style: italic;
 }
 
 .add-relation-box {

@@ -1,4 +1,63 @@
 import { d3RawJs } from '../assets/vendor/d3.v7.min';
+import { tLocale } from '../i18n';
+import {
+  FALLBACK_LOCALE,
+  SUPPORTED_LOCALES,
+  getLocaleDefinition,
+  resolveLocale,
+  type SupportedLocale,
+} from '../locales/registry';
+
+const HTML_EXPORT_KEYS = [
+  'searchPlaceholder',
+  'noResults',
+  'btnReset',
+  'btnResetTip',
+  'btnIsolate',
+  'btnIsolateTip',
+  'btnCollapse',
+  'btnCollapseTip',
+  'btnExpand',
+  'btnExpandTip',
+  'btnSpousesOn',
+  'btnSpousesOff',
+  'btnSpousesTip',
+  'detailsHead',
+  'detailsHint',
+  'leg1',
+  'leg2',
+  'leg3',
+  'badgeHenry',
+  'badgeBranch',
+  'badgeGen',
+  'implexNoteTitle',
+  'implexNoteBody',
+  'seeLabel',
+  'secBio',
+  'secNotes',
+  'secMarriages',
+  'secChildren',
+  'birth',
+  'baptism',
+  'death',
+  'occupation',
+  'religion',
+  'residence',
+  'father',
+  'mother',
+  'spouse',
+  'marriage',
+  'divorce',
+  'divorcedLabel',
+  'yesLabel',
+  'inPlace',
+  'onDate',
+  'marriedWith',
+  'divorcedShort',
+  'unknown',
+  'mobileDetailsBtn',
+  'menuBtn',
+] as const;
 
 export interface ExportSpouseConnection {
   id: string;
@@ -470,27 +529,64 @@ export function generateInteractiveTreeHtml(
   options?: {
     customTitleDe?: string;
     customTitleEn?: string;
-    defaultLang?: 'de' | 'en';
+    defaultLang?: SupportedLocale;
   }
 ): string {
   const familyLabel = (rootNode.last_name || rootNode.name || 'Familie').trim();
-  const titleDe = (options?.customTitleDe || '').trim() || `Stammbaum ${familyLabel}`;
-  const titleEn = (options?.customTitleEn || '').trim() || `${familyLabel} Family Tree`;
-  const initialLang = options?.defaultLang === 'en' ? 'en' : 'de';
+  const titleDe = (options?.customTitleDe || '').trim();
+  const titleEn = (options?.customTitleEn || '').trim();
+  const initialLang = resolveLocale(options?.defaultLang) ?? FALLBACK_LOCALE;
+  const initialBcp47 = getLocaleDefinition(initialLang).bcp47;
+
+  const embeddedI18n: Record<string, Record<string, string>> = {};
+  const embeddedBcp47: Record<string, string> = {};
+  for (const loc of SUPPORTED_LOCALES) {
+    const dict: Record<string, string> = {};
+    if (loc.code === 'de' && titleDe) {
+      dict.title = titleDe;
+    } else if (loc.code === 'en' && titleEn) {
+      dict.title = titleEn;
+    } else {
+      dict.title = tLocale('html_export.titleTemplate', loc.code, { family: familyLabel });
+    }
+    for (const key of HTML_EXPORT_KEYS) {
+      dict[key] = tLocale(`html_export.${key}`, loc.code);
+    }
+    embeddedI18n[loc.code] = dict;
+    embeddedBcp47[loc.code] = loc.bcp47;
+  }
+
+  const initialTitle = embeddedI18n[initialLang]?.title || familyLabel;
+  const safeI18nJson = JSON.stringify(embeddedI18n).replace(/<\/script/gi, '<\\/script');
+  const safeBcp47Json = JSON.stringify(embeddedBcp47).replace(/<\/script/gi, '<\\/script');
+  const langOptionsHtml = SUPPORTED_LOCALES.map(
+    (loc) =>
+      `<button type="button" role="option" class="lang-option ${initialLang === loc.code ? 'active' : ''}" data-lang="${loc.code}" aria-selected="${initialLang === loc.code ? 'true' : 'false'}">
+                <span class="lang-option-main">
+                    <span class="lang-endonym">${escapeHtmlAttr(loc.endonym)}</span>
+                    <span class="lang-iso">${loc.code.toUpperCase()}</span>${
+                      'isBeta' in loc && loc.isBeta
+                        ? `\n                    <span class="lang-beta">Beta</span>`
+                        : ''
+                    }
+                </span>
+                <span class="lang-check" aria-hidden="true">${initialLang === loc.code ? '✓' : ''}</span>
+            </button>`
+  ).join('\n            ');
 
   // Safely serialize D3 library and JSON data so "</script" cannot break the HTML parser
   const safeD3Js = d3RawJs.replace(/<\/script/gi, '<\\/script');
   const jsonStr = JSON.stringify(rootNode).replace(/<\/script/gi, '<\\/script');
 
   return `<!DOCTYPE html>
-<html lang="${initialLang}">
+<html lang="${initialBcp47}">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="format-detection" content="telephone=no">
-    <title>${escapeHtmlAttr(initialLang === 'en' ? titleEn : titleDe)}</title>
+    <title>${escapeHtmlAttr(initialTitle)}</title>
     <style>
         * {
             box-sizing: border-box;
@@ -535,34 +631,132 @@ export function generateInteractiveTreeHtml(
             color: #0f172a;
         }
 
-        .lang-switch {
-            display: flex;
-            border: 1px solid #cbd5e1;
-            border-radius: 6px;
-            overflow: hidden;
+        .lang-dropdown {
+            position: relative;
+            display: inline-flex;
             margin-right: 4px;
+            flex-shrink: 0;
         }
 
-        .lang-btn {
-            background: #f8fafc;
-            border: none;
-            min-height: 44px;
-            min-width: 44px;
-            padding: 8px 12px;
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            color: #64748b;
+        .lang-trigger {
             display: inline-flex;
             align-items: center;
-            justify-content: center;
+            gap: 6px;
+            min-height: 36px;
+            padding: 6px 10px;
+            background: #f8fafc;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            color: #0f172a;
+            font-size: 13px;
+            font-weight: 700;
+            cursor: pointer;
             touch-action: manipulation;
             -webkit-tap-highlight-color: transparent;
+            transition: background 0.15s, border-color 0.15s;
         }
 
-        .lang-btn.active {
-            background: #2563eb;
-            color: #ffffff;
+        .lang-trigger:hover,
+        .lang-trigger[aria-expanded="true"] {
+            background: #eef2ff;
+            border-color: #93c5fd;
+        }
+
+        .lang-globe {
+            width: 15px;
+            height: 15px;
+            color: #2563eb;
+            flex-shrink: 0;
+        }
+
+        .lang-caret {
+            font-size: 10px;
+            color: #64748b;
+            transition: transform 0.15s;
+        }
+
+        .lang-trigger[aria-expanded="true"] .lang-caret {
+            transform: rotate(180deg);
+        }
+
+        .lang-menu {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            min-width: 195px;
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 4px;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+            z-index: 2000;
+            display: none;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .lang-menu.open {
+            display: flex;
+        }
+
+        .lang-option {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            width: 100%;
+            background: transparent;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 13px;
+            color: #0f172a;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.12s;
+        }
+
+        .lang-option:hover,
+        .lang-option:focus-visible {
+            background: #f1f5f9;
+            outline: none;
+        }
+
+        .lang-option.active {
+            background: #eff6ff;
+            font-weight: 600;
+        }
+
+        .lang-option-main {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .lang-iso {
+            font-size: 11px;
+            font-weight: 700;
+            color: #475569;
+            background: #f1f5f9;
+            border: 1px solid #cbd5e1;
+            border-radius: 4px;
+            padding: 1px 5px;
+        }
+
+        .lang-beta {
+            font-size: 10px;
+            font-weight: 700;
+            color: #b45309;
+            background: #fef3c7;
+            border: 1px solid #fcd34d;
+            border-radius: 999px;
+            padding: 1px 6px;
+        }
+
+        .lang-check {
+            color: #2563eb;
+            font-weight: 700;
+            font-size: 13px;
         }
 
         .search-wrapper {
@@ -1119,9 +1313,13 @@ export function generateInteractiveTreeHtml(
                 display: none;
             }
 
-            .lang-switch {
+            .lang-dropdown {
                 flex-shrink: 0;
                 margin-right: 0;
+            }
+
+            .lang-trigger {
+                min-height: 44px;
             }
 
             .search-wrapper {
@@ -1189,11 +1387,21 @@ export function generateInteractiveTreeHtml(
 <body>
 
     <div id="toolbar">
-        <div class="lang-switch">
-            <button class="lang-btn ${initialLang === 'de' ? 'active' : ''}" id="btn-lang-de" title="Sprache auf Deutsch umschalten">DE</button>
-            <button class="lang-btn ${initialLang === 'en' ? 'active' : ''}" id="btn-lang-en" title="Switch language to English">EN</button>
+        <div class="lang-dropdown" id="lang-dropdown">
+            <button type="button" class="lang-trigger" id="btn-lang-trigger" aria-haspopup="listbox" aria-expanded="false">
+                <svg class="lang-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="2" y1="12" x2="22" y2="12"></line>
+                    <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+                </svg>
+                <span id="lang-trigger-code">${initialLang.toUpperCase()}</span>
+                <span class="lang-caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="lang-menu" id="lang-menu" role="listbox">
+                ${langOptionsHtml}
+            </div>
         </div>
-        <h1 id="ui-title">${escapeHtmlAttr(initialLang === 'en' ? titleEn : titleDe)}</h1>
+        <h1 id="ui-title">${escapeHtmlAttr(initialTitle)}</h1>
         <div class="search-wrapper">
             <input type="text" id="search-input" placeholder="Suche nach Name, Henry-Code, Ort...">
             <div id="search-results"></div>
@@ -1296,109 +1504,12 @@ const treeData = JSON.parse(document.getElementById("tree-data-json").textConten
 let currentLang = safeStorage.getItem("lineagegraph_export_lang") || ${JSON.stringify(initialLang)};
 let showSpouses = safeStorage.getItem("lineagegraph_export_spouses") === "1";
 
-const i18n = {
-                    de: {
-                        title: ${JSON.stringify(titleDe)},
-                        searchPlaceholder: "Suche nach Name, Henry-Code, Ort...",
-                        noResults: "Keine Treffer gefunden",
-                        btnReset: "Zentrieren",
-                        btnResetTip: "Ansicht auf den aktuell selektierten Eintrag zentrieren",
-                        btnIsolate: "Äste isolieren",
-                        btnIsolateTip: "Nur den ausgewählten Ast und dessen Vorfahren anzeigen",
-                        btnCollapse: "Einklappen",
-                        btnCollapseTip: "Alle Knoten im Stammbaum einklappen",
-                        btnExpand: "+1 Generation",
-                        btnExpandTip: "Eine Generation weiter ausklappen",
-                        btnSpousesOn: "Ehepartner: Ein",
-                        btnSpousesOff: "Ehepartner: Aus",
-                        btnSpousesTip: "Anzeige der Ehepartner in den Knoten ein- oder ausschalten",
-                        detailsHead: "Personen-Details",
-                        detailsHint: "Klicken Sie im Stammbaum auf eine Person oder nutzen Sie das Suchfeld, um biografische Daten anzuzeigen.",
-                        leg1: "Nachkommen vorhanden (zugeklappt)",
-                        leg2: "Ausgeklappt / Blattknoten",
-                        leg3: "Implex-Verweis",
-                        badgeHenry: "Henry-Code",
-                        badgeBranch: "Stamm",
-                        badgeGen: "Generation",
-                        implexNoteTitle: "Implex-Hinweis",
-                        implexNoteBody: "Dieser Zweig wird patrilinear unter dem Ehepartner weitergeführt.",
-                        seeLabel: "Siehe",
-                        secBio: "Lebensdaten & Attribute",
-                        secNotes: "Notizen",
-                        secMarriages: "Ehen",
-                        secChildren: "Kinder",
-                        birth: "Geburt",
-                        baptism: "Taufe",
-                        death: "Tod",
-                        occupation: "Beruf",
-                        religion: "Konfession",
-                        residence: "Wohnort",
-                        father: "Vater",
-                        mother: "Mutter",
-                        spouse: "Ehepartner",
-                        marriage: "Hochzeit",
-                        divorce: "Scheidung",
-                        inPlace: "in",
-                        onDate: "am",
-                        marriedWith: "verh. mit ",
-                        divorcedShort: "gesch. ",
-                        unknown: "Unbekannt",
-                        mobileDetailsBtn: "Details",
-                        menuBtn: "Menü"
-                    },
-                    en: {
-                        title: ${JSON.stringify(titleEn)},
-                        searchPlaceholder: "Search name, Henry code, place...",
-                        noResults: "No matches found",
-                        btnReset: "Center",
-                        btnResetTip: "Center view on currently selected person",
-                        btnIsolate: "Isolate branch",
-                        btnIsolateTip: "Show only selected branch and ancestors",
-                        btnCollapse: "Collapse",
-                        btnCollapseTip: "Collapse all tree nodes",
-                        btnExpand: "+1 Generation",
-                        btnExpandTip: "Expand one generation further",
-                        btnSpousesOn: "Spouses: On",
-                        btnSpousesOff: "Spouses: Off",
-                        btnSpousesTip: "Toggle display of spouses in nodes on or off",
-                        detailsHead: "Personal Details",
-                        detailsHint: "Click a person in the tree or use the search field to display biographical data.",
-                        leg1: "Has descendants (collapsed)",
-                        leg2: "Expanded / Leaf node",
-                        leg3: "Implex reference",
-                        badgeHenry: "Henry Code",
-                        badgeBranch: "Branch",
-                        badgeGen: "Generation",
-                        implexNoteTitle: "Implex Reference",
-                        implexNoteBody: "This lineage is continued patrilineally under the spouse.",
-                        seeLabel: "See",
-                        secBio: "Vital Dates & Attributes",
-                        secNotes: "Notes",
-                        secMarriages: "Marriages",
-                        secChildren: "Children",
-                        birth: "Birth",
-                        baptism: "Baptism",
-                        death: "Death",
-                        occupation: "Occupation",
-                        religion: "Religion",
-                        residence: "Residence",
-                        father: "Father",
-                        mother: "Mother",
-                        spouse: "Spouse",
-                        marriage: "Marriage",
-                        divorce: "Divorce",
-                        inPlace: "in",
-                        onDate: "on",
-                        marriedWith: "m. ",
-                        divorcedShort: "div. ",
-                        unknown: "Unknown",
-                        mobileDetailsBtn: "Details",
-                        menuBtn: "Menu"
-                    }
-};
+const i18n = ${safeI18nJson};
+const langBcp47 = ${safeBcp47Json};
 
 function t(key) {
-                    return i18n[currentLang][key] || key;
+                    const dict = i18n[currentLang] || i18n.en || i18n.de;
+                    return dict[key] || (i18n.en && i18n.en[key]) || (i18n.de && i18n.de[key]) || key;
 }
 
 function localizeDateStr(str) {
@@ -1466,20 +1577,69 @@ function updateStaticUI() {
                     update(root);
 }
 
-document.getElementById("btn-lang-de").addEventListener("click", () => {
-                    currentLang = "de";
-                    safeStorage.setItem("lineagegraph_export_lang", "de");
-                    document.getElementById("btn-lang-de").classList.add("active");
-                    document.getElementById("btn-lang-en").classList.remove("active");
-                    updateStaticUI();
+const langDropdown = document.getElementById("lang-dropdown");
+const langTrigger = document.getElementById("btn-lang-trigger");
+const langTriggerCode = document.getElementById("lang-trigger-code");
+const langMenu = document.getElementById("lang-menu");
+const langOptions = document.querySelectorAll(".lang-option");
+
+if (!i18n[currentLang]) {
+                    currentLang = ${JSON.stringify(initialLang)};
+}
+
+function syncLangDropdownUI() {
+                    if (langTriggerCode) {
+                        langTriggerCode.textContent = currentLang.toUpperCase();
+                    }
+                    langOptions.forEach((opt) => {
+                        const isActive = opt.getAttribute("data-lang") === currentLang;
+                        opt.classList.toggle("active", isActive);
+                        opt.setAttribute("aria-selected", isActive ? "true" : "false");
+                        const checkEl = opt.querySelector(".lang-check");
+                        if (checkEl) checkEl.textContent = isActive ? "✓" : "";
+                    });
+}
+
+function setLangMenuOpen(open) {
+                    if (!langMenu || !langTrigger) return;
+                    langMenu.classList.toggle("open", open);
+                    langTrigger.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+syncLangDropdownUI();
+
+if (langTrigger) {
+                    langTrigger.addEventListener("click", (e) => {
+                        e.stopPropagation();
+                        const isOpen = langMenu && langMenu.classList.contains("open");
+                        setLangMenuOpen(!isOpen);
+                    });
+}
+
+langOptions.forEach((opt) => {
+                    opt.addEventListener("click", () => {
+                        const nextLang = opt.getAttribute("data-lang");
+                        if (!nextLang) return;
+                        currentLang = nextLang;
+                        safeStorage.setItem("lineagegraph_export_lang", nextLang);
+                        document.documentElement.lang = langBcp47[nextLang] || nextLang;
+                        document.title = t("title");
+                        syncLangDropdownUI();
+                        setLangMenuOpen(false);
+                        updateStaticUI();
+                    });
 });
 
-document.getElementById("btn-lang-en").addEventListener("click", () => {
-                    currentLang = "en";
-                    safeStorage.setItem("lineagegraph_export_lang", "en");
-                    document.getElementById("btn-lang-en").classList.add("active");
-                    document.getElementById("btn-lang-de").classList.remove("active");
-                    updateStaticUI();
+document.addEventListener("click", (e) => {
+                    if (langDropdown && !langDropdown.contains(e.target)) {
+                        setLangMenuOpen(false);
+                    }
+});
+
+document.addEventListener("keydown", (e) => {
+                    if (e.key === "Escape") {
+                        setLangMenuOpen(false);
+                    }
 });
 
 const toggleSpousesBtn = document.getElementById("btn-toggle-spouses");
@@ -1567,7 +1727,7 @@ function getSpouseLines(data) {
                         let prefix = data.spouses.length > 1 ? \`(\${idx + 1}) \` : "";
                         let text = \`\${prefix}⚭ \${sp.name}\`;
                         let details = [];
-                        if (sp.marriage_date) details.push(\`oo \${localizeDateStr(sp.marriage_date)}\`);
+                        if (sp.marriage_date) details.push(\`⚭ \${localizeDateStr(sp.marriage_date)}\`);
 
                         if (sp.divorce_date) {
                             let divYear = sp.divorce_date.trim();
@@ -1992,7 +2152,7 @@ function renderDetails(p) {
 
                             let divStr = "";
                             if (sp.divorce_date) {
-                                divStr = sp.divorce_date.toUpperCase() === "Y" ? (currentLang === "en" ? "Yes" : "Ja") : localizeDateStr(sp.divorce_date);
+                                divStr = sp.divorce_date.toUpperCase() === "Y" ? t("yesLabel") : localizeDateStr(sp.divorce_date);
                             }
 
                             const spB = [localizeDateStr(sp.birth_date), sp.birth_place ? \`\${inWord} \${sp.birth_place}\` : ""].filter(Boolean).join(" ");

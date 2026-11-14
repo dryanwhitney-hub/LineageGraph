@@ -1,26 +1,9 @@
 import { ref, type Ref } from 'vue';
-import type { DesignSiblingGroup } from './useDesignHistory';
-
-export interface BoundingBoxRect {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-}
-
-export interface BranchWidthBounds {
-  minX: number;
-  maxX: number;
-  barY: number;
-  corridorTopY: number;
-}
+import type { DesignSceneGraph } from '../domain/design/sceneTypes';
 
 export interface UseDesignNavigationOptions {
-  siblingGroups: Ref<DesignSiblingGroup[]>;
+  sceneGraph: Ref<DesignSceneGraph | null>;
   activeDesignPersonId: Ref<string>;
-  getCanvasHeight: () => number;
-  getGroupLayouts: () => BoundingBoxRect[];
-  getRenderedBranchWidths: () => BranchWidthBounds[];
   isBgDragging: () => boolean;
   closeBgPopover: () => void;
   onClearSelectionEmit: () => void;
@@ -28,11 +11,8 @@ export interface UseDesignNavigationOptions {
 
 export function useDesignNavigation(options: UseDesignNavigationOptions) {
   const {
-    siblingGroups,
+    sceneGraph,
     activeDesignPersonId,
-    getCanvasHeight,
-    getGroupLayouts,
-    getRenderedBranchWidths,
     isBgDragging,
     closeBgPopover,
     onClearSelectionEmit,
@@ -51,54 +31,44 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
 
   function centerOnOrigin() {
     const vp = viewportRef.value;
-    const rootGroup = siblingGroups.value.find(g => g.parentId === null);
-    if (!vp || !rootGroup) {
+    const sg = sceneGraph.value;
+    const rootCard =
+      sg?.cards.find(c => c.personId === sg.rootPersonId) || sg?.cards[0];
+    if (!vp || !sg || !rootCard) {
       pan.value = { x: 0, y: 0 };
       zoom.value = 1;
       return;
     }
+
     const vpW = vp.clientWidth || 1000;
     const vpH = vp.clientHeight || 650;
-    const cHeight = getCanvasHeight();
     zoom.value = 1;
-    pan.value = {
-      x: Math.round(vpW / 2 - rootGroup.x),
-      y: Math.round(vpH - cHeight + 20),
-    };
+
+    const rootCenterX = rootCard.x + rootCard.width / 2;
+    if (sg.growthDirection === 'bottom_up') {
+      pan.value = {
+        x: Math.round(vpW / 2 - rootCenterX),
+        y: Math.round(vpH - (rootCard.y + rootCard.height) - 48),
+      };
+    } else {
+      pan.value = {
+        x: Math.round(vpW / 2 - rootCenterX),
+        y: Math.round(48 - rootCard.y),
+      };
+    }
   }
 
   function fitToScreen() {
     const vp = viewportRef.value;
-    if (!vp) return;
-
-    const vpW = vp.clientWidth || 1000;
-    const vpH = vp.clientHeight || 650;
-
-    const groupLayouts = getGroupLayouts();
-    if (groupLayouts.length === 0) {
+    const sg = sceneGraph.value;
+    if (!vp || !sg || sg.cards.length === 0) {
       centerOnOrigin();
       return;
     }
 
-    let minX = Infinity;
-    let maxX = -Infinity;
-    let minY = Infinity;
-    let maxY = -Infinity;
-
-    groupLayouts.forEach(gl => {
-      if (gl.left < minX) minX = gl.left;
-      if (gl.right > maxX) maxX = gl.right;
-      if (gl.top < minY) minY = gl.top;
-      if (gl.bottom > maxY) maxY = gl.bottom;
-    });
-
-    const renderedBranchWidths = getRenderedBranchWidths();
-    renderedBranchWidths.forEach(bw => {
-      if (bw.minX < minX) minX = bw.minX;
-      if (bw.maxX > maxX) maxX = bw.maxX;
-      if (bw.barY < minY) minY = bw.barY;
-      if (bw.corridorTopY < minY) minY = bw.corridorTopY;
-    });
+    const vpW = vp.clientWidth || 1000;
+    const vpH = vp.clientHeight || 650;
+    const { minX, maxX, minY, maxY } = sg.bounds;
 
     if (
       !Number.isFinite(minX) ||
@@ -117,7 +87,7 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
 
     const scaleX = vpW / contentW;
     const scaleY = vpH / contentH;
-    const targetZoom = Math.max(0.1, Math.min(2.0, Math.min(scaleX, scaleY)));
+    const targetZoom = Math.max(0.08, Math.min(2.0, Math.min(scaleX, scaleY)));
 
     zoom.value = Math.round(targetZoom * 100) / 100;
 
@@ -176,13 +146,11 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
     isPanning.value = false;
   }
 
-  // Selektion und Highlights aufheben
   function clearSelection() {
     activeDesignPersonId.value = '';
     onClearSelectionEmit();
   }
 
-  // Klick auf den Viewport / Hintergrund außerhalb von Personeneinträgen und Funktionsbereichen
   function onViewportClick(e: MouseEvent) {
     if (didPanCanvas) {
       didPanCanvas = false;
@@ -199,17 +167,17 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
       closeBgPopover();
     }
 
-    // Wenn der Klick innerhalb eines Eintrages oder Funktionsbereiches erfolgte, Selektion nicht aufheben
     if (
       target.closest('.design-person-card') ||
       target.closest('.sibling-group-container') ||
+      target.closest('.design-subtree-frame') ||
+      target.closest('.design-edge-hit') ||
+      target.closest('.design-breadcrumbs') ||
       target.closest('.design-toolbar') ||
-      target.closest('.floating-level-controls-container') ||
       target.closest('.design-zoom-controls') ||
       target.closest('.group-floating-controls') ||
-      target.closest('.branch-width-bar') ||
-      target.closest('.branch-corridor-zone') ||
-      target.closest('.design-proband-prompt')
+      target.closest('.design-proband-prompt') ||
+      target.closest('.design-modal-card')
     ) {
       return;
     }
@@ -217,7 +185,6 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
     clearSelection();
   }
 
-  // Mausrad steuert die Zoom-Funktion, zentriert auf die aktuelle Mauszeiger-Position
   function handleWheelZoom(e: WheelEvent) {
     e.preventDefault();
     const vp = viewportRef.value;
@@ -227,16 +194,13 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
     const mouseX = e.clientX - rect.left;
     const mouseY = e.clientY - rect.top;
 
-    // Zoomfaktor je Mausrad-Richtung
     const zoomFactor = e.deltaY < 0 ? 1.09 : 0.91;
     const currentZoom = zoom.value;
     const nextZoom = Math.max(0.08, Math.min(2.5, currentZoom * zoomFactor));
 
-    // Leinwandkoordinaten unter dem Mauszeiger
     const canvasX = (mouseX - pan.value.x) / currentZoom;
     const canvasY = (mouseY - pan.value.y) / currentZoom;
 
-    // Pan so anpassen, dass der Punkt unter dem Mauszeiger stabil bleibt
     pan.value = {
       x: Math.round(mouseX - canvasX * nextZoom),
       y: Math.round(mouseY - canvasY * nextZoom),
@@ -244,7 +208,6 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
     zoom.value = Math.round(nextZoom * 1000) / 1000;
   }
 
-  // Zoom-Buttons in der Ansicht (zentriert auf Viewport-Mitte)
   function zoomStepCenter(factor: number) {
     const vp = viewportRef.value;
     const vpW = vp?.clientWidth || 1000;
@@ -261,6 +224,30 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
     zoom.value = Math.round(nextZoom * 1000) / 1000;
   }
 
+  function focusCardByPersonId(personId: string, rightDrawerOpen: boolean = false): boolean {
+    const vp = viewportRef.value;
+    const sg = sceneGraph.value;
+    const card = sg?.cards.find(c => c.personId === personId);
+    if (!vp || !card) return false;
+
+    const vpW = vp.clientWidth || 1000;
+    const vpH = vp.clientHeight || 650;
+    const drawerWidth = rightDrawerOpen && vpW - 390 > 320 ? 390 : 0;
+    const visibleCenterX = (vpW - drawerWidth) / 2;
+
+    if (zoom.value < 0.65) {
+      zoom.value = 0.85;
+    }
+
+    const cardCenterX = card.x + card.width / 2;
+    const cardCenterY = card.y + card.height / 2;
+    pan.value = {
+      x: Math.round(visibleCenterX - cardCenterX * zoom.value),
+      y: Math.round(vpH / 2 - cardCenterY * zoom.value),
+    };
+    return true;
+  }
+
   return {
     viewportRef,
     pan,
@@ -268,6 +255,7 @@ export function useDesignNavigation(options: UseDesignNavigationOptions) {
     isPanning,
     centerOnOrigin,
     fitToScreen,
+    focusCardByPersonId,
     startCanvasPan,
     handleCanvasPanMove,
     onCanvasPan,

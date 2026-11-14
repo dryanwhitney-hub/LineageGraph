@@ -3,6 +3,8 @@ import { ref, computed, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import {
   isValidGedcomXref,
+  sortSpousesByDate,
+  sortChildIdsByBirth,
   type Person,
   type SpouseConnection,
   type ColumnConfig,
@@ -440,7 +442,7 @@ watch(
                 <div v-else-if="col.key === 'spouses'" class="chips-container">
                   <template v-if="person.spouses && person.spouses.length > 0">
                     <span
-                      v-for="sp in person.spouses"
+                      v-for="sp in sortSpousesByDate(person.spouses)"
                       :key="sp.id"
                       class="table-chip spouse-chip"
                       @click.stop="emit('select-by-id', sp.id)"
@@ -454,7 +456,7 @@ watch(
                 <div v-else-if="col.key === 'children'" class="chips-container">
                   <template v-if="person.children_ids && person.children_ids.length > 0">
                     <span
-                      v-for="cid in person.children_ids"
+                      v-for="cid in sortChildIdsByBirth(person.children_ids, getPersonById)"
                       :key="cid"
                       class="table-chip child-chip"
                       @click.stop="emit('select-by-id', cid)"
@@ -618,7 +620,7 @@ watch(
                 <div v-else-if="col.key === 'spouses'" class="chips-edit-container" @click.stop>
                   <div class="chips-container">
                     <span
-                      v-for="sp in person.spouses"
+                      v-for="sp in sortSpousesByDate(person.spouses)"
                       :key="sp.id"
                       class="table-chip spouse-chip"
                     >
@@ -688,7 +690,7 @@ watch(
                 <div v-else-if="col.key === 'children'" class="chips-edit-container" @click.stop>
                   <div class="chips-container">
                     <span
-                      v-for="cid in person.children_ids"
+                      v-for="cid in sortChildIdsByBirth(person.children_ids, getPersonById)"
                       :key="cid"
                       class="table-chip child-chip"
                     >

@@ -3,22 +3,23 @@ import { ref, computed, watch, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useI18n } from 'vue-i18n';
+import ExportLanguageSelect, { type ExportLocaleSelection } from '../common/ExportLanguageSelect.vue';
+import { FALLBACK_LOCALE, formatDateByLocale, resolveLocale } from '../../locales/registry';
 import type { ExportPersonInput } from '../../utils/htmlExport';
+import type { Person } from '../../composables/usePersons';
 import {
-  generateDesignExportSvg,
-  renderSvgToRaster,
-  type DesignPersistedState,
-  type DesignExportResult,
-} from '../../utils/designExport';
-import { loadBackgroundImageFromDB } from '../../utils/designBgStorage';
-
-interface DesignLayoutEntry {
-  id: string;
-  proband_id: string;
-  name: string;
-  created_at: string;
-  layout_data: string;
-}
+  bundleDtoToModel,
+  type DesignDocumentSummaryDto,
+  type DesignTreeBundleDto,
+} from '../../composables/useDesignStudioStore';
+import type { DesignSceneGraph, DesignTreeBundle } from '../../domain/design/sceneTypes';
+import { buildDesignSceneGraph } from '../../domain/design/sceneGraphBuilder';
+import {
+  generateSceneGraphPdfBytes,
+  generateSceneGraphSvg,
+  renderSceneSvgToRaster,
+  type SceneExportResult,
+} from '../../utils/designSceneExport';
 
 const props = defineProps<{
   persons: ExportPersonInput[];
@@ -31,16 +32,24 @@ const isLeftPanelCollapsed = ref<boolean>(false);
 const saveStatusMsg = ref<string>('');
 const saveErrorMsg = ref<string>('');
 
-const savedDesignLayouts = ref<DesignLayoutEntry[]>([]);
+const savedDesignLayouts = ref<DesignDocumentSummaryDto[]>([]);
 const isLoadingDesignLayouts = ref<boolean>(false);
 const selectedDesignLayoutId = ref<string>('');
-const selectedDesignState = ref<DesignPersistedState | null>(null);
+const selectedDesignBundle = ref<DesignTreeBundle | null>(null);
 
 const designExportGrid = ref<boolean>(false);
 const designExportIncludeBg = ref<boolean>(true);
 const designExportOnlyYears = ref<boolean>(false);
-const designExportFormat = ref<'png' | 'jpg' | 'svg'>('png');
+const designExportFormat = ref<'png' | 'jpg' | 'svg' | 'pdf'>('png');
+const exportLangOverride = ref<ExportLocaleSelection>('auto');
+
+const effectiveExportLocale = computed(() =>
+  exportLangOverride.value === 'auto'
+    ? (resolveLocale(locale.value) ?? FALLBACK_LOCALE)
+    : exportLangOverride.value
+);
 const designExportScale = ref<number>(2);
+const designExportPdfPaper = ref<'auto' | 'a4' | 'a3' | 'a2' | 'a1' | 'a0'>('auto');
 const isExportingDesign = ref<boolean>(false);
 
 const designViewportRef = ref<HTMLElement | null>(null);
@@ -50,11 +59,37 @@ let isDesignPanning = false;
 let designPanStartClient = { x: 0, y: 0 };
 let designPanOrigin = { x: 0, y: 0 };
 
+const normalizedPersons = computed<Person[]>(() => {
+  const childrenByParent = new Map<string, string[]>();
+  for (const p of props.persons) {
+    for (const pid of p.parent_ids || []) {
+      const list = childrenByParent.get(pid) || [];
+      if (!list.includes(p.id)) list.push(p.id);
+      childrenByParent.set(pid, list);
+    }
+  }
+  return props.persons.map(p => ({
+    id: p.id,
+    given_name: p.given_name,
+    surname: p.surname,
+    sex: p.sex,
+    birth_date: p.birth_date,
+    birth_place: p.birth_place,
+    death_date: p.death_date,
+    death_place: p.death_place,
+    gedcom_extra: p.gedcom_extra || {},
+    spouses: p.spouses || [],
+    parent_ids: p.parent_ids || [],
+    children_ids: (p as unknown as Person).children_ids || childrenByParent.get(p.id) || [],
+    proband_data: (p as unknown as Person).proband_data || {},
+  }));
+});
+
 function formatLayoutDate(isoStr: string): string {
   if (!isoStr) return '';
   try {
     const d = new Date(isoStr);
-    return d.toLocaleDateString(locale.value === 'en' ? 'en-US' : 'de-DE', {
+    return formatDateByLocale(d, locale.value, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -71,7 +106,10 @@ async function fetchSavedDesignLayouts() {
   saveStatusMsg.value = '';
   saveErrorMsg.value = '';
   try {
-    const list = await invoke<DesignLayoutEntry[]>('get_design_layouts', { probandId: '' });
+    const list = await invoke<DesignDocumentSummaryDto[]>('list_design_documents', {
+      rootPersonId: null,
+      documentKind: null,
+    });
     savedDesignLayouts.value = list || [];
     if (savedDesignLayouts.value.length > 0) {
       let chosen = savedDesignLayouts.value[0];
@@ -79,52 +117,40 @@ async function fetchSavedDesignLayouts() {
         const found = savedDesignLayouts.value.find(l => l.id === selectedDesignLayoutId.value);
         if (found) chosen = found;
       } else if (props.activeProbandId) {
-        const matching = savedDesignLayouts.value.find(l => l.proband_id === props.activeProbandId);
+        const matching = savedDesignLayouts.value.find(
+          l => l.root_person_id === props.activeProbandId && l.document_kind === 'master'
+        ) || savedDesignLayouts.value.find(l => l.root_person_id === props.activeProbandId);
         if (matching) chosen = matching;
       }
       await selectDesignLayout(chosen);
     } else {
-      selectedDesignState.value = null;
+      selectedDesignBundle.value = null;
       selectedDesignLayoutId.value = '';
     }
   } catch (err) {
-    console.error('Failed to load design layouts', err);
+    console.error('Failed to load design documents', err);
     savedDesignLayouts.value = [];
-    selectedDesignState.value = null;
+    selectedDesignBundle.value = null;
   } finally {
     isLoadingDesignLayouts.value = false;
   }
 }
 
-async function selectDesignLayout(entry: DesignLayoutEntry) {
+async function selectDesignLayout(entry: DesignDocumentSummaryDto) {
   selectedDesignLayoutId.value = entry.id;
   try {
-    const parsed = JSON.parse(entry.layout_data) as DesignPersistedState;
-    if (!parsed.backgroundImageData && parsed.backgroundConfig) {
-      try {
-        const pId = parsed.probandId || 'default';
-        let stored = await loadBackgroundImageFromDB(`proband_${pId}`);
-        if (!stored || !stored.dataUrl) {
-          stored = await loadBackgroundImageFromDB(`design_bg_${parsed.probandId}`);
-        }
-        if (!stored || !stored.dataUrl) {
-          stored = await loadBackgroundImageFromDB();
-        }
-        if (stored && stored.dataUrl) {
-          parsed.backgroundImageData = stored.dataUrl;
-        }
-      } catch {}
-    }
-    selectedDesignState.value = parsed;
-    if (parsed.cardConfig && typeof parsed.cardConfig.showOnlyYears === 'boolean') {
-      designExportOnlyYears.value = parsed.cardConfig.showOnlyYears;
-    }
+    const dto = await invoke<DesignTreeBundleDto>('load_design_tree_bundle', {
+      documentId: entry.id,
+    });
+    const bundle = bundleDtoToModel(dto);
+    selectedDesignBundle.value = bundle;
+    designExportOnlyYears.value = Boolean(bundle.rootDocument.cardConfig?.showOnlyYears);
     setTimeout(() => {
       fitDesignPreview();
-    }, 120);
+    }, 100);
   } catch (err) {
-    console.error('Failed to parse design layout_data', err);
-    selectedDesignState.value = null;
+    console.error('Failed to load design tree bundle', err);
+    selectedDesignBundle.value = null;
   }
 }
 
@@ -135,15 +161,29 @@ function onDesignLayoutDropdownChange(id: string) {
   }
 }
 
-const designExportResult = computed<DesignExportResult | null>(() => {
-  if (!selectedDesignState.value) return null;
-  return generateDesignExportSvg(selectedDesignState.value, props.persons as any, {
+const builtSceneGraph = computed<DesignSceneGraph | null>(() => {
+  if (!selectedDesignBundle.value) return null;
+  return buildDesignSceneGraph(
+    selectedDesignBundle.value,
+    normalizedPersons.value,
+    effectiveExportLocale.value
+  );
+});
+
+const hasAnyBackgroundAsset = computed(() => {
+  return Boolean(builtSceneGraph.value && builtSceneGraph.value.backgrounds.length > 0);
+});
+
+const designExportResult = computed<SceneExportResult | null>(() => {
+  if (!builtSceneGraph.value) return null;
+  return generateSceneGraphSvg(builtSceneGraph.value, {
     includeGrid: designExportGrid.value,
     includeBackground: designExportIncludeBg.value,
+    onlyYears: designExportOnlyYears.value,
     format: designExportFormat.value,
     scale: designExportScale.value,
-    onlyYears: designExportOnlyYears.value,
-    locale: locale.value === 'en' ? 'en' : 'de',
+    pdfPaperSize: designExportPdfPaper.value,
+    locale: effectiveExportLocale.value,
   });
 });
 
@@ -256,12 +296,12 @@ function downloadBlob(blob: Blob, fileName: string) {
 }
 
 async function saveDesignImageFile() {
-  if (!designExportResult.value || !selectedDesignState.value) return;
+  if (!designExportResult.value || !selectedDesignBundle.value) return;
   saveStatusMsg.value = '';
   saveErrorMsg.value = '';
   isExportingDesign.value = true;
 
-  const stateName = selectedDesignState.value.name || 'stammbaum_design';
+  const stateName = selectedDesignBundle.value.rootDocument.name || 'stammbaum_design';
   const cleanName = stateName.replace(/[^a-zA-Z0-9äöüÄÖÜß_-]+/g, '_').replace(/^_+|_+$/g, '');
   const fmt = designExportFormat.value;
   const defaultFileName = `${cleanName || 'stammbaum_design'}.${fmt}`;
@@ -269,16 +309,16 @@ async function saveDesignImageFile() {
   try {
     let filePath: string | null = null;
     try {
+      const filterMap: Record<'png' | 'jpg' | 'svg' | 'pdf', { name: string; extensions: string[] }> = {
+        png: { name: 'PNG Bild (*.png)', extensions: ['png'] },
+        jpg: { name: 'JPEG Bild (*.jpg, *.jpeg)', extensions: ['jpg', 'jpeg'] },
+        svg: { name: 'SVG Vektorgrafik (*.svg)', extensions: ['svg'] },
+        pdf: { name: 'Druckbares PDF (*.pdf)', extensions: ['pdf'] },
+      };
       const res = await save({
         title: t('export_design_save_dialog_title'),
         defaultPath: defaultFileName,
-        filters: [
-          fmt === 'png'
-            ? { name: 'PNG Bild (*.png)', extensions: ['png'] }
-            : fmt === 'jpg'
-            ? { name: 'JPEG Bild (*.jpg, *.jpeg)', extensions: ['jpg', 'jpeg'] }
-            : { name: 'SVG Vektorgrafik (*.svg)', extensions: ['svg'] },
-        ],
+        filters: [filterMap[fmt]],
       });
       if (typeof res === 'string') filePath = res;
     } catch {
@@ -295,8 +335,24 @@ async function saveDesignImageFile() {
         downloadBlob(blob, defaultFileName);
         saveStatusMsg.value = t('export_design_save_success', { path: defaultFileName });
       }
+    } else if (fmt === 'pdf') {
+      const pdfBytes = await generateSceneGraphPdfBytes(
+        designExportResult.value.svgString,
+        designExportResult.value.width,
+        designExportResult.value.height,
+        designExportScale.value,
+        designExportPdfPaper.value
+      );
+      if (filePath) {
+        await invoke('save_binary_file', { filePath, data: Array.from(pdfBytes) });
+        saveStatusMsg.value = t('export_design_save_success', { path: filePath });
+      } else {
+        const blob = new Blob([pdfBytes as unknown as BlobPart], { type: 'application/pdf' });
+        downloadBlob(blob, defaultFileName);
+        saveStatusMsg.value = t('export_design_save_success', { path: defaultFileName });
+      }
     } else {
-      const { blob } = await renderSvgToRaster(
+      const { blob } = await renderSceneSvgToRaster(
         designExportResult.value.svgString,
         designExportResult.value.width,
         designExportResult.value.height,
@@ -358,7 +414,7 @@ onMounted(() => {
                 :key="'layout-' + l.id"
                 :value="l.id"
               >
-                {{ l.name }} ({{ formatLayoutDate(l.created_at) }})
+                {{ l.document_kind === 'subtree' ? '🌿 ' : '🏛️ ' }}{{ l.name }} ({{ formatLayoutDate(l.updated_at || l.created_at) }})
               </option>
             </select>
           </div>
@@ -368,7 +424,7 @@ onMounted(() => {
         </div>
 
         <!-- 2. Export-Optionen -->
-        <template v-if="selectedDesignState">
+        <template v-if="builtSceneGraph && selectedDesignBundle">
           <!-- Ebenenraster Checkbox -->
           <div class="export-section">
             <label class="export-section-label">📏 {{ t('export_design_grid_option_title') }}</label>
@@ -384,18 +440,23 @@ onMounted(() => {
           <!-- Hintergrundbild Checkbox / Info -->
           <div class="export-section">
             <label class="export-section-label">🖼️ {{ t('export_design_bg_option_title') }}</label>
-            <div v-if="selectedDesignState.backgroundImageData" class="bg-config-block">
+            <div v-if="hasAnyBackgroundAsset" class="bg-config-block">
               <label class="cfg-checkbox-label">
                 <input type="checkbox" v-model="designExportIncludeBg" />
                 <span class="cfg-label-text">{{ t('export_design_include_bg') }}</span>
               </label>
               <span class="cfg-sub-hint" :style="{ color: designExportIncludeBg ? '#16a34a' : '#d97706' }">
-                {{ designExportIncludeBg ? t('export_design_bg_present', { name: selectedDesignState.backgroundConfig?.fileName || 'Bild' }) : t('export_design_bg_disabled') }}
+                {{ designExportIncludeBg ? t('export_design_bg_present', { name: selectedDesignBundle.rootDocument.bgConfig?.fileName || 'Bild' }) : t('export_design_bg_disabled') }}
               </span>
             </div>
             <div v-else class="bg-none-notice">
               <span>⚪ {{ t('export_design_bg_none_transparent') }}</span>
             </div>
+          </div>
+
+          <!-- Export-Sprache -->
+          <div class="export-section">
+            <ExportLanguageSelect v-model="exportLangOverride" />
           </div>
 
           <!-- Datumsanzeige (Jahreszahlen vs. volles Datum) -->
@@ -407,7 +468,7 @@ onMounted(() => {
             </label>
           </div>
 
-          <!-- Dateiformat Auswahl (PNG, JPG, SVG) -->
+          <!-- Dateiformat Auswahl (PNG, JPG, SVG, PDF) -->
           <div class="export-section">
             <label class="export-section-label">🎨 {{ t('export_design_format_label') }}</label>
             <div class="format-button-group">
@@ -435,16 +496,42 @@ onMounted(() => {
               >
                 SVG
               </button>
+              <button
+                type="button"
+                class="format-pill-btn"
+                :class="{ active: designExportFormat === 'pdf' }"
+                @click="designExportFormat = 'pdf'"
+              >
+                PDF
+              </button>
+            </div>
+            <div v-if="designExportFormat === 'pdf'" style="margin-top: 4px;">
+              <select v-model="designExportPdfPaper" class="export-dropdown">
+                <option value="auto">Papierformat: Auto (Szene exakt)</option>
+                <option value="a4">DIN A4</option>
+                <option value="a3">DIN A3</option>
+                <option value="a2">DIN A2</option>
+                <option value="a1">DIN A1</option>
+                <option value="a0">DIN A0 (Poster)</option>
+              </select>
             </div>
             <span class="cfg-sub-hint">
-              {{ designExportFormat === 'png' ? t('export_design_format_png') : designExportFormat === 'jpg' ? t('export_design_format_jpg') : t('export_design_format_svg') }}
+              {{
+                designExportFormat === 'png'
+                  ? t('export_design_format_png')
+                  : designExportFormat === 'jpg'
+                  ? t('export_design_format_jpg')
+                  : designExportFormat === 'pdf'
+                  ? 'Direkt druckbares PDF-Dokument im gewählten Format.'
+                  : t('export_design_format_svg')
+              }}
             </span>
-            <span v-if="designExportFormat !== 'jpg' && !selectedDesignState.backgroundImageData" class="cfg-transparency-hint">
+            <span v-if="designExportFormat !== 'jpg' && designExportFormat !== 'pdf' && !hasAnyBackgroundAsset" class="cfg-transparency-hint">
               💡 {{ t('export_design_transparent_hint') }}
             </span>
           </div>
 
-          <!-- Auflösung / Skalierung bei PNG/JPG -->
+          <!-- Auflösung / Skalierung bei PNG/JPG/PDF -->
           <div v-if="designExportFormat !== 'svg'" class="export-section">
             <label class="export-section-label">🔍 {{ t('export_design_scale_label') }}</label>
             <div class="scale-button-group">
@@ -464,6 +551,14 @@ onMounted(() => {
               >
                 {{ t('export_design_scale_2x') }}
               </button>
+              <button
+                type="button"
+                class="scale-pill-btn"
+                :class="{ active: designExportScale === 3 }"
+                @click="designExportScale = 3"
+              >
+                3x (Druck)
+              </button>
             </div>
           </div>
 
@@ -472,15 +567,15 @@ onMounted(() => {
             <label class="export-section-label">📊 {{ t('export_design_stats_title') }}</label>
             <div class="design-stats-grid">
               <div class="d-stat-pill">
-                <span class="stat-num">{{ designExportResult.stats.totalLevels }}</span>
+                <span class="stat-num">{{ builtSceneGraph.levels.length }}</span>
                 <span class="stat-lbl">{{ t('export_design_stat_levels') }}</span>
               </div>
               <div class="d-stat-pill">
-                <span class="stat-num">{{ designExportResult.stats.totalPersons }}</span>
+                <span class="stat-num">{{ builtSceneGraph.cards.length }}</span>
                 <span class="stat-lbl">{{ t('export_design_stat_persons') }}</span>
               </div>
               <div class="d-stat-pill">
-                <span class="stat-num">{{ designExportResult.stats.totalGroups }}</span>
+                <span class="stat-num">{{ builtSceneGraph.groups.length }}</span>
                 <span class="stat-lbl">{{ t('export_design_stat_groups') }}</span>
               </div>
             </div>
@@ -515,7 +610,7 @@ onMounted(() => {
       <div class="export-preview-topbar">
         <div class="preview-info-left">
           <span class="badge-preview-mode">
-            🖼️ {{ t('export_design_preview_badge') }}: {{ selectedDesignState?.name || '-' }}
+            🖼️ {{ t('export_design_preview_badge') }}: {{ selectedDesignBundle?.rootDocument.name || '-' }}
           </span>
           <span v-if="designExportResult" class="dimensions-badge">
             {{ designExportResult.width }} × {{ designExportResult.height }} px
@@ -547,7 +642,7 @@ onMounted(() => {
         v-if="designExportResult"
         ref="designViewportRef"
         class="design-export-viewport"
-        :class="{ 'is-transparent-bg': (!designExportIncludeBg || !selectedDesignState?.backgroundImageData) && designExportFormat !== 'jpg' }"
+        :class="{ 'is-transparent-bg': (!designExportIncludeBg || !hasAnyBackgroundAsset) && designExportFormat !== 'jpg' && designExportFormat !== 'pdf' }"
         @wheel="onDesignWheel"
         @mousedown="onDesignMouseDown"
       >

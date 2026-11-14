@@ -1,1402 +1,1745 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
-import { useI18n } from 'vue-i18n';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import type {
-  DesignCardConfig,
-  DesignBackgroundConfig,
-  DesignLayoutType,
-  SubtreeBackground,
-} from '../../types/design';
-import type { DesignSiblingGroup, BranchWidthConstraint } from '../../composables/useDesignHistory';
-import {
-  type DesignPerson,
-  type LevelBandInfo,
-  type RenderedCardData,
-  type GroupLayoutInfo,
-  type RenderedBranchWidth,
-  type EdgeGeometry,
-} from '../../composables/useDesignLayout';
-import DesignConnectorLayer from './DesignConnectorLayer.vue';
+  DesignStudioStore,
+  DesignDocumentSummaryDto,
+} from '../../composables/useDesignStudioStore';
+import type {
+  SceneBackgroundLayer,
+  SceneConnectorEdge,
+  SceneImplexBadge,
+  ScenePersonCard,
+  SceneSiblingGroup,
+} from '../../domain/design/sceneTypes';
 import DesignPersonCard from './DesignPersonCard.vue';
-
-const { t } = useI18n();
+import DesignConnectorLayer from './DesignConnectorLayer.vue';
+import { DOCKED_GROUP_GAP_X } from '../../domain/design/contourLayoutEngine';
 
 const props = defineProps<{
+  store: DesignStudioStore;
   pan: { x: number; y: number };
   zoom: number;
   isPanning: boolean;
-  canvasWidth: number;
-  canvasHeight: number;
-  totalLevels: number;
-  levelsTopToBottom: LevelBandInfo[];
-  groupLayouts: GroupLayoutInfo[];
-  renderedBranchWidths: RenderedBranchWidth[];
-  edgeGeometry: EdgeGeometry;
-  cardDataByPersonId: Map<string, RenderedCardData>;
-  activeCardConfig: DesignCardConfig;
-  activeDesignPersonId: string;
-  selectedId: string;
-  branchWidths: Map<string, BranchWidthConstraint>;
+  isDetailsOpen?: boolean;
   highlightedPathIds?: Set<string>;
-  draggingGroupId: string | null;
-  draggingClusterGroupIds: Set<string>;
-  dragHoverInsertAboveLevel: number | null;
-  activeSnapGuideX: number | null;
-  draggingBwId: string | null;
-  bgImageData: string | null;
-  bgConfig: DesignBackgroundConfig;
-  isBgDraggingOnCanvas: boolean;
-  canUndo: boolean;
-  subtreeBackgrounds?: SubtreeBackground[];
-  currentLayoutType?: DesignLayoutType;
-  currentLayoutName?: string;
-  // Navigation & Viewport handlers
+  savedSubtreeList: DesignDocumentSummaryDto[];
   setViewportRef: (el: HTMLElement | null) => void;
   startCanvasPan: (e: MouseEvent) => void;
   onCanvasPan: (e: MouseEvent) => void;
-  stopCanvasPan: () => void;
+  stopCanvasPan: (e: MouseEvent) => void;
   onViewportClick: (e: MouseEvent) => void;
   handleWheelZoom: (e: WheelEvent) => void;
   zoomStepCenter: (factor: number) => void;
   centerOnOrigin: () => void;
   fitToScreen: () => void;
-  // Layout query & action functions
-  getLevelBandTopY: (level: number) => number;
-  hasDescendants: (personId: string) => boolean;
-  isParentExpanded: (personId: string) => boolean;
-  toggleDescendants: (personId: string) => void;
-  isPersonSelected: (personId: string) => boolean;
-  selectCardPerson: (person: DesignPerson) => void;
-  startGroupDrag: (e: MouseEvent, grp: DesignSiblingGroup) => void;
-  startBranchWidthDrag: (e: MouseEvent, personId: string) => void;
-  startBranchWidthResize: (e: MouseEvent, personId: string, side: 'left' | 'right') => void;
-  removeBranchWidth: (personId: string) => void;
-  groupDescendantsByLevel: (rootPersonId: string) => void;
-  ungroupAtPerson: (grp: DesignSiblingGroup, anchorPersonId: string, direction: 'left' | 'right') => void;
-  getSelectedOrAnchorPersonId: (gl: GroupLayoutInfo) => string;
-  regroupSelectedOrFirstInGroup: (gl: GroupLayoutInfo) => void;
-  groupAllInLevel: (level: number) => void;
-  detachPersonFromGroup: (grp: DesignSiblingGroup, personId: string) => void;
-  canRegroupPerson: (personId: string) => boolean;
-  regroupSiblingsForPerson: (personId: string) => void;
-  dockToNeighbor: (grp: DesignSiblingGroup, direction: 'left' | 'right') => void;
-  moveGroupLevel: (grp: DesignSiblingGroup, delta: number) => void;
-  insertLevelAboveAndMoveGroup: (grp: DesignSiblingGroup) => void;
-  movePersonWithinGroup: (grp: DesignSiblingGroup, personId: string, dir: -1 | 1) => void;
-  moveSinglePersonLevel: (grp: DesignSiblingGroup, personId: string, deltaLevel: number) => void;
-  insertEmptyLevelAbove: (targetLevel: number) => void;
-  removeEmptyLevel: (levelToRemove: number) => void;
 }>();
 
 const emit = defineEmits<{
-  (e: 'update:isBgDraggingOnCanvas', val: boolean): void;
-  (e: 'drop-bg-file', file: File): void;
-  (e: 'undo'): void;
-  (e: 'create-new-design'): void;
-  (e: 'open-load-modal'): void;
-  (e: 'open-save-modal'): void;
-  (e: 'open-subtree', layoutId: string): void;
+  (e: 'select-person', personId: string): void;
+  (e: 'open-details', personId: string): void;
 }>();
 
-const localViewportRef = ref<HTMLElement | null>(null);
-const isBgMoving = ref<boolean>(false);
+const localViewportEl = ref<HTMLElement | null>(null);
+const vpSize = ref({ w: 1200, h: 800 });
+let resizeObserver: ResizeObserver | null = null;
 
-watch(localViewportRef, (newEl, oldEl) => {
-  if (oldEl) {
-    oldEl.removeEventListener('wheel', props.handleWheelZoom);
+function attachViewportRef(el: unknown) {
+  const htmlEl = el instanceof HTMLElement ? el : null;
+  localViewportEl.value = htmlEl;
+  props.setViewportRef(htmlEl);
+}
+
+function onCanvasKeyDown(e: KeyboardEvent) {
+  if (e.key === 'Escape' && props.store.isSplitToolActive.value) {
+    props.store.setSplitToolActive(false);
   }
-  props.setViewportRef(newEl);
-  if (newEl) {
-    newEl.addEventListener('wheel', props.handleWheelZoom, { passive: false });
-  }
-});
+}
 
 onMounted(() => {
-  if (localViewportRef.value) {
-    props.setViewportRef(localViewportRef.value);
-    localViewportRef.value.addEventListener('wheel', props.handleWheelZoom, { passive: false });
+  window.addEventListener('keydown', onCanvasKeyDown);
+  if (localViewportEl.value) {
+    vpSize.value = {
+      w: localViewportEl.value.clientWidth || 1200,
+      h: localViewportEl.value.clientHeight || 800,
+    };
+    resizeObserver = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        vpSize.value = {
+          w: entry.contentRect.width || 1200,
+          h: entry.contentRect.height || 800,
+        };
+      }
+    });
+    resizeObserver.observe(localViewportEl.value);
   }
 });
 
-onUnmounted(() => {
-  if (localViewportRef.value) {
-    localViewportRef.value.removeEventListener('wheel', props.handleWheelZoom);
-  }
-  props.setViewportRef(null);
-  window.removeEventListener('mousemove', onBgMouseMove);
-  window.removeEventListener('mouseup', onBgMouseUp);
+  onBeforeUnmount(() => {
+  resizeObserver?.disconnect();
+  if (dragRafId !== null) cancelAnimationFrame(dragRafId);
+  window.removeEventListener('keydown', onCanvasKeyDown);
+  window.removeEventListener('mousemove', onGlobalMouseMove);
+  window.removeEventListener('mouseup', onGlobalMouseUp);
 });
 
-const bgDisplayWidth = computed<number>(() => {
-  const base = props.bgConfig.naturalWidth || 1200;
-  return Math.max(20, Math.round(base * (props.bgConfig.scale / 100)));
-});
+const scene = computed(() => props.store.sceneGraph.value);
+const activeDoc = computed(() => props.store.activeDocument.value);
+const selectedPersonId = computed(() => props.store.selectedPersonId.value);
+const selectedGroupKey = computed(() => props.store.selectedGroupKey.value);
+const selectedEdgeKey = computed(() => props.store.selectedEdgeKey.value);
+const showLevelGrid = computed(() => props.store.showLevelGrid.value);
+const isSplitToolActive = computed(() => props.store.isSplitToolActive.value);
+const dragPreview = computed(() => props.store.dragPreview.value);
+const isLoading = computed(() => props.store.isLoading.value);
 
-const bgDisplayHeight = computed<number>(() => {
-  const base = props.bgConfig.naturalHeight || 800;
-  return Math.max(20, Math.round(base * (props.bgConfig.scale / 100)));
-});
-
-const bgContainerStyle = computed(() => {
+const levelBandExtent = computed(() => {
+  const b = scene.value?.bounds;
+  if (!b) return { left: -1200, width: 2400 };
+  const pad = 600;
   return {
-    position: 'absolute' as const,
-    left: props.bgConfig.x + 'px',
-    top: props.bgConfig.y + 'px',
-    width: bgDisplayWidth.value + 'px',
-    height: bgDisplayHeight.value + 'px',
-    opacity: props.isBgDraggingOnCanvas
-      ? Math.max(0.4, Math.min(props.bgConfig.opacity / 100, 0.85))
-      : props.bgConfig.opacity / 100,
-    pointerEvents: props.isBgDraggingOnCanvas ? ('auto' as const) : ('none' as const),
-    userSelect: 'none' as const,
-    zIndex: props.isBgDraggingOnCanvas ? 70 : 0,
-    cursor: props.isBgDraggingOnCanvas ? (isBgMoving.value ? 'grabbing' : 'grab') : 'default',
+    left: b.minX - pad,
+    width: Math.max(2400, b.width + pad * 2),
   };
 });
 
-const bgImageStyle = computed(() => {
-  return {
-    width: '100%',
-    height: '100%',
-    objectFit: 'contain' as const,
-    display: 'block',
-    pointerEvents: 'none' as const,
-  };
+// Viewport-Culling für flüssige Darstellung bei > 2.000 Personen
+const visibleWorldRect = computed(() => {
+  const pad = 320;
+  const minX = -props.pan.x / props.zoom - pad;
+  const minY = -props.pan.y / props.zoom - pad;
+  const maxX = (vpSize.value.w - props.pan.x) / props.zoom + pad;
+  const maxY = (vpSize.value.h - props.pan.y) / props.zoom + pad;
+  return { minX, minY, maxX, maxY };
 });
 
-function onViewportFileDrop(e: DragEvent) {
-  const file = e.dataTransfer?.files?.[0];
-  if (file && (file.type.startsWith('image/') || file.name.match(/\.(jpg|jpeg|png|svg|webp)$/i))) {
-    emit('drop-bg-file', file);
+const visibleCards = computed<ScenePersonCard[]>(() => {
+  const sg = scene.value;
+  if (!sg) return [];
+  if (sg.cards.length <= 160) return sg.cards;
+  const vr = visibleWorldRect.value;
+  const selId = selectedPersonId.value;
+  return sg.cards.filter(
+    c =>
+      c.personId === selId ||
+      (c.x + c.width >= vr.minX &&
+        c.x <= vr.maxX &&
+        c.y + c.height >= vr.minY &&
+        c.y <= vr.maxY)
+  );
+});
+
+// Aktuell ausgewählte Karte & zugehörige Gruppe für die Floating Toolbar
+const selectedCard = computed<ScenePersonCard | null>(() => {
+  const sg = scene.value;
+  const pid = selectedPersonId.value;
+  if (!sg || !pid) return null;
+  return sg.cards.find(c => c.personId === pid) || null;
+});
+
+const selectedGroup = computed<SceneSiblingGroup | null>(() => {
+  const sg = scene.value;
+  if (!sg) return null;
+  if (selectedGroupKey.value) {
+    const byKey = sg.groups.find(g => g.groupKey === selectedGroupKey.value);
+    if (byKey) return byKey;
   }
+  if (selectedCard.value) {
+    return sg.groups.find(g => g.groupKey === selectedCard.value!.groupKey) || null;
+  }
+  return null;
+});
+
+const selectedMountRule = computed(() => {
+  const doc = activeDoc.value;
+  const card = selectedCard.value;
+  if (!doc || !card) return null;
+  return doc.subtreeMounts[card.personId] || null;
+});
+
+const isLockedSubtreeSelection = computed<boolean>(() => {
+  const doc = activeDoc.value;
+  const card = selectedCard.value;
+  if (!doc || !card) return false;
+  return card.ownerDocumentId !== doc.id;
+});
+
+const selectedPersonRule = computed(() => {
+  const doc = activeDoc.value;
+  const card = selectedCard.value;
+  if (!doc || !card || card.ownerDocumentId !== doc.id) return null;
+  return doc.personRules[card.personId] || null;
+});
+
+const availableExistingSubtrees = computed(() => {
+  const doc = activeDoc.value;
+  const card = selectedCard.value;
+  return props.savedSubtreeList.filter(
+    s => s.id !== doc?.id && (!card || s.root_person_id === card.personId)
+  );
+});
+
+const canDockLeftNeighbor = computed<boolean>(() => {
+  const sg = scene.value;
+  const doc = activeDoc.value;
+  const grp = selectedGroup.value;
+  if (!sg || !doc || !grp || grp.ownerDocumentId !== doc.id) return false;
+  const myCluster = grp.dockClusterKey || grp.groupKey;
+  const myGroups = sg.groups.filter(
+    g => g.ownerDocumentId === doc.id && g.level === grp.level && (g.dockClusterKey || g.groupKey) === myCluster
+  );
+  if (myGroups.length === 0) return false;
+  const myMinX = Math.min(...myGroups.map(g => g.x));
+  return sg.groups.some(
+    g =>
+      g.ownerDocumentId === doc.id &&
+      g.level === grp.level &&
+      (g.dockClusterKey || g.groupKey) !== myCluster &&
+      g.x + g.width <= myMinX + grp.width / 2
+  );
+});
+
+const canDockRightNeighbor = computed<boolean>(() => {
+  const sg = scene.value;
+  const doc = activeDoc.value;
+  const grp = selectedGroup.value;
+  if (!sg || !doc || !grp || grp.ownerDocumentId !== doc.id) return false;
+  const myCluster = grp.dockClusterKey || grp.groupKey;
+  const myGroups = sg.groups.filter(
+    g => g.ownerDocumentId === doc.id && g.level === grp.level && (g.dockClusterKey || g.groupKey) === myCluster
+  );
+  if (myGroups.length === 0) return false;
+  const myMaxRight = Math.max(...myGroups.map(g => g.x + g.width));
+  return sg.groups.some(
+    g =>
+      g.ownerDocumentId === doc.id &&
+      g.level === grp.level &&
+      (g.dockClusterKey || g.groupKey) !== myCluster &&
+      g.x >= myMaxRight - grp.width / 2
+  );
+});
+
+const selectedMemberIndex = computed<number>(() => {
+  const card = selectedCard.value;
+  const grp = selectedGroup.value;
+  if (!card || !grp) return -1;
+  return grp.memberIds.indexOf(card.personId);
+});
+
+const canMergeSplitSiblings = computed<boolean>(() => {
+  const sg = scene.value;
+  const doc = activeDoc.value;
+  const grp = selectedGroup.value;
+  if (!sg || !doc || !grp || isLockedSubtreeSelection.value || grp.ownerDocumentId !== doc.id) {
+    return false;
+  }
+  const siblingParts = sg.groups.filter(
+    g =>
+      g.ownerDocumentId === doc.id &&
+      g.anchorParentId === grp.anchorParentId &&
+      (g.marriageIndex ?? null) === (grp.marriageIndex ?? null)
+  );
+  return siblingParts.some(part =>
+    part.memberIds.some(mid => Boolean(doc.personRules[mid]?.customGroupKey))
+  );
+});
+
+interface CanvasSplitSeam {
+  id: string;
+  kind: 'sibling_group' | 'dock_seam';
+  groupKey: string;
+  splitAfterIndex?: number;
+  rightGroupKey?: string;
+  x: number;
+  y: number;
+  height: number;
+  label: string;
 }
 
-function onBgImageLoaded(e: Event) {
-  const img = e.target as HTMLImageElement;
-  if (img && img.naturalWidth && (!props.bgConfig.naturalWidth || !props.bgConfig.naturalHeight)) {
-    props.bgConfig.naturalWidth = img.naturalWidth;
-    props.bgConfig.naturalHeight = img.naturalHeight;
-    if (props.bgConfig.x === 0 && props.bgConfig.y === 0) {
-      props.bgConfig.x = Math.round((props.canvasWidth - bgDisplayWidth.value) / 2);
-      props.bgConfig.y = Math.round((props.canvasHeight - bgDisplayHeight.value) / 2);
+const visibleSplitSeams = computed<CanvasSplitSeam[]>(() => {
+  const sg = scene.value;
+  const doc = activeDoc.value;
+  if (!sg || !doc) return [];
+
+  let targetGroups: SceneSiblingGroup[] = [];
+  if (isSplitToolActive.value) {
+    targetGroups = sg.groups.filter(g => g.ownerDocumentId === doc.id);
+  } else if (!isLockedSubtreeSelection.value && selectedGroup.value && selectedGroup.value.ownerDocumentId === doc.id) {
+    const selClusterKey = selectedGroup.value.dockClusterKey || selectedGroup.value.groupKey;
+    targetGroups = sg.groups.filter(
+      g => g.ownerDocumentId === doc.id && (g.dockClusterKey || g.groupKey) === selClusterKey
+    );
+  } else {
+    return [];
+  }
+
+  const cardById = new Map<string, ScenePersonCard>();
+  for (const c of sg.cards) cardById.set(c.personId, c);
+  const groupByKey = new Map<string, SceneSiblingGroup>();
+  for (const g of sg.groups) groupByKey.set(g.groupKey, g);
+
+  const seams: CanvasSplitSeam[] = [];
+
+  for (const grp of targetGroups) {
+    // A) Trennstellen innerhalb mehrteiliger Geschwistergruppen
+    if (grp.memberIds.length > 1) {
+      for (let i = 0; i < grp.memberIds.length - 1; i++) {
+        const leftCard = cardById.get(grp.memberIds[i]);
+        const rightCard = cardById.get(grp.memberIds[i + 1]);
+        if (!leftCard || !rightCard) continue;
+
+        const sameRow = leftCard.rowIndex === rightCard.rowIndex && Math.abs(leftCard.y - rightCard.y) < 10;
+        const x = sameRow
+          ? (leftCard.x + leftCard.width + rightCard.x) / 2
+          : leftCard.x + leftCard.width + 6;
+        const y = sameRow ? Math.min(leftCard.y, rightCard.y) - 6 : leftCard.y - 4;
+        const height = sameRow
+          ? Math.max(leftCard.height, rightCard.height) + 12
+          : leftCard.height + 8;
+
+        seams.push({
+          id: `seam_sib_${grp.groupKey}_${i}`,
+          kind: 'sibling_group',
+          groupKey: grp.groupKey,
+          splitAfterIndex: i,
+          x,
+          y,
+          height,
+          label: `Gruppe hier trennen: ${leftCard.givenName} | ${rightCard.givenName}`,
+        });
+      }
+    }
+
+    // B) Trennstellen zwischen angedockten Gruppen
+    const dockTargetKey = doc.groupRules[grp.groupKey]?.dockTargetGroupKey ?? grp.dockTargetGroupKey ?? null;
+    if (dockTargetKey) {
+      const leftGrp = groupByKey.get(dockTargetKey);
+      if (leftGrp && leftGrp.ownerDocumentId === doc.id) {
+        const x = (leftGrp.x + leftGrp.width + grp.x) / 2;
+        const y = Math.min(leftGrp.y, grp.y) - 8;
+        const height = Math.max(leftGrp.height, grp.height) + 16;
+        seams.push({
+          id: `seam_dock_${dockTargetKey}_${grp.groupKey}`,
+          kind: 'dock_seam',
+          groupKey: grp.groupKey,
+          rightGroupKey: grp.groupKey,
+          x,
+          y,
+          height,
+          label: 'Angedockte Gruppen an dieser Stelle trennen',
+        });
+      }
     }
   }
+
+  return seams;
+});
+
+function onSplitSeamClick(seam: CanvasSplitSeam) {
+  if (seam.kind === 'sibling_group' && seam.splitAfterIndex !== undefined) {
+    props.store.splitSiblingGroupAtIndex(seam.groupKey, seam.splitAfterIndex);
+  } else if (seam.kind === 'dock_seam' && seam.rightGroupKey) {
+    props.store.splitDockedClusterAtGroup(seam.rightGroupKey);
+  }
 }
 
-let bgDragStartMouseX = 0;
-let bgDragStartMouseY = 0;
-let bgDragInitialX = 0;
-let bgDragInitialY = 0;
+const floatingControlsPos = computed(() => {
+  const card = selectedCard.value;
+  if (!card) return null;
+  return {
+    left: card.x + card.width / 2,
+    top: Math.min(card.y - 10, (selectedGroup.value?.y ?? card.y) - 10),
+  };
+});
 
-function onBgMouseDown(e: MouseEvent) {
-  if (!props.isBgDraggingOnCanvas) return;
+// ============================================================================
+// 60fps Drag-Handling (Cluster horizontal mit Magnet-Andocken, Hintergrund & Wegpunkte)
+// ============================================================================
+
+const DOCK_SNAP_THRESHOLD_PX = 26;
+
+type ActiveDragState =
+  | {
+      kind: 'group';
+      groupKey: string;
+      personId?: string;
+      anchorParentId: string | null;
+      startClientX: number;
+      startClientY: number;
+      latestClientX: number;
+      startRelX: number;
+      undoPushed: boolean;
+      moved: boolean;
+    }
+  | {
+      kind: 'bg';
+      startClientX: number;
+      startClientY: number;
+      latestClientX: number;
+      latestClientY: number;
+      startBgX: number;
+      startBgY: number;
+      undoPushed: boolean;
+      moved: boolean;
+    }
+  | {
+      kind: 'edge';
+      edge: SceneConnectorEdge;
+      axis: 'x' | 'y';
+      startClientX: number;
+      startClientY: number;
+    }
+  | null;
+
+let activeDrag: ActiveDragState = null;
+let dragRafId: number | null = null;
+const activeDragKey = ref<string>('');
+const snapTarget = ref<{
+  sourceGroupKey: string;
+  targetGroupKey: string;
+  side: 'left' | 'right';
+  clusterKey: string;
+} | null>(null);
+
+function isCardInActiveDrag(card: ScenePersonCard): boolean {
+  if (!activeDragKey.value) return false;
+  const grp = scene.value?.groups.find(g => g.groupKey === card.groupKey);
+  const clusterKey = grp?.dockClusterKey || card.groupKey;
+  return clusterKey === activeDragKey.value || card.groupKey === activeDragKey.value;
+}
+
+function updateSnapTarget(draggedGroupKey: string) {
+  const sg = scene.value;
+  const doc = activeDoc.value;
+  if (!sg || !doc) {
+    snapTarget.value = null;
+    return;
+  }
+  const draggedGrp = sg.groups.find(g => g.groupKey === draggedGroupKey);
+  if (!draggedGrp || draggedGrp.ownerDocumentId !== doc.id) {
+    snapTarget.value = null;
+    return;
+  }
+
+  const dragClusterKey = draggedGrp.dockClusterKey || draggedGrp.groupKey;
+  const sameLevel = sg.groups.filter(
+    g => g.ownerDocumentId === doc.id && g.level === draggedGrp.level
+  );
+  const dragCluster = sameLevel.filter(
+    g => (g.dockClusterKey || g.groupKey) === dragClusterKey
+  );
+  if (dragCluster.length === 0) {
+    snapTarget.value = null;
+    return;
+  }
+
+  const dragMinX = Math.min(...dragCluster.map(g => g.x));
+  const dragMaxRight = Math.max(...dragCluster.map(g => g.x + g.width));
+
+  const otherClusters = new Map<string, SceneSiblingGroup[]>();
+  for (const g of sameLevel) {
+    const ck = g.dockClusterKey || g.groupKey;
+    if (ck === dragClusterKey) continue;
+    if (!otherClusters.has(ck)) otherClusters.set(ck, []);
+    otherClusters.get(ck)!.push(g);
+  }
+
+  let best: {
+    dist: number;
+    targetGroupKey: string;
+    side: 'left' | 'right';
+    clusterKey: string;
+  } | null = null;
+
+  for (const [ck, grpList] of otherClusters.entries()) {
+    const sorted = [...grpList].sort((a, b) => a.x - b.x);
+    const leftMost = sorted[0];
+    const rightMost = sorted[sorted.length - 1];
+    const neighborMinX = leftMost.x;
+    const neighborMaxRight = Math.max(...sorted.map(g => g.x + g.width));
+
+    const distLeft = Math.abs(dragMinX - (neighborMaxRight + DOCKED_GROUP_GAP_X));
+    if (distLeft <= DOCK_SNAP_THRESHOLD_PX && (!best || distLeft < best.dist)) {
+      best = { dist: distLeft, targetGroupKey: rightMost.groupKey, side: 'left', clusterKey: ck };
+    }
+
+    const distRight = Math.abs(dragMaxRight + DOCKED_GROUP_GAP_X - neighborMinX);
+    if (distRight <= DOCK_SNAP_THRESHOLD_PX && (!best || distRight < best.dist)) {
+      best = { dist: distRight, targetGroupKey: leftMost.groupKey, side: 'right', clusterKey: ck };
+    }
+  }
+
+  snapTarget.value = best
+    ? {
+        sourceGroupKey: draggedGroupKey,
+        targetGroupKey: best.targetGroupKey,
+        side: best.side,
+        clusterKey: best.clusterKey,
+      }
+    : null;
+}
+
+function onCardMouseDown(card: ScenePersonCard, e: MouseEvent) {
   if (e.button !== 0) return;
+  const doc = activeDoc.value;
+  const grp = scene.value?.groups.find(g => g.groupKey === card.groupKey);
+  if (!doc || card.ownerDocumentId !== doc.id || (grp && grp.ownerDocumentId !== doc.id)) {
+    return;
+  }
+  activeDrag = {
+    kind: 'group',
+    groupKey: card.groupKey,
+    personId: card.personId,
+    anchorParentId: grp?.anchorParentId ?? null,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    latestClientX: e.clientX,
+    startRelX: props.store.getGroupRelativeX(card.groupKey),
+    undoPushed: false,
+    moved: false,
+  };
+  window.addEventListener('mousemove', onGlobalMouseMove);
+  window.addEventListener('mouseup', onGlobalMouseUp);
+}
+
+function onGroupMouseDown(groupKey: string, anchorParentId: string | null, e: MouseEvent) {
+  if (e.button !== 0) return;
+  const doc = activeDoc.value;
+  const grp = scene.value?.groups.find(g => g.groupKey === groupKey);
+  if (!doc || !grp || grp.ownerDocumentId !== doc.id) {
+    return;
+  }
+  activeDrag = {
+    kind: 'group',
+    groupKey,
+    anchorParentId,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    latestClientX: e.clientX,
+    startRelX: props.store.getGroupRelativeX(groupKey),
+    undoPushed: false,
+    moved: false,
+  };
+  window.addEventListener('mousemove', onGlobalMouseMove);
+  window.addEventListener('mouseup', onGlobalMouseUp);
+}
+
+function onBackgroundMouseDown(bg: SceneBackgroundLayer, e: MouseEvent) {
+  if (e.button !== 0) return;
+  if (!activeDoc.value || bg.ownerDocumentId !== activeDoc.value.id || activeDoc.value.bgConfig?.locked !== false) {
+    return;
+  }
   e.stopPropagation();
   e.preventDefault();
-  isBgMoving.value = true;
-  bgDragStartMouseX = e.clientX;
-  bgDragStartMouseY = e.clientY;
-  bgDragInitialX = props.bgConfig.x;
-  bgDragInitialY = props.bgConfig.y;
-  window.addEventListener('mousemove', onBgMouseMove);
-  window.addEventListener('mouseup', onBgMouseUp);
+  const cfg = activeDoc.value.bgConfig;
+  activeDrag = {
+    kind: 'bg',
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    latestClientX: e.clientX,
+    latestClientY: e.clientY,
+    startBgX: cfg.x || 0,
+    startBgY: cfg.y || 0,
+    undoPushed: false,
+    moved: false,
+  };
+  window.addEventListener('mousemove', onGlobalMouseMove);
+  window.addEventListener('mouseup', onGlobalMouseUp);
 }
 
-function onBgMouseMove(e: MouseEvent) {
-  const dx = (e.clientX - bgDragStartMouseX) / props.zoom;
-  const dy = (e.clientY - bgDragStartMouseY) / props.zoom;
-  props.bgConfig.x = Math.round(bgDragInitialX + dx);
-  props.bgConfig.y = Math.round(bgDragInitialY + dy);
+function onWaypointDragStart(edge: SceneConnectorEdge, axis: 'x' | 'y', e: MouseEvent) {
+  if (e.button !== 0) return;
+  props.store.selectedEdgeKey.value = edge.edgeKey;
+  activeDrag = {
+    kind: 'edge',
+    edge,
+    axis,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+  };
+  window.addEventListener('mousemove', onGlobalMouseMove);
+  window.addEventListener('mouseup', onGlobalMouseUp);
 }
 
-function onBgMouseUp() {
-  isBgMoving.value = false;
-  window.removeEventListener('mousemove', onBgMouseMove);
-  window.removeEventListener('mouseup', onBgMouseUp);
+function flushDragFrame() {
+  dragRafId = null;
+  if (!activeDrag) return;
+  const z = props.zoom || 1;
+  if (activeDrag.kind === 'group') {
+    if (!activeDrag.undoPushed) {
+      props.store.beginInteractiveDrag();
+      activeDrag.undoPushed = true;
+      if (activeDrag.personId) {
+        props.store.selectedPersonId.value = activeDrag.personId;
+      }
+      props.store.selectedGroupKey.value = activeDrag.groupKey;
+    }
+    const worldDx = (activeDrag.latestClientX - activeDrag.startClientX) / z;
+    props.store.setGroupRelativeXLive(
+      activeDrag.groupKey,
+      activeDrag.startRelX + worldDx,
+      activeDrag.anchorParentId
+    );
+    updateSnapTarget(activeDrag.groupKey);
+  } else if (activeDrag.kind === 'bg') {
+    if (!activeDrag.undoPushed) {
+      props.store.beginInteractiveDrag();
+      activeDrag.undoPushed = true;
+    }
+    const worldDx = (activeDrag.latestClientX - activeDrag.startClientX) / z;
+    const worldDy = (activeDrag.latestClientY - activeDrag.startClientY) / z;
+    props.store.updateBackgroundConfig(
+      {
+        x: Math.round(activeDrag.startBgX + worldDx),
+        y: Math.round(activeDrag.startBgY + worldDy),
+      },
+      false
+    );
+  }
+}
+
+function onGlobalMouseMove(e: MouseEvent) {
+  if (!activeDrag) return;
+  const z = props.zoom || 1;
+  if (activeDrag.kind === 'group') {
+    const rawDx = e.clientX - activeDrag.startClientX;
+    if (!activeDrag.moved && Math.abs(rawDx) < 4) return;
+    activeDrag.moved = true;
+    activeDrag.latestClientX = e.clientX;
+    const dragGroupKey = activeDrag.groupKey;
+    const grp = scene.value?.groups.find(g => g.groupKey === dragGroupKey);
+    activeDragKey.value = grp?.dockClusterKey || dragGroupKey;
+    if (dragRafId === null) dragRafId = requestAnimationFrame(flushDragFrame);
+  } else if (activeDrag.kind === 'bg') {
+    const rawDx = e.clientX - activeDrag.startClientX;
+    const rawDy = e.clientY - activeDrag.startClientY;
+    if (!activeDrag.moved && Math.hypot(rawDx, rawDy) < 3) return;
+    activeDrag.moved = true;
+    activeDrag.latestClientX = e.clientX;
+    activeDrag.latestClientY = e.clientY;
+    if (dragRafId === null) dragRafId = requestAnimationFrame(flushDragFrame);
+  } else if (activeDrag.kind === 'edge') {
+    const dx = activeDrag.axis === 'x' ? Math.round((e.clientX - activeDrag.startClientX) / z) : 0;
+    const dy = activeDrag.axis === 'y' ? Math.round((e.clientY - activeDrag.startClientY) / z) : 0;
+    props.store.dragPreview.value = {
+      kind: 'edge',
+      key: activeDrag.edge.edgeKey,
+      dx,
+      dy,
+    };
+  }
+}
+
+function onGlobalMouseUp() {
+  window.removeEventListener('mousemove', onGlobalMouseMove);
+  window.removeEventListener('mouseup', onGlobalMouseUp);
+  if (dragRafId !== null) {
+    cancelAnimationFrame(dragRafId);
+    flushDragFrame();
+  }
+  if (!activeDrag) return;
+
+  const preview = props.store.dragPreview.value;
+  if (activeDrag.kind === 'group' && activeDrag.moved) {
+    if (snapTarget.value) {
+      props.store.dockGroupCluster(
+        snapTarget.value.sourceGroupKey,
+        snapTarget.value.targetGroupKey,
+        snapTarget.value.side,
+        true
+      );
+    } else {
+      props.store.finishInteractiveDrag();
+    }
+  } else if (activeDrag.kind === 'bg' && activeDrag.moved) {
+    props.store.finishInteractiveDrag();
+  } else if (activeDrag.kind === 'edge' && preview && preview.kind === 'edge') {
+    if (Math.abs(preview.dx) >= 1 || Math.abs(preview.dy) >= 1) {
+      props.store.updateEdgeWaypoint(
+        activeDrag.edge.edgeKey,
+        activeDrag.edge.parentPersonId,
+        preview.dy,
+        preview.dx
+      );
+    }
+  }
+  props.store.dragPreview.value = null;
+  snapTarget.value = null;
+  activeDragKey.value = '';
+  activeDrag = null;
+}
+
+function handleCardSelect(card: ScenePersonCard) {
+  props.store.selectedPersonId.value = card.personId;
+  props.store.selectedGroupKey.value = card.groupKey;
+  props.store.selectedEdgeKey.value = '';
+  emit('select-person', card.personId);
+}
+
+function handleGroupSelect(group: SceneSiblingGroup) {
+  props.store.selectedGroupKey.value = group.groupKey;
+  if (!selectedPersonId.value || !group.memberIds.includes(selectedPersonId.value)) {
+    props.store.selectedPersonId.value = group.memberIds[0] || '';
+  }
+  props.store.selectedEdgeKey.value = '';
+}
+
+function handleSwitchImplex(badge: SceneImplexBadge) {
+  props.store.switchImplexBranchParent(badge.affectedChildIds, badge.chosenParentIdIfClicked);
+}
+
+function onCanvasDragOver(e: DragEvent) {
+  e.preventDefault();
+}
+
+function onCanvasDrop(e: DragEvent) {
+  e.preventDefault();
+  const file = e.dataTransfer?.files?.[0];
+  if (file && file.type.startsWith('image/')) {
+    props.store.uploadBackgroundAsset(file);
+  }
+}
+
+function onMountExistingChange(ev: Event) {
+  const select = ev.target as HTMLSelectElement;
+  const subDocId = select.value;
+  if (subDocId && selectedCard.value) {
+    props.store.mountExistingSubtree(selectedCard.value.personId, subDocId);
+    select.value = '';
+  }
 }
 </script>
 
 <template>
   <div
-    ref="localViewportRef"
-    class="design-viewport"
-    :class="{ panning: isPanning }"
+    :ref="attachViewportRef"
+    class="design-canvas-viewport"
+    :class="{ 'is-panning': isPanning }"
     @mousedown="startCanvasPan"
     @mousemove="onCanvasPan"
     @mouseup="stopCanvasPan"
     @mouseleave="stopCanvasPan"
     @click="onViewportClick"
-    @dragover.prevent
-    @drop.prevent="onViewportFileDrop"
+    @wheel.prevent="handleWheelZoom"
+    @dragover="onCanvasDragOver"
+    @drop="onCanvasDrop"
   >
-    <!-- Floating Ebenenkonfiguration immer am linken Bildschirmrand der jeweiligen Zeile -->
-    <div class="floating-level-controls-container" @mousedown.stop>
-      <div
-        v-for="lvlInfo in levelsTopToBottom"
-        :key="'flp-lvl-' + lvlInfo.level"
-        class="floating-level-panel"
-        :class="{
-          'is-origin-level': lvlInfo.level === 1,
-          'is-multi-gen': lvlInfo.generations.length > 1,
-        }"
-        :style="{
-          top: (pan.y + lvlInfo.bandTopY * zoom) + 'px',
-          height: (lvlInfo.height * zoom) + 'px',
-        }"
-      >
-        <div class="flp-header">
-          <span class="flp-level-title">{{ t('design_level') }} {{ lvlInfo.level }}</span>
-          <div class="flp-actions">
-            <button
-              class="flp-btn flp-btn-group"
-              :class="{ disabled: lvlInfo.groupCount <= 1 }"
-              :disabled="lvlInfo.groupCount <= 1"
-              :title="t('design_group_row_tooltip')"
-              @click.stop="groupAllInLevel(lvlInfo.level)"
-            >
-              🔗
-            </button>
-            <button
-              class="flp-btn flp-btn-add"
-              :title="t('design_insert_level_above')"
-              @click.stop="insertEmptyLevelAbove(lvlInfo.level)"
-            >
-              ➕
-            </button>
-            <button
-              v-if="lvlInfo.groupCount === 0 && totalLevels > 1"
-              class="flp-btn flp-btn-del"
-              :title="t('remove')"
-              @click.stop="removeEmptyLevel(lvlInfo.level)"
-            >
-              🗑️
-            </button>
-          </div>
-        </div>
-
-        <!-- Dynamische Höhe des Ebenenabstandes pro Ebene -->
-        <div class="flp-height-row">
-          <span class="flp-h-label">{{ t('design_level_height') }}:</span>
-          <span class="flp-h-badge">{{ lvlInfo.height }} px</span>
-        </div>
-
-        <div class="flp-badges-row">
-          <span
-            v-for="gNum in lvlInfo.generations"
-            :key="'flp-g-' + lvlInfo.level + '-' + gNum"
-            class="flp-gen-pill"
-          >
-            Gen. {{ gNum }}
-          </span>
-          <span v-if="lvlInfo.generations.length === 0" class="flp-empty-hint">– leer –</span>
-        </div>
-        <div v-if="lvlInfo.level === 1" class="flp-origin-tag">
-          ⬆️ {{ t('design_origin_proband') }}
-        </div>
-      </div>
-    </div>
-
+    <!-- Welt-Transform Layer -->
     <div
-      class="design-canvas"
+      v-if="scene"
+      class="design-world-stage"
       :style="{
-        width: canvasWidth + 'px',
-        height: canvasHeight + 'px',
         transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+        transformOrigin: '0 0',
       }"
     >
-      <!-- 0. Hintergrundbild-Ebene (hinter dem Ebenengitter und allen Einträgen; temporär im Vordergrund beim Verschieben) -->
-      <div
-        v-if="bgImageData && bgConfig.visible"
-        class="design-bg-image-container"
-        :class="{
-          'is-interactive-dragging': isBgDraggingOnCanvas,
-          'is-moving': isBgMoving,
-        }"
-        :style="bgContainerStyle"
-        @mousedown="onBgMouseDown"
-      >
+      <!-- 1. Synchronisierte Generationsebenen (visuelles Hilfsraster) -->
+      <div v-if="showLevelGrid" class="design-level-bands-layer">
+        <div
+          v-for="(lvl, idx) in scene.levels"
+          :key="'lvl-' + lvl.level"
+          class="design-level-band"
+          :class="{ 'is-odd': idx % 2 === 1 }"
+          :style="{
+            left: levelBandExtent.left + 'px',
+            top: lvl.topY + 'px',
+            width: levelBandExtent.width + 'px',
+            height: lvl.height + 'px',
+          }"
+        >
+          <span class="design-level-label">{{ lvl.label }}</span>
+        </div>
+      </div>
+
+      <!-- 2. Hintergrundbilder & Wappen (Aspect-Ratio geschützt) -->
+      <div class="design-backgrounds-layer">
         <img
-          :src="bgImageData"
+          v-for="bg in scene.backgrounds"
+          :key="bg.id"
+          :src="bg.dataUrl"
+          :alt="bg.title || 'Hintergrund'"
           class="design-bg-image"
-          :style="bgImageStyle"
-          alt="Hintergrundbild"
-          @load="onBgImageLoaded"
-          draggable="false"
+          :class="{ 'is-movable': bg.ownerDocumentId === activeDoc?.id && activeDoc?.bgConfig?.locked === false }"
+          :style="{
+            left: bg.x + 'px',
+            top: bg.y + 'px',
+            width: bg.width + 'px',
+            height: bg.height + 'px',
+            opacity: bg.opacity,
+          }"
+          @mousedown="e => onBackgroundMouseDown(bg, e)"
         />
-        <div v-if="isBgDraggingOnCanvas" class="bg-drag-overlay" @mousedown.stop>
-          <span>✥ {{ t('design_bg_image_moving_badge') }}</span>
+      </div>
+
+      <!-- 3. Eingebettete Inline-Sub-Baum Rahmen -->
+      <div class="design-subtree-frames-layer">
+        <div
+          v-for="frame in scene.subtreeFrames.filter(f => f.displayMode === 'inline')"
+          :key="'sf-' + frame.subDocumentId + '-' + frame.anchorPersonId"
+          class="design-subtree-frame"
+          :style="{
+            left: frame.x - 10 + 'px',
+            top: frame.y - 26 + 'px',
+            width: frame.width + 20 + 'px',
+            height: frame.height + 36 + 'px',
+          }"
+          @dblclick.stop="store.enterSubtree(frame.subDocumentId)"
+        >
+          <div class="subtree-frame-header" @mousedown.stop>
+            <span class="subtree-frame-badge">
+              🌿 {{ frame.subDocumentName }} · {{ frame.personCount }} Pers.
+            </span>
+            <div class="subtree-frame-actions">
+              <button
+                type="button"
+                class="sf-btn"
+                title="In dieses Sub-Baum-Studio wechseln"
+                @click.stop="store.enterSubtree(frame.subDocumentId)"
+              >
+                ✏️ Öffnen
+              </button>
+              <button
+                type="button"
+                class="sf-btn"
+                title="Als platzsparende Verweis-Kapsel einklappen"
+                @click.stop="store.setSubtreeDisplayMode(frame.anchorPersonId, 'capsule')"
+              >
+                📁 Kapsel
+              </button>
+              <button
+                type="button"
+                class="sf-btn is-danger"
+                title="Sub-Baum an dieser Stelle wieder aushängen"
+                @click.stop="store.unmountSubtree(frame.anchorPersonId)"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. Geschwister- / Ehegruppen-Container -->
+      <div class="design-groups-layer">
+        <div
+          v-for="grp in scene.groups"
+          :key="grp.groupKey"
+          class="sibling-group-container"
+          :class="{
+            'is-multi': grp.memberIds.length > 1,
+            'is-wrapped': grp.rowCount > 1,
+            'is-selected': grp.groupKey === selectedGroupKey,
+            'is-dragging': activeDragKey === (grp.dockClusterKey || grp.groupKey),
+            'is-docked': grp.isDocked,
+            'is-snap-target': snapTarget?.clusterKey === (grp.dockClusterKey || grp.groupKey),
+            'is-locked': Boolean(activeDoc && grp.ownerDocumentId !== activeDoc.id),
+          }"
+          :style="{
+            left: grp.x - 5 + 'px',
+            top: grp.y - 4 + 'px',
+            width: grp.width + 10 + 'px',
+            height: grp.height + 8 + 'px',
+          }"
+          @mousedown.stop="e => onGroupMouseDown(grp.groupKey, grp.anchorParentId, e)"
+          @click.stop="handleGroupSelect(grp)"
+        >
+          <span
+            v-if="grp.marriageLabel"
+            class="group-marriage-tag"
+            title="Getrennte Kindergruppe nach Ehe"
+          >
+            {{ grp.marriageLabel }}
+          </span>
+          <span
+            v-if="grp.rowCount > 1"
+            class="group-wrap-tag"
+            title="Mehrreihiger Umbruch mit vertikalen Durchführungskanälen"
+          >
+            ⊞ {{ grp.columnCount }} Sp. × {{ grp.rowCount }} R.
+          </span>
+        </div>
+      </div>
+
+      <!-- 5. Geroutete SVG-Verbindungslinien & Wegpunkte -->
+      <DesignConnectorLayer
+        :edges="scene.edges"
+        :bounds="scene.bounds"
+        :selected-edge-key="selectedEdgeKey"
+        :highlighted-person-ids="highlightedPathIds"
+        :drag-edge-key="dragPreview?.kind === 'edge' ? dragPreview.key : undefined"
+        :drag-delta-x="dragPreview?.kind === 'edge' ? dragPreview.dx : 0"
+        :drag-delta-y="dragPreview?.kind === 'edge' ? dragPreview.dy : 0"
+        @select-edge="key => { store.selectedEdgeKey.value = key; }"
+        @waypoint-drag-start="onWaypointDragStart"
+        @reset-waypoint="key => store.resetEdgeWaypoint(key)"
+      />
+
+      <!-- 6. Personenkacheln & Verweis-Kapseln (Viewport-Culled) -->
+      <DesignPersonCard
+        v-for="card in visibleCards"
+        :key="card.personId + ':' + card.groupKey"
+        :card="card"
+        :is-selected="card.personId === selectedPersonId"
+        :is-highlighted="Boolean(highlightedPathIds && highlightedPathIds.has(card.personId))"
+        :is-dimmed="Boolean(highlightedPathIds && highlightedPathIds.size > 0 && !highlightedPathIds.has(card.personId))"
+        :is-group-dragging="isCardInActiveDrag(card)"
+        :is-locked-in-parent="Boolean(activeDoc && card.ownerDocumentId !== activeDoc.id)"
+        @select="() => handleCardSelect(card)"
+        @enter-subtree="subId => store.enterSubtree(subId)"
+        @card-mousedown="e => onCardMouseDown(card, e)"
+      />
+
+      <!-- 6b. Interaktive Gruppen- & Andock-Trennstellen -->
+      <div v-if="visibleSplitSeams.length > 0" class="design-split-seams-layer">
+        <div
+          v-for="seam in visibleSplitSeams"
+          :key="seam.id"
+          class="split-seam-marker"
+          :class="{ 'is-dock-seam': seam.kind === 'dock_seam' }"
+          :style="{
+            left: seam.x + 'px',
+            top: seam.y + 'px',
+            height: seam.height + 'px',
+          }"
+        >
+          <div class="split-seam-line"></div>
           <button
             type="button"
-            class="btn-bg-drag-finish"
-            @click.stop="emit('update:isBgDraggingOnCanvas', false)"
-            :title="t('design_bg_image_finish_drag')"
+            class="split-seam-handle"
+            :title="seam.label"
+            @mousedown.stop
+            @click.stop="onSplitSeamClick(seam)"
           >
-            ✓ {{ t('design_bg_image_finish_drag') }}
+            ✂️
           </button>
         </div>
       </div>
 
-      <!-- 0b. Subtree-Hintergrundbilder (lokale Wappen/Bilder verknüpfter Zweige) -->
+      <!-- 7. Schwebende Aktionsleiste für selektierte Kachel / Gruppe -->
       <div
-        v-for="subBg in subtreeBackgrounds"
-        :key="subBg.anchorPersonId"
-        class="design-subtree-bg-container"
+        v-if="selectedCard && floatingControlsPos"
+        class="group-floating-controls"
         :style="{
-          position: 'absolute',
-          left: `${subBg.originX}px`,
-          top: `${subBg.originY}px`,
-          zIndex: 1,
-          pointerEvents: 'none',
+          left: floatingControlsPos.left + 'px',
+          top: floatingControlsPos.top + 'px',
         }"
+        @mousedown.stop
+        @click.stop
       >
-        <img
-          :src="subBg.imageData"
-          class="design-subtree-bg-image"
-          :style="{
-            transform: `scale(${(subBg.config.scale || 100) / 100})`,
-            opacity: (subBg.config.opacity !== undefined ? subBg.config.opacity : 45) / 100,
-            transformOrigin: 'top left',
-            display: 'block',
-          }"
-          :alt="subBg.layoutName"
-          draggable="false"
-        />
-      </div>
-
-      <!-- Horizontale Ebenen-Bänder (von oben nach unten gerendert, Ebene 1 = unten beim Stammahn) -->
-      <div
-        v-for="lvlInfo in levelsTopToBottom"
-        :key="'lvl-band-' + lvlInfo.level"
-        class="level-band"
-        :class="{
-          'is-origin-level': lvlInfo.level === 1,
-          'is-multi-gen': lvlInfo.generations.length > 1,
-        }"
-        :style="{
-          top: lvlInfo.bandTopY + 'px',
-          height: lvlInfo.height + 'px',
-        }"
-      ></div>
-
-      <!-- Drop-Indikator zum Einfügen einer neuen Zwischen-Ebene beim vertikalen Ziehen -->
-      <div
-        v-if="dragHoverInsertAboveLevel !== null"
-        class="insert-level-indicator"
-        :style="{
-          top: (getLevelBandTopY(dragHoverInsertAboveLevel) - 14) + 'px',
-        }"
-      >
-        <span>➕ {{ t('design_insert_level_above') }}</span>
-      </div>
-
-      <!-- Visuelle Hilfslinie bei aktivem Rahmenlinien-Kontakt (Snap) -->
-      <div
-        v-if="activeSnapGuideX !== null"
-        class="snap-contact-guide"
-        :style="{ left: activeSnapGuideX + 'px', height: canvasHeight + 'px' }"
-      ></div>
-
-      <!-- Reservierte Bereiche um Einträge und alle Ebenen oberhalb -->
-      <template v-for="bw in renderedBranchWidths" :key="'bw-' + bw.personId">
-        <div
-          class="branch-corridor-zone"
-          :class="{
-            'is-dragging': draggingBwId === bw.personId,
-            'is-nested': bw.isNested,
-          }"
-          :style="{
-            left: bw.minX + 'px',
-            top: bw.corridorTopY + 'px',
-            width: bw.width + 'px',
-            height: bw.corridorHeight + 'px',
-            zIndex: bw.zIndex,
-          }"
-          @mousedown="startBranchWidthDrag($event, bw.personId)"
-        ></div>
-        <div
-          class="branch-width-bar"
-          :class="{
-            'is-dragging': draggingBwId === bw.personId,
-            'is-nested': bw.isNested,
-          }"
-          :style="{
-            left: bw.minX + 'px',
-            top: bw.barY + 'px',
-            width: bw.width + 'px',
-            zIndex: bw.barZIndex,
-          }"
-          @mousedown="startBranchWidthDrag($event, bw.personId)"
-        >
-          <div
-            class="bw-handle bw-handle-left"
-            title="Linke Grenze anpassen"
-            @mousedown.stop="startBranchWidthResize($event, bw.personId, 'left')"
-          >◀</div>
-          <div
-            class="bw-bar-label"
-            :title="t('design_move_branch_tooltip')"
+        <div class="floating-header">
+          <span class="floating-name">{{ selectedCard.fullName }}</span>
+          <span v-if="selectedCard.henryCode" class="floating-code">[{{ selectedCard.henryCode }}]</span>
+          <button
+            type="button"
+            class="f-btn floating-details-btn"
+            :class="{ 'is-active': isDetailsOpen }"
+            title="Vollständige Personendetails öffnen"
+            @click="emit('open-details', selectedCard.personId)"
           >
-            <span class="bw-drag-handle-icon">✥</span>
-            <span>📐 {{ bw.personName }}</span>
-            <button
-              class="bw-remove-btn"
-              :title="t('remove')"
-              @mousedown.stop
-              @click.stop="removeBranchWidth(bw.personId)"
-            >✕</button>
-          </div>
-          <div
-            class="bw-handle bw-handle-right"
-            title="Rechte Grenze anpassen"
-            @mousedown.stop="startBranchWidthResize($event, bw.personId, 'right')"
-          >▶</div>
+            ℹ️ Details
+          </button>
         </div>
-      </template>
 
-      <!-- SVG-Layer für alle Kanten inkl. Linienbrücken -->
-      <DesignConnectorLayer
-        :canvas-width="canvasWidth"
-        :canvas-height="canvasHeight"
-        :edge-geometry="edgeGeometry"
-      />
-
-      <!-- Verschiebbare Geschwistergruppen & Einzeleinträge (gedockte Einträge werden gemeinsam verschoben) -->
-      <div
-        v-for="gl in groupLayouts"
-        :key="gl.group.id"
-        class="sibling-group-container"
-        :class="{
-          'is-dragging': draggingGroupId === gl.group.id || draggingClusterGroupIds.has(gl.group.id),
-          'is-docked': gl.isDocked,
-          'is-origin-group': gl.group.parentId === null,
-          'is-multi-sibling-group': gl.cards.length > 1,
-          'is-subtree-readonly': gl.isReadOnly,
-        }"
-        :style="{
-          left: gl.left + 'px',
-          top: gl.top + 'px',
-          width: gl.width + 'px',
-          height: gl.height + 'px',
-        }"
-        @mousedown="startGroupDrag($event, gl.group)"
-      >
-        <!-- Schwebende Gruppen-Aktionsleiste: erst auf Select eines Eintrags dieser Gruppe dynamisch nachgeladen -->
-        <div
-          v-if="gl.cards.some(c => isPersonSelected(c.person.id))"
-          class="group-floating-controls"
-          :class="{ 'is-readonly': gl.isReadOnly }"
-          @mousedown.stop
-        >
-          <template v-if="gl.isReadOnly">
-            <span class="readonly-subtree-pill">🔒 {{ gl.subtreeLayoutName || t('design_subtree_readonly') }}</span>
+        <!-- Gesperrte Sub-Baum-Elemente im Haupt-Stammbaum -->
+        <div v-if="isLockedSubtreeSelection" class="floating-actions-row">
+          <span class="floating-locked-note">
+            🌿 Sub-Baum-Element (Anordnung nur im Sub-Baum)
+          </span>
+          <button
+            v-if="selectedCard.subDocumentId || selectedMountRule?.subDocumentId"
+            type="button"
+            class="f-btn is-accent"
+            @click="store.enterSubtree(selectedCard.subDocumentId || selectedMountRule!.subDocumentId)"
+          >
+            ✏️ Im Sub-Baum anordnen
+          </button>
+          <template v-if="selectedMountRule">
             <button
-              v-if="gl.subtreeLayoutId"
-              class="grp-btn grp-btn-edit-subtree"
-              :title="t('design_edit_subtree_tooltip')"
-              @click.stop="emit('open-subtree', gl.subtreeLayoutId)"
+              type="button"
+              class="f-btn"
+              @click="
+                store.setSubtreeDisplayMode(
+                  selectedCard.personId,
+                  selectedMountRule.displayMode === 'inline' ? 'capsule' : 'inline'
+                )
+              "
             >
-              🌱 {{ t('design_edit_subtree') }}
-            </button>
-          </template>
-          <template v-else>
-            <!-- Innerhalb einer Mehrpersonen-Gruppe nach links/rechts tauschen -->
-            <template v-if="gl.cards.length > 1">
-              <button
-                class="grp-btn"
-                :disabled="gl.cards.findIndex(c => c.person.id === getSelectedOrAnchorPersonId(gl)) <= 0"
-                :title="t('design_move_person_left')"
-                @click.stop="movePersonWithinGroup(gl.group, getSelectedOrAnchorPersonId(gl), -1)"
-              >
-                ◀
-              </button>
-              <button
-                class="grp-btn"
-                :disabled="gl.cards.findIndex(c => c.person.id === getSelectedOrAnchorPersonId(gl)) >= gl.cards.length - 1"
-                :title="t('design_move_person_right')"
-                @click.stop="movePersonWithinGroup(gl.group, getSelectedOrAnchorPersonId(gl), 1)"
-              >
-                ▶
-              </button>
-              <span class="grp-hud-sep"></span>
-            </template>
-
-            <button
-              class="grp-btn"
-              :title="t('design_dock_left')"
-              @click.stop="dockToNeighbor(gl.group, 'left')"
-            >
-              ⇤
+              {{ selectedMountRule.displayMode === 'inline' ? '📁 Als Kapsel' : '🌿 Inline' }}
             </button>
             <button
-              class="grp-btn"
-              :title="t('design_dock_right')"
-              @click.stop="dockToNeighbor(gl.group, 'right')"
+              type="button"
+              class="f-btn is-danger"
+              @click="store.unmountSubtree(selectedCard.personId)"
             >
-              ⇥
-            </button>
-            <button
-              class="grp-btn"
-              :title="t('design_move_group_up')"
-              @click.stop="moveGroupLevel(gl.group, 1)"
-            >
-              ▲
-            </button>
-            <button
-              class="grp-btn"
-              :disabled="gl.group.level <= 1"
-              :title="t('design_move_group_down')"
-              @click.stop="moveGroupLevel(gl.group, -1)"
-            >
-              ▼
-            </button>
-            <button
-              class="grp-btn grp-btn-split"
-              :title="t('design_split_group_level')"
-              @click.stop="insertLevelAboveAndMoveGroup(gl.group)"
-            >
-              ➕
-            </button>
-
-            <!-- Geschwistergruppe nach links oder rechts auflösen -->
-            <button
-              v-if="gl.cards.length > 1"
-              class="grp-btn grp-btn-ungroup"
-              :title="t('design_ungroup_left_tooltip')"
-              @click.stop="ungroupAtPerson(gl.group, getSelectedOrAnchorPersonId(gl), 'left')"
-            >
-              ✂️◀ {{ t('design_ungroup_left') }}
-            </button>
-            <button
-              v-if="gl.cards.length > 1"
-              class="grp-btn grp-btn-ungroup"
-              :title="t('design_ungroup_right_tooltip')"
-              @click.stop="ungroupAtPerson(gl.group, getSelectedOrAnchorPersonId(gl), 'right')"
-            >
-              ✂️▶ {{ t('design_ungroup_right') }}
-            </button>
-            <!-- Aufgelöste Geschwister wieder zu einer Gruppe zusammenfassen -->
-            <button
-              v-else-if="gl.canRegroup || canRegroupPerson(getSelectedOrAnchorPersonId(gl))"
-              class="grp-btn grp-btn-regroup"
-              :title="t('design_regroup_tooltip')"
-              @click.stop="regroupSelectedOrFirstInGroup(gl)"
-            >
-              {{ t('design_regroup_btn') }}
-            </button>
-
-            <!-- Nachkommen gruppieren & Eintrag aus Gruppe lösen -->
-            <button
-              v-if="hasDescendants(getSelectedOrAnchorPersonId(gl))"
-              class="grp-btn grp-btn-descendants"
-              :title="t('design_group_descendants_tooltip')"
-              @click.stop="groupDescendantsByLevel(getSelectedOrAnchorPersonId(gl))"
-            >
-              👥
-            </button>
-            <button
-              v-if="gl.cards.length > 1 || gl.isDocked"
-              class="grp-btn grp-btn-detach"
-              :title="t('design_detach_person_tooltip')"
-              @click.stop="detachPersonFromGroup(gl.group, getSelectedOrAnchorPersonId(gl))"
-            >
-              ⏏️
+              Aushängen
             </button>
           </template>
         </div>
 
-        <!-- Personen-Boxen: Rahmenlinien von Geschwisterkindern stoßen direkt aneinander an -->
-        <div class="sibling-cards-row">
-          <div
-            v-for="subGrp in gl.siblingSubGroups"
-            :key="subGrp.id"
-            class="sibling-subgroup-block"
-            :class="{
-              'is-multi-sibling': subGrp.isMultiSibling,
-              'in-larger-union': gl.siblingSubGroups.length > 1,
-            }"
-          >
-            <!-- Nachname pro Geschwistergruppe linksbündig oberhalb der Kachel -->
-            <div
-              v-if="subGrp.surname"
-              class="subgroup-surname-label"
-              :title="subGrp.surname"
+        <div v-else class="floating-actions-row">
+          <!-- Gruppen-Wrapping (Spalten pro Reihe) -->
+          <div v-if="selectedGroup && selectedGroup.memberIds.length > 1" class="floating-chip-group">
+            <span class="chip-label">Spalten:</span>
+            <button
+              v-for="cols in [null, 2, 3, 4, 6]"
+              :key="String(cols)"
+              type="button"
+              class="f-btn"
+              :class="{ active: (selectedGroup.maxColumnsPerRow ?? null) === cols }"
+              @click="store.setGroupMaxColumns(selectedGroup.groupKey, cols, selectedGroup.anchorParentId)"
             >
-              {{ subGrp.surname }}
-            </div>
-
-            <DesignPersonCard
-              v-for="cb in subGrp.cards"
-              :key="cb.person.id"
-              :card-box="cb"
-              :card-data="cardDataByPersonId.get(cb.person.id)"
-              :card-config="activeCardConfig"
-              :is-selected="Boolean(activeDesignPersonId || selectedId) && (activeDesignPersonId || selectedId) === cb.person.id"
-              :has-branch-width="branchWidths.has(cb.person.id)"
-              :in-partner-path="Boolean(highlightedPathIds && highlightedPathIds.size > 0 && highlightedPathIds.has(cb.person.id))"
-              :has-descendants="hasDescendants(cb.person.id)"
-              :is-expanded="isParentExpanded(cb.person.id)"
-              :can-regroup="canRegroupPerson(cb.person.id)"
-              :group-card-count="gl.cards.length"
-              :card-index-in-group="gl.cards.findIndex(c => c.person.id === cb.person.id)"
-              :group-level="gl.group.level"
-              :is-group-docked="gl.isDocked"
-              :is-multi-sibling-group="gl.cards.length > 1"
-              :is-origin-group="gl.group.parentId === null"
-              :is-group-dragging="draggingGroupId === gl.group.id || draggingClusterGroupIds.has(gl.group.id)"
-              @select="selectCardPerson(cb.person)"
-              @group-descendants="groupDescendantsByLevel(cb.person.id)"
-              @toggle-descendants="toggleDescendants(cb.person.id)"
-              @regroup-siblings="regroupSiblingsForPerson(cb.person.id)"
-              @ungroup-left="ungroupAtPerson(gl.group, cb.person.id, 'left')"
-              @ungroup-right="ungroupAtPerson(gl.group, cb.person.id, 'right')"
-              @move-left="movePersonWithinGroup(gl.group, cb.person.id, -1)"
-              @move-right="movePersonWithinGroup(gl.group, cb.person.id, 1)"
-              @move-up="moveSinglePersonLevel(gl.group, cb.person.id, 1)"
-              @move-down="moveSinglePersonLevel(gl.group, cb.person.id, -1)"
-              @detach="detachPersonFromGroup(gl.group, cb.person.id)"
-            />
+              {{ cols === null ? 'Auto' : cols }}
+            </button>
           </div>
+
+          <!-- Ebene anpassen -->
+          <div v-if="selectedGroup" class="floating-chip-group">
+            <span class="chip-label">Ebene {{ selectedCard.level }}:</span>
+            <button
+              type="button"
+              class="f-btn"
+              title="Eine Ebene tiefer / weiter vom Spitzenahn"
+              @click="store.shiftGroupLevel(selectedGroup.groupKey, [selectedCard.personId], 1)"
+            >
+              +1
+            </button>
+            <button
+              type="button"
+              class="f-btn"
+              title="Ebene zurücksetzen"
+              :disabled="!selectedPersonRule || selectedPersonRule.levelOffset === 0"
+              @click="store.shiftGroupLevel(selectedGroup.groupKey, [selectedCard.personId], -1)"
+            >
+              -1
+            </button>
+          </div>
+
+          <!-- Magnet-Andocken zum Minimieren der Tafel-Breite -->
+          <div
+            v-if="selectedGroup && (canDockLeftNeighbor || canDockRightNeighbor || selectedGroup.isDocked)"
+            class="floating-chip-group"
+          >
+            <span class="chip-label">Andocken:</span>
+            <button
+              type="button"
+              class="f-btn"
+              title="Links an Nachbargruppe/-Kachel andocken"
+              :disabled="!canDockLeftNeighbor"
+              @click="store.dockClusterToNeighbor(selectedGroup.groupKey, 'left')"
+            >
+              🧲 ←
+            </button>
+            <button
+              type="button"
+              class="f-btn"
+              title="Rechts an Nachbargruppe/-Kachel andocken"
+              :disabled="!canDockRightNeighbor"
+              @click="store.dockClusterToNeighbor(selectedGroup.groupKey, 'right')"
+            >
+              → 🧲
+            </button>
+            <button
+              v-if="selectedGroup.isDocked"
+              type="button"
+              class="f-btn"
+              title="Aus dem angedockten Verband lösen"
+              @click="store.undockGroup(selectedGroup.groupKey)"
+            >
+              🔓 Abdocken
+            </button>
+          </div>
+
+          <!-- Gruppe an Zielstelle auftrennen / Teilgruppen zusammenführen -->
+          <div
+            v-if="selectedGroup && selectedGroup.memberIds.length > 1 && !selectedCard.isCapsule"
+            class="floating-chip-group"
+          >
+            <span class="chip-label">Trennen:</span>
+            <button
+              v-if="selectedMemberIndex > 0"
+              type="button"
+              class="f-btn"
+              title="Gruppe links vor dieser Kachel auftrennen"
+              @click="store.splitSiblingGroupAtIndex(selectedGroup.groupKey, selectedMemberIndex - 1)"
+            >
+              ✂️ | Links
+            </button>
+            <button
+              v-if="selectedMemberIndex >= 0 && selectedMemberIndex < selectedGroup.memberIds.length - 1"
+              type="button"
+              class="f-btn"
+              title="Gruppe rechts nach dieser Kachel auftrennen"
+              @click="store.splitSiblingGroupAtIndex(selectedGroup.groupKey, selectedMemberIndex)"
+            >
+              Rechts | ✂️
+            </button>
+            <button
+              v-if="selectedGroup.memberIds.length > 2"
+              type="button"
+              class="f-btn"
+              title="Nur diese einzelne Kachel aus der Geschwistergruppe herauslösen"
+              @click="store.detachCardFromSiblingGroup(selectedCard.personId)"
+            >
+              ✂️ Einzelkachel
+            </button>
+          </div>
+          <button
+            v-if="canMergeSplitSiblings && selectedGroup"
+            type="button"
+            class="f-btn"
+            title="Alle aufgetrennten Geschwister-Teilgruppen dieses Elternteils wieder zusammenführen"
+            @click="store.mergeSplitSiblingGroups(selectedGroup.groupKey)"
+          >
+            🔗 Teilgruppen vereinen
+          </button>
+          <button
+            v-else-if="selectedPersonRule?.customGroupKey"
+            type="button"
+            class="f-btn"
+            title="Einzelkachel wieder in die Geschwistergruppe einfügen"
+            @click="store.reattachCardToSiblingGroup(selectedCard.personId)"
+          >
+            🔗 Zurück in Gruppe
+          </button>
+
+          <!-- Mehrere Ehen -> Kinder nach Ehe trennen -->
+          <button
+            v-if="selectedCard.spouses.length > 1"
+            type="button"
+            class="f-btn"
+            :class="{ active: Boolean(selectedPersonRule?.splitChildrenByMarriage) }"
+            title="Kinder dieser Person getrennt nach Ehepartnern [I] / [II] gruppieren"
+            @click="store.toggleSplitChildrenByMarriage(selectedCard.personId)"
+          >
+            ⚮ Ehen [I]/[II]
+          </button>
+
+          <!-- Implex-Anknüpfung umschalten (nur in der Floating-Leiste, nicht in der Kachel) -->
+          <button
+            v-for="badge in selectedCard.implexBadges.filter(b => !b.isBranchAttachedHere)"
+            :key="'imp-' + badge.partnerId"
+            type="button"
+            class="f-btn"
+            :title="`Gemeinsame Kinder mit ${badge.partnerName} (${badge.partnerCode}) an diesen Zweig umhängen`"
+            @click="handleSwitchImplex(badge)"
+          >
+            ⚡ Kinder → {{ badge.partnerCode || badge.partnerName }}
+          </button>
+
+          <!-- Sub-Baum einhängen / kapseln / öffnen -->
+          <template v-if="selectedMountRule">
+            <button
+              type="button"
+              class="f-btn is-accent"
+              @click="store.enterSubtree(selectedMountRule.subDocumentId)"
+            >
+              🌿 Sub-Baum öffnen
+            </button>
+            <button
+              type="button"
+              class="f-btn"
+              @click="
+                store.setSubtreeDisplayMode(
+                  selectedCard.personId,
+                  selectedMountRule.displayMode === 'inline' ? 'capsule' : 'inline'
+                )
+              "
+            >
+              {{ selectedMountRule.displayMode === 'inline' ? '📁 Als Kapsel' : '🌿 Inline' }}
+            </button>
+            <button
+              type="button"
+              class="f-btn is-danger"
+              @click="store.unmountSubtree(selectedCard.personId)"
+            >
+              Aushängen
+            </button>
+          </template>
+          <template v-else-if="selectedCard.personId !== activeDoc?.rootPersonId">
+            <button
+              type="button"
+              class="f-btn is-accent"
+              title="Diesen Zweig als eigenen, verschachtelbaren Sub-Baum auslagern"
+              @click="store.createAndMountSubtree(selectedCard.personId)"
+            >
+              🌿 + Sub-Baum
+            </button>
+            <select
+              v-if="availableExistingSubtrees.length > 0"
+              class="f-select"
+              title="Vorhandenen Sub-Baum an dieser Person einbinden"
+              @change="onMountExistingChange"
+            >
+              <option value="">Sub-Baum einbinden…</option>
+              <option v-for="sub in availableExistingSubtrees" :key="sub.id" :value="sub.id">
+                {{
+                  store.getPersonHenryCode(sub.root_person_id)
+                    ? `[${store.getPersonHenryCode(sub.root_person_id)}] ${sub.name}`
+                    : sub.name
+                }}
+              </option>
+            </select>
+          </template>
+
+          <!-- Manuelle Position zurücksetzen -->
+          <button
+            v-if="store.hasManualOffset(selectedCard.personId, selectedGroup?.groupKey)"
+            type="button"
+            class="f-btn"
+            title="Manuelle Kachel-/Gruppen-Verschiebung zurücksetzen"
+            @click="store.resetManualOffset(selectedCard.personId, selectedGroup?.groupKey)"
+          >
+            ↺ Position zurücksetzen
+          </button>
+
+          <!-- Ausblenden (außer Wurzel) -->
+          <button
+            v-if="selectedCard.personId !== activeDoc?.rootPersonId"
+            type="button"
+            class="f-btn is-danger"
+            title="Diese Kachel im aktuellen Design ausblenden"
+            @click="store.togglePersonHidden(selectedCard.personId)"
+          >
+            👁️ Ausblenden
+          </button>
         </div>
       </div>
     </div>
 
-    <!-- Schwebende Zoom-Steuerung -->
-    <div class="design-zoom-controls" @mousedown.stop @wheel.stop>
-      <button @click="zoomStepCenter(0.9)" title="Rauszoomen">➖</button>
-      <span>{{ Math.round(zoom * 100) }}%</span>
-      <button @click="zoomStepCenter(1.1)" title="Reinzoomen">➕</button>
-      <div class="zoom-divider"></div>
-      <button class="btn-center-origin" @click="centerOnOrigin" :title="t('reset_root')">
-        {{ t('reset_root') }}
+    <!-- Lade- oder Leerzustand -->
+    <div v-else class="canvas-empty-overlay">
+      <div v-if="isLoading" class="canvas-status-card">Lade Stammbaum-Szene…</div>
+      <div v-else class="canvas-status-card">
+        Bitte wählen Sie oben einen Spitzenahn aus, um das Design Studio zu starten.
+      </div>
+    </div>
+
+    <!-- Aktiv-Banner für Gruppen-Trennwerkzeug -->
+    <div v-if="isSplitToolActive" class="split-tool-banner" @mousedown.stop @click.stop>
+      <span>✂️ <strong>Trenn-Werkzeug aktiv</strong> – Klicken Sie auf eine Scheren-Trennstelle zwischen Kacheln oder angedockten Gruppen</span>
+      <button type="button" class="split-banner-close" @click="store.setSplitToolActive(false)">
+        Fertig (Esc)
       </button>
-      <button class="btn-fit-screen" @click="fitToScreen" :title="t('design_fit_to_screen_tooltip')">
-        {{ t('design_fit_to_screen') }}
+    </div>
+
+    <!-- Zoom & Navigations-Steuerung unten rechts -->
+    <div class="design-zoom-controls" @mousedown.stop @click.stop>
+      <span v-if="scene" class="zoom-stats" title="Aktuell gerenderte Kacheln">
+        {{ scene.cards.length }} Kacheln ·
+        {{ scene.growthDirection === 'bottom_up' ? '↑ Unten→Oben' : '↓ Oben→Unten' }}
+      </span>
+      <button type="button" class="z-btn" title="Herauszoomen" @click="zoomStepCenter(0.85)">−</button>
+      <span class="zoom-pct">{{ Math.round(zoom * 100) }}%</span>
+      <button type="button" class="z-btn" title="Hineinzoomen" @click="zoomStepCenter(1.18)">+</button>
+      <button type="button" class="z-btn" title="Auf Spitzenahn zentrieren" @click="centerOnOrigin">
+        🎯
+      </button>
+      <button type="button" class="z-btn" title="Kompletten Baum einpassen" @click="fitToScreen">
+        ⛶ Fit
       </button>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* Viewport & Canvas */
-.design-viewport {
-  flex-grow: 1;
-  overflow: hidden;
+.design-canvas-viewport {
   position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #f8fafc;
+  background-image: radial-gradient(#cbd5e1 1px, transparent 1px);
+  background-size: 24px 24px;
   cursor: grab;
-  background: #f4f6f9;
   user-select: none;
-  -webkit-user-select: none;
 }
-.design-viewport.panning {
+
+.design-canvas-viewport.is-panning {
   cursor: grabbing;
 }
-.design-viewport.drawing-width-cursor {
-  cursor: ew-resize;
-}
-.design-canvas {
+
+.design-world-stage {
   position: absolute;
   top: 0;
   left: 0;
-  transform-origin: 0 0;
+  width: 1px;
+  height: 1px;
 }
 
-/* Horizontale Ebenen-Bänder */
-.level-band {
+/* Ebenenraster */
+.design-level-bands-layer {
   position: absolute;
-  left: 0;
-  right: 0;
-  border-bottom: 1px dashed #cbd5e1;
-  background: rgba(255, 255, 255, 0.45);
-  box-sizing: border-box;
-}
-.level-band:nth-child(even) {
-  background: rgba(237, 242, 247, 0.55);
-}
-.level-band.is-origin-level {
-  background: rgba(232, 248, 245, 0.55);
-  border-bottom: 2px solid #1abc9c;
-}
-.level-band.is-multi-gen {
-  background: rgba(254, 249, 231, 0.6);
-}
-.level-band.is-draw-target-level {
-  background: rgba(142, 68, 173, 0.1) !important;
-  border-top: 2px dashed #8e44ad;
-  border-bottom: 2px dashed #8e44ad;
-  cursor: ew-resize;
-}
-
-/* Floating Ebenenkonfiguration am linken Bildschirmrand der jeweiligen Zeile */
-.floating-level-controls-container {
-  position: absolute;
-  left: 8px;
   top: 0;
-  bottom: 0;
-  width: 195px;
+  left: 0;
   pointer-events: none;
-  z-index: 45;
-  overflow: visible;
+  z-index: 1;
 }
-.floating-level-panel {
+
+.design-level-band {
   position: absolute;
-  left: 0;
-  width: 195px;
-  background: rgba(255, 255, 255, 0.96);
+  border-top: 1px dashed rgba(148, 163, 184, 0.38);
+  border-bottom: 1px dashed rgba(148, 163, 184, 0.2);
+  background: rgba(241, 245, 249, 0.35);
+}
+
+.design-level-band.is-odd {
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.design-level-label {
+  position: sticky;
+  left: 16px;
+  top: 8px;
+  display: inline-block;
+  margin: 6px 14px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.85);
   border: 1px solid #cbd5e1;
-  border-left: 4px solid #64748b;
-  border-radius: 6px;
-  padding: 5px 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-  pointer-events: auto;
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  justify-content: flex-start;
-  gap: 3px;
-  max-height: 100%;
-  overflow: hidden;
-  font-size: 0.72rem;
-  transition: border-color 0.15s, box-shadow 0.15s;
-}
-.floating-level-panel.is-origin-level {
-  border-left-color: #1abc9c;
-  background: rgba(240, 253, 250, 0.97);
-}
-.floating-level-panel.is-multi-gen {
-  border-left-color: #d35400;
-}
-.floating-level-panel:hover {
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.16);
-  border-color: #94a3b8;
-}
-.flp-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 4px;
-}
-.flp-level-title {
-  font-weight: bold;
-  font-size: 0.78rem;
-  color: #1e293b;
-}
-.flp-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.flp-btn {
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
-  border-radius: 3px;
-  padding: 1px 4px;
-  font-size: 0.68rem;
-  cursor: pointer;
-  line-height: 1.1;
-  color: #334155;
-  transition: background 0.12s, border-color 0.12s;
-}
-.flp-btn:hover:not(:disabled) {
-  background: #e2e8f0;
-  border-color: #94a3b8;
-}
-.flp-btn:disabled,
-.flp-btn.disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-  border-color: #cbd5e1;
-}
-.flp-btn-group {
-  background: #eafaf1;
-  color: #27ae60;
-  border-color: #a3e4d7;
-}
-.flp-btn-group:hover:not(:disabled) {
-  background: #27ae60;
-  color: white;
-  border-color: #1e8449;
-}
-.flp-btn-add {
-  background: #ebf5fb;
-  color: #2980b9;
-  border-color: #aed6f1;
-}
-.flp-btn-add:hover:not(:disabled) {
-  background: #3498db;
-  color: white;
-  border-color: #2980b9;
-}
-.flp-btn-del:hover:not(:disabled) {
-  background: #fadbd8;
-  color: #c0392b;
-  border-color: #e74c3c;
-}
-.flp-height-row {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 0.7rem;
-  color: #475569;
-}
-.flp-h-label {
-  font-weight: 600;
-}
-.flp-h-badge {
-  font-size: 0.72rem;
+  font-size: 10px;
   font-weight: 700;
-  color: #1e40af;
+  color: #64748b;
+}
+
+/* Hintergrundbilder */
+.design-backgrounds-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.design-bg-image {
+  position: absolute;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.design-bg-image.is-movable {
+  pointer-events: auto;
+  cursor: move;
+  outline: 2px dashed rgba(59, 130, 246, 0.75);
+  outline-offset: 2px;
+}
+
+/* Inline Sub-Baum Rahmen */
+.design-subtree-frames-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 4;
+}
+
+.design-subtree-frame {
+  position: absolute;
+  border: 2px dashed #8b5cf6;
+  border-radius: 12px;
+  background: rgba(245, 243, 255, 0.36);
+  pointer-events: none;
+}
+
+.subtree-frame-header {
+  position: absolute;
+  top: -13px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.subtree-frame-badge {
+  background: #ede9fe;
+  color: #5b21b6;
+  border: 1px solid #c4b5fd;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  box-shadow: 0 1px 4px rgba(91, 33, 182, 0.14);
+}
+
+.subtree-frame-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.sf-btn {
+  background: #ffffff;
+  color: #4c1d95;
+  border: 1px solid #c4b5fd;
+  border-radius: 5px;
+  padding: 2px 7px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.sf-btn:hover {
+  background: #7c3aed;
+  color: #ffffff;
+}
+.sf-btn.is-danger:hover {
+  background: #dc2626;
+  border-color: #dc2626;
+  color: #ffffff;
+}
+
+/* Gruppen-Container */
+.design-groups-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+}
+
+.sibling-group-container {
+  position: absolute;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  pointer-events: auto;
+  transition: border-color 0.12s ease, background-color 0.12s ease;
+}
+
+.sibling-group-container.is-multi {
+  border-color: rgba(148, 163, 184, 0.35);
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.sibling-group-container.is-wrapped {
+  border-style: dashed;
+  border-color: rgba(59, 130, 246, 0.45);
+}
+
+.sibling-group-container.is-selected {
+  border-color: #f59e0b;
+  background: rgba(254, 243, 199, 0.18);
+}
+
+.sibling-group-container.is-dragging {
+  border-color: #ea580c;
+  background: rgba(255, 237, 213, 0.35);
+}
+
+.sibling-group-container.is-docked {
+  border-color: rgba(14, 165, 233, 0.55);
+  background: rgba(224, 242, 254, 0.25);
+}
+
+.sibling-group-container.is-snap-target {
+  border-color: #10b981;
+  border-style: solid;
+  border-width: 2px;
+  background: rgba(209, 250, 229, 0.35);
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.28);
+}
+
+.sibling-group-container.is-locked {
+  cursor: pointer;
+}
+
+.floating-locked-note {
+  font-size: 10.5px;
+  color: #ddd6fe;
+  font-weight: 600;
+  padding-right: 4px;
+}
+
+.group-marriage-tag,
+.group-wrap-tag {
+  position: absolute;
+  top: -11px;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.group-marriage-tag {
+  left: 8px;
   background: #eff6ff;
-  padding: 1px 5px;
-  border-radius: 3px;
+  color: #1d4ed8;
   border: 1px solid #bfdbfe;
 }
-.flp-badges-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-}
-.flp-gen-pill {
-  background: #3498db;
-  color: white;
-  font-size: 0.65rem;
-  font-weight: bold;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.floating-level-panel.is-multi-gen .flp-gen-pill {
-  background: #d35400;
-}
-.flp-empty-hint {
-  font-size: 0.68rem;
-  color: #95a5a6;
-  font-style: italic;
-}
-.flp-origin-tag {
-  font-size: 0.66rem;
-  font-weight: bold;
-  color: #16a085;
+
+.group-wrap-tag {
+  right: 8px;
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
 }
 
-/* Zweig-Breite & Korridor-Abgrenzung */
-.branch-corridor-zone {
+/* Schwebende Selektions-Aktionsleiste */
+.group-floating-controls {
   position: absolute;
-  background: rgba(142, 68, 173, 0.055);
-  border-left: 2px dashed rgba(142, 68, 173, 0.65);
-  border-right: 2px dashed rgba(142, 68, 173, 0.65);
+  transform: translate(-50%, -100%);
+  z-index: 60;
+  background: #0f172a;
+  color: #f8fafc;
+  border-radius: 9px;
+  padding: 6px 10px;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 280px;
+  max-width: 620px;
   pointer-events: auto;
-  cursor: grab;
-  z-index: 3;
-  box-sizing: border-box;
-  transition: background 0.15s ease, border-color 0.15s ease;
 }
-.branch-corridor-zone.is-dragging {
-  cursor: grabbing;
-  background: rgba(142, 68, 173, 0.12);
-  border-left: 2.5px dashed #8e44ad;
-  border-right: 2.5px dashed #8e44ad;
-}
-.branch-corridor-zone.is-nested {
-  background: rgba(39, 174, 96, 0.065);
-  border-left-color: rgba(39, 174, 96, 0.75);
-  border-right-color: rgba(39, 174, 96, 0.75);
-}
-.branch-corridor-zone.is-nested.is-dragging {
-  cursor: grabbing;
-  background: rgba(39, 174, 96, 0.15);
-  border-left: 2.5px dashed #27ae60;
-  border-right: 2.5px dashed #27ae60;
-}
-.branch-width-bar {
-  position: absolute;
-  height: 18px;
-  background: rgba(142, 68, 173, 0.16);
-  border-top: 3px solid #8e44ad;
-  border-left: 3px solid #8e44ad;
-  border-right: 3px solid #8e44ad;
-  border-radius: 4px 4px 0 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  z-index: 28;
-  box-sizing: border-box;
-  cursor: grab;
-  user-select: none;
-  transition: background 0.12s ease, box-shadow 0.12s ease;
-}
-.branch-width-bar:hover {
-  background: rgba(142, 68, 173, 0.25);
-  box-shadow: 0 2px 8px rgba(142, 68, 173, 0.28);
-}
-.branch-width-bar.is-dragging {
-  cursor: grabbing;
-  background: rgba(142, 68, 173, 0.35);
-  border-top-color: #6c3483;
-  border-left-color: #6c3483;
-  border-right-color: #6c3483;
-  box-shadow: 0 4px 14px rgba(142, 68, 173, 0.45);
-}
-.branch-width-bar.is-nested {
-  background: rgba(39, 174, 96, 0.18);
-  border-top-color: #27ae60;
-  border-left-color: #27ae60;
-  border-right-color: #27ae60;
-}
-.branch-width-bar.is-nested:hover {
-  background: rgba(39, 174, 96, 0.28);
-  box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
-}
-.branch-width-bar.is-nested.is-dragging {
-  background: rgba(39, 174, 96, 0.38);
-  border-top-color: #1e8449;
-  border-left-color: #1e8449;
-  border-right-color: #1e8449;
-}
-.branch-width-bar.is-nested .bw-handle {
-  background: #27ae60;
-}
-.bw-handle {
-  width: 18px;
-  height: 18px;
-  background: #8e44ad;
-  color: white;
-  font-size: 0.6rem;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ew-resize;
-  flex-shrink: 0;
-  user-select: none;
-}
-.bw-handle:hover {
-  background: #6c3483;
-}
-.bw-bar-label {
+
+.floating-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 0.68rem;
-  color: #4a235a;
-  background: rgba(255, 255, 255, 0.92);
-  padding: 0 6px;
-  border-radius: 3px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: grab;
-  user-select: none;
-}
-.branch-width-bar.is-dragging .bw-bar-label {
-  cursor: grabbing;
-}
-.bw-drag-handle-icon {
-  font-size: 0.78rem;
-  color: #8e44ad;
-  display: inline-block;
-  user-select: none;
-  line-height: 1;
-}
-.bw-remove-btn {
-  background: transparent;
-  color: #c0392b;
-  border: none;
-  padding: 0 2px;
-  font-size: 0.72rem;
-  font-weight: bold;
-  cursor: pointer;
-  line-height: 1;
-}
-.bw-remove-btn:hover {
-  color: #e74c3c;
+  font-size: 11px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+  padding-bottom: 3px;
 }
 
-.insert-level-indicator {
-  position: absolute;
-  left: 190px;
-  right: 20px;
-  height: 28px;
-  background: rgba(46, 204, 113, 0.18);
-  border: 2px dashed #27ae60;
-  border-radius: 6px;
+.floating-name {
+  font-weight: 700;
+}
+
+.floating-details-btn {
+  margin-left: auto;
+}
+
+.floating-code {
+  color: #fbbf24;
+  font-family: monospace;
+  font-size: 10.5px;
+}
+
+.floating-actions-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  color: #1e8449;
-  font-weight: bold;
-  font-size: 0.82rem;
-  z-index: 30;
-  pointer-events: none;
+  gap: 5px;
 }
 
-.snap-contact-guide {
-  position: absolute;
-  top: 0;
-  width: 2px;
-  background: #e67e22;
-  z-index: 35;
-  pointer-events: none;
-}
-
-/* Geschwistergruppen-Container: Hält die Kacheln zusammen beim Verschieben */
-.sibling-group-container {
-  position: absolute;
-  background: transparent;
-  box-sizing: border-box;
-  cursor: move;
-  z-index: 10;
-  transition: box-shadow 0.12s;
-}
-.sibling-group-container:hover {
-  z-index: 25;
-}
-.sibling-group-container.is-dragging {
-  z-index: 40;
-}
-
-/* Schwebende Steuerleiste der Gruppe (erscheint dynamisch bei selektiertem Eintrag) */
-.group-floating-controls {
-  position: absolute;
-  bottom: -28px;
-  right: 0;
+.floating-chip-group {
   display: flex;
   align-items: center;
   gap: 2px;
-  background: rgba(15, 23, 42, 0.92);
-  padding: 2px 5px;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 2px 4px;
+  border-radius: 5px;
+}
+
+.chip-label {
+  font-size: 10px;
+  color: #cbd5e1;
+  margin-right: 3px;
+}
+
+.f-btn {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
   border-radius: 4px;
-  z-index: 30;
-  white-space: nowrap;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-}
-.group-floating-controls.is-readonly {
-  background: rgba(6, 78, 59, 0.95);
-}
-.readonly-subtree-pill {
-  color: #a7f3d0;
-  font-size: 0.68rem;
-  font-weight: 600;
-  padding: 1px 4px;
-}
-.grp-btn-edit-subtree {
-  background: #10b981;
-  color: #ffffff;
-  border-color: #059669;
-  font-size: 0.68rem;
   padding: 2px 6px;
-  border-radius: 3px;
+  font-size: 10.5px;
+  font-weight: 600;
   cursor: pointer;
 }
-.grp-btn-edit-subtree:hover {
-  background: #059669;
-  border-color: #047857;
+.f-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.24);
 }
-.design-sibling-group.is-subtree-readonly {
-  border-style: dashed !important;
-  border-color: #059669 !important;
-  cursor: default !important;
-}
-.grp-btn {
-  background: #ffffff;
-  color: #1e293b;
-  border: 1px solid #94a3b8;
-  border-radius: 3px;
-  padding: 1px 5px;
-  font-size: 0.65rem;
-  font-weight: bold;
-  line-height: 1.25;
-  cursor: pointer;
-}
-.grp-btn:hover:not(:disabled) {
-  background: #3498db;
-  color: white;
-  border-color: #2980b9;
-}
-.grp-btn:disabled {
-  opacity: 0.4;
+.f-btn:disabled {
+  opacity: 0.35;
   cursor: not-allowed;
 }
-.grp-btn-split:hover:not(:disabled) {
-  background: #27ae60;
-  border-color: #1e8449;
-}
-.grp-btn-ungroup {
-  background: #fff3cd;
-  color: #856404;
-  border-color: #ffeeba;
-}
-.grp-btn-ungroup:hover:not(:disabled) {
-  background: #e67e22;
-  color: white;
-  border-color: #d35400;
-}
-.grp-btn-regroup {
-  background: #d4edda;
-  color: #155724;
-  border-color: #c3e6cb;
-}
-.grp-btn-regroup:hover:not(:disabled) {
-  background: #27ae60;
-  color: white;
-}
-.grp-hud-sep {
-  width: 1px;
-  height: 14px;
-  background: rgba(255, 255, 255, 0.25);
-  margin: 0 2px;
-}
-.grp-btn-descendants {
-  background: #dbeafe;
-  color: #1d4ed8;
-  border-color: #93c5fd;
-}
-.grp-btn-descendants:hover:not(:disabled) {
+.f-btn.active {
   background: #2563eb;
-  color: #ffffff;
+  border-color: #60a5fa;
 }
-.grp-btn-detach {
-  background: #e0f2fe;
-  color: #0369a1;
-  border-color: #7dd3fc;
+.f-btn.is-accent {
+  background: #7c3aed;
+  border-color: #a78bfa;
 }
-.grp-btn-detach:hover:not(:disabled) {
-  background: #0284c7;
-  color: #ffffff;
-}
-
-/* Geschwisterkästchen-Reihe: Kacheln oben bündig ausgerichtet */
-.sibling-cards-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  width: 100%;
+.f-btn.is-danger:hover {
+  background: #dc2626;
+  border-color: #f87171;
 }
 
-/* Subgruppen-Block für Geschwistergruppen innerhalb eines größeren Gruppenverbandes */
-.sibling-subgroup-block {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  gap: 0;
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
-  box-shadow: 0 0 0 3px #1e293b;
+.f-select {
+  background: #1e293b;
+  color: #f8fafc;
+  border: 1px solid rgba(255, 255, 255, 0.25);
   border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 10.5px;
 }
 
-.subgroup-surname-label {
+/* Zoom & Overlay */
+.canvas-empty-overlay {
   position: absolute;
-  bottom: calc(100% + 3px);
-  left: 0;
-  font-size: 0.82rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  color: #0f172a;
-  white-space: nowrap;
-  pointer-events: none;
-  line-height: 1.25;
-  user-select: none;
-  background: rgba(248, 250, 252, 0.94);
-  padding: 1px 7px;
-  border-radius: 4px;
-  border-left: 3px solid #2563eb;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
-  z-index: 15;
-}
-
-/* Zoom-Controls unten links */
-.design-zoom-controls {
-  position: absolute;
-  bottom: 20px;
-  left: 20px;
-  background: rgba(255, 255, 255, 0.95);
-  padding: 8px 14px;
-  border-radius: 8px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  z-index: 50;
-  border: 1px solid #bdc3c7;
-}
-.design-zoom-controls button {
-  background: #ecf0f1;
-  color: #2c3e50;
-  border: 1px solid #bdc3c7;
-  padding: 0.2rem 0.6rem;
-  border-radius: 4px;
-  font-size: 0.9rem;
-  font-weight: bold;
-  cursor: pointer;
-}
-.design-zoom-controls button:hover {
-  background: #dcdde1;
-}
-.design-zoom-controls span {
-  font-size: 0.85rem;
-  font-weight: bold;
-  width: 45px;
-  text-align: center;
-}
-.zoom-divider {
-  width: 1px;
-  height: 20px;
-  background: #bdc3c7;
-  margin: 0 4px;
-}
-.btn-center-origin {
-  background: #7f8c8d !important;
-  color: white !important;
-  font-size: 0.82rem !important;
-}
-.btn-fit-screen {
-  background: #2980b9 !important;
-  color: white !important;
-  font-size: 0.82rem !important;
-}
-.btn-fit-screen:hover {
-  background: #1f618d !important;
-}
-
-/* Overlay: Speichern & Laden Buttons (unten rechts) */
-.design-persist-overlay {
-  position: absolute;
-  bottom: 24px;
-  right: 24px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  z-index: 50;
-  pointer-events: auto;
-}
-.persist-circle-btn {
+  inset: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 50%;
-  cursor: pointer;
-  user-select: none;
-  outline: none;
-  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease, border-color 0.16s ease;
-}
-.persist-circle-btn.persist-btn-undo {
-  width: 44px;
-  height: 44px;
-  background: #ffffff;
-  color: #1e293b;
-  border: 2px solid #cbd5e1;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
-  font-size: 1.25rem;
-}
-.persist-circle-btn.persist-btn-undo:hover:not(.disabled):not(:disabled) {
-  background: #f8fafc;
-  border-color: #64748b;
-  color: #0f172a;
-  transform: scale(1.1);
-  box-shadow: 0 6px 16px rgba(100, 116, 139, 0.3);
-}
-.persist-circle-btn.persist-btn-undo.disabled,
-.persist-circle-btn.persist-btn-undo:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-  transform: none !important;
-  box-shadow: none !important;
-}
-.persist-circle-btn.persist-btn-new {
-  width: 44px;
-  height: 44px;
-  background: #ffffff;
-  color: #1e293b;
-  border: 2px solid #94a3b8;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  font-size: 1.25rem;
-}
-.persist-circle-btn.persist-btn-new:hover {
-  background: #f8fafc;
-  border-color: #10b981;
-  color: #059669;
-  transform: scale(1.1);
-  box-shadow: 0 6px 16px rgba(16, 185, 129, 0.3);
-}
-.persist-circle-btn.persist-btn-load {
-  width: 44px;
-  height: 44px;
-  background: #ffffff;
-  color: #1e293b;
-  border: 2px solid #94a3b8;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-  font-size: 1.25rem;
-}
-.persist-circle-btn.persist-btn-load:hover {
-  background: #f8fafc;
-  border-color: #3b82f6;
-  color: #2563eb;
-  transform: scale(1.1);
-  box-shadow: 0 6px 16px rgba(59, 130, 246, 0.3);
-}
-.persist-circle-btn.persist-btn-save {
-  width: 56px;
-  height: 56px;
-  background: #2563eb;
-  color: #ffffff;
-  border: 2.5px solid #1d4ed8;
-  box-shadow: 0 5px 16px rgba(37, 99, 235, 0.38);
-  font-size: 1.6rem;
-}
-.persist-circle-btn.persist-btn-save:hover {
-  background: #1d4ed8;
-  border-color: #1e40af;
-  transform: scale(1.1);
-  box-shadow: 0 8px 22px rgba(37, 99, 235, 0.5);
+  pointer-events: none;
 }
 
-/* Hintergrundbild im Canvas */
-.design-bg-image-container {
-  overflow: visible;
-  transition: opacity 0.15s ease;
-}
-.design-bg-image-container.is-interactive-dragging {
-  outline: 3px dashed #2563eb;
-  outline-offset: 4px;
-  background: rgba(37, 99, 235, 0.05);
-  box-shadow: 0 8px 30px rgba(37, 99, 235, 0.18);
-}
-.design-bg-image-container.is-interactive-dragging.is-moving {
-  outline-color: #1d4ed8;
-  outline-style: solid;
-}
-.bg-drag-overlay {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  background: rgba(15, 23, 42, 0.92);
-  color: #ffffff;
-  font-size: 0.8rem;
+.canvas-status-card {
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 18px 26px;
+  color: #334155;
   font-weight: 600;
-  padding: 6px 12px;
-  border-radius: 6px;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-  display: inline-flex;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.1);
+}
+
+.design-zoom-controls {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 5px 8px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12);
+}
+
+.zoom-stats {
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  padding-right: 6px;
+  border-right: 1px solid #e2e8f0;
+  margin-right: 2px;
+}
+
+.z-btn {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  color: #0f172a;
+  border-radius: 5px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.z-btn:hover {
+  background: #e2e8f0;
+}
+
+.zoom-pct {
+  min-width: 40px;
+  text-align: center;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #1e293b;
+}
+
+/* Zielstellen-Marker (Trenn-Werkzeug) */
+.design-split-seams-layer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 35;
+}
+
+.split-seam-marker {
+  position: absolute;
+  transform: translateX(-50%);
+  width: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+.split-seam-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 0;
+  transform: translateX(-50%);
+  border-left: 2px dashed #d97706;
+  opacity: 0.82;
+}
+
+.split-seam-marker.is-dock-seam .split-seam-line {
+  border-left-color: #0284c7;
+}
+
+.split-seam-handle {
+  position: relative;
+  z-index: 2;
+  pointer-events: auto;
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1.5px solid #d97706;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 11px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.22);
+  transition: transform 0.12s ease, background-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.split-seam-marker.is-dock-seam .split-seam-handle {
+  border-color: #0284c7;
+  background: #f0f9ff;
+  color: #0369a1;
+}
+
+.split-seam-handle:hover {
+  transform: scale(1.16);
+  background: #fef3c7;
+  box-shadow: 0 4px 12px rgba(217, 119, 6, 0.35);
+}
+
+.split-seam-marker.is-dock-seam .split-seam-handle:hover {
+  background: #e0f2fe;
+  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.35);
+}
+
+.split-tool-banner {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 55;
+  display: flex;
   align-items: center;
   gap: 10px;
-  user-select: none;
-  z-index: 5;
-  pointer-events: auto;
+  background: #fffbeb;
+  color: #78350f;
+  border: 1px solid #f59e0b;
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 11.5px;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.14);
 }
-.btn-bg-drag-finish {
-  background: #2563eb;
-  color: #ffffff;
-  border: none;
-  border-radius: 4px;
-  padding: 3px 8px;
-  font-size: 0.76rem;
-  font-weight: 600;
+
+.split-banner-close {
+  border: 1px solid #d97706;
+  background: #ffffff;
+  color: #92400e;
+  border-radius: 999px;
+  padding: 2px 9px;
+  font-size: 11px;
+  font-weight: 700;
   cursor: pointer;
-  transition: background 0.15s ease;
 }
-.btn-bg-drag-finish:hover {
-  background: #1d4ed8;
+.split-banner-close:hover {
+  background: #fef3c7;
 }
 </style>
-

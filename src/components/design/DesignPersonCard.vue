@@ -1,52 +1,35 @@
 <script setup lang="ts">
-import { useI18n } from 'vue-i18n';
-import type { DesignCardConfig } from '../../types/design';
-import {
-  CARD_WIDTH,
-  type CardBox,
-  type RenderedCardData,
-} from '../../composables/useDesignLayout';
+import type { ScenePersonCard } from '../../domain/design/sceneTypes';
 
-const { t } = useI18n();
-
-defineProps<{
-  cardBox: CardBox;
-  cardData?: RenderedCardData;
-  cardConfig: DesignCardConfig;
+const props = defineProps<{
+  card: ScenePersonCard;
+  dragDeltaX?: number;
   isSelected: boolean;
-  hasBranchWidth: boolean;
-  inPartnerPath: boolean;
-  hasDescendants: boolean;
-  isExpanded: boolean;
-  canRegroup: boolean;
-  groupCardCount: number;
-  cardIndexInGroup: number;
-  groupLevel: number;
-  isGroupDocked: boolean;
-  isMultiSiblingGroup: boolean;
-  isOriginGroup: boolean;
-  isGroupDragging: boolean;
+  isHighlighted: boolean;
+  isDimmed?: boolean;
+  isGroupDragging?: boolean;
+  isLockedInParent?: boolean;
 }>();
 
 const emit = defineEmits<{
-  (e: 'select'): void;
-  (e: 'group-descendants'): void;
-  (e: 'toggle-descendants'): void;
-  (e: 'regroup-siblings'): void;
-  (e: 'ungroup-left'): void;
-  (e: 'ungroup-right'): void;
-  (e: 'move-left'): void;
-  (e: 'move-right'): void;
-  (e: 'move-up'): void;
-  (e: 'move-down'): void;
-  (e: 'detach'): void;
+  (e: 'select', personId: string): void;
+  (e: 'enter-subtree', subDocumentId: string): void;
+  (e: 'card-mousedown', event: MouseEvent): void;
 }>();
 
 function getLineStyle(bold: boolean, italic: boolean) {
   return {
-    fontWeight: bold ? 'bold' : 'normal',
+    fontWeight: bold ? '700' : '400',
     fontStyle: italic ? 'italic' : 'normal',
   };
+}
+
+function onDoubleClick() {
+  if (props.card.isCapsule && props.card.capsuleMeta) {
+    emit('enter-subtree', props.card.capsuleMeta.subDocumentId);
+  } else if (props.card.subDocumentId) {
+    emit('enter-subtree', props.card.subDocumentId);
+  }
 }
 </script>
 
@@ -55,464 +38,513 @@ function getLineStyle(bold: boolean, italic: boolean) {
     class="design-person-card"
     :class="{
       selected: isSelected,
-      'has-branch-width': hasBranchWidth,
-      'in-partner-path': inPartnerPath,
-      male: cardBox.person.sex === 'M',
-      female: cardBox.person.sex === 'F',
-      'is-multi-sibling-group': isMultiSiblingGroup,
-      'is-origin-group': isOriginGroup,
-      'is-docked': isGroupDocked,
+      'is-highlighted': isHighlighted,
+      'is-dimmed': isDimmed,
+      male: card.sex === 'M' && !card.isCapsule,
+      female: card.sex === 'F' && !card.isCapsule,
+      'is-capsule': card.isCapsule,
+      'is-subtree-member': card.isSubtreeMember && !card.isCapsule,
+      'is-locked-in-parent': isLockedInParent && !card.isCapsule,
       'is-group-dragging': isGroupDragging,
-      'is-subtree-readonly': cardBox.isReadOnly,
-      'is-subtree-anchor': cardBox.isSubtreeAnchor,
+      'density-compact': card.densityProfile === 'compact_years',
+      'density-narrow': card.densityProfile === 'narrow',
+      'density-detail': card.densityProfile === 'detail',
     }"
-    :style="{ width: CARD_WIDTH + 'px', height: cardBox.height + 'px' }"
-    @click.stop="emit('select')"
+    :style="{
+      left: card.x + 'px',
+      top: card.y + 'px',
+      width: card.width + 'px',
+      height: card.height + 'px',
+    }"
+    @mousedown.stop="e => emit('card-mousedown', e)"
+    @click.stop="emit('select', card.personId)"
+    @dblclick.stop="onDoubleClick"
   >
-    <!-- Button zum Gruppieren der Nachkommen des Eintrags & Reservierten Bereich setzen: sichtbar wenn Nachkommen vorhanden -->
-    <button
-      v-if="hasDescendants"
-      class="group-descendants-card-btn"
-      :class="{ 'is-selected': isSelected }"
-      :title="t('design_group_descendants_tooltip')"
-      @mousedown.stop
-      @click.stop="emit('group-descendants')"
-    >
-      👥
-    </button>
-
-    <!-- Button zum Ein- und Ausklappen der Nachfahren: sichtbar wenn Nachkommen vorhanden -->
-    <button
-      v-if="hasDescendants"
-      class="descendant-toggle-btn"
-      :class="{ 'is-expanded': isExpanded }"
-      :title="isExpanded ? t('collapse_children_tooltip') : t('expand_children_tooltip')"
-      @mousedown.stop
-      @click.stop="emit('toggle-descendants')"
-    >
-      {{ isExpanded ? '▼' : '▲' }}
-    </button>
-
-    <!-- Zeile #1: Henry ID & Badges -->
-    <div class="d-card-top" :style="getLineStyle(cardConfig.line1Bold, cardConfig.line1Italic)">
-      <span v-if="cardConfig.showHenryId && cardData?.henryCode" class="d-henry-badge">
-        [{{ cardData.henryCode }}]
-      </span>
-      <span v-if="cardConfig.showGeneration && cardBox.generation" class="d-gen-badge">
-        Gen. {{ cardBox.generation }}
-      </span>
-      <span
-        v-if="cardBox.isSubtreeAnchor"
-        class="d-subtree-anchor-badge"
-        :title="t('design_subtree_badge_tooltip')"
+    <!-- Verweis-Kapsel Modus für ausgelagerten Sub-Baum -->
+    <template v-if="card.isCapsule && card.capsuleMeta">
+      <div class="capsule-accent-bar"></div>
+      <div class="capsule-kicker">📁 SUB-BAUM KAPSEL</div>
+      <div class="capsule-title" :title="card.capsuleMeta.name">
+        {{ card.capsuleMeta.name }}
+      </div>
+      <div class="capsule-stats">
+        {{ card.capsuleMeta.personCount }} Pers. · {{ card.capsuleMeta.generationSpan }} Gen.
+      </div>
+      <button
+        type="button"
+        class="capsule-open-btn"
+        title="Sub-Baum im separaten Studio öffnen"
+        @mousedown.stop
+        @click.stop="emit('enter-subtree', card.capsuleMeta.subDocumentId)"
       >
-        🌿 {{ cardBox.linkedSubLayoutName }}
-      </span>
-    </div>
+        Öffnen →
+      </button>
+    </template>
 
-    <!-- Zeile #2: Vorname (in der Kachel wird nur noch der Vorname angezeigt) -->
-    <div
-      class="d-card-name"
-      :style="getLineStyle(cardConfig.line2Bold, cardConfig.line2Italic)"
-      :title="cardData?.fullName"
-    >
-      {{ cardData?.firstName }}
-    </div>
+    <!-- Normale Personenkachel -->
+    <template v-else>
+      <div class="person-accent-bar" :class="{ male: card.sex === 'M', female: card.sex === 'F' }"></div>
 
-    <!-- Zeile #3: Geburts-, Tauf- und Todesdaten mit vorn angestellten Icons -->
-    <div
-      v-if="cardData?.hasLine3"
-      class="d-card-line-3"
-      :class="{ 'd-card-line-3-single': cardConfig.lifeDatesLayout === 'single' }"
-      :style="getLineStyle(cardConfig.line3Bold, cardConfig.line3Italic)"
-    >
-      <span v-if="cardData.birthText" class="d-date-item nowrap-date">
-        {{ cardData.birthText }}
-      </span>
-      <span v-if="cardData.chrText" class="d-date-item nowrap-date">
-        {{ cardData.chrText }}
-      </span>
-      <span v-if="cardData.deathText" class="d-date-item nowrap-date">
-        {{ cardData.deathText }}
-      </span>
-    </div>
-
-    <!-- Zeilen #4 & #5: Ehen / Ehepartner (Status-Icon + Name, Hochzeits/Scheidungsdatum, Geburts/Todesdatum) -->
-    <div
-      v-if="cardData?.hasMarriage"
-      class="d-card-marriages-block"
-    >
+      <!-- Zeile #1: Henry-ID, Generation, Implex-Steuerung -->
       <div
-        v-for="(spInfo, sIdx) in (cardData.spouses || [])"
-        :key="'sp-' + sIdx"
-        class="d-marriage-entry"
+        v-if="
+          (card.cardConfig.showHenryId && card.henryCode) ||
+          card.cardConfig.showGeneration ||
+          card.isSubtreeMember ||
+          card.cardConfig.dynamicCompactHeight === false
+        "
+        class="d-card-top"
+        :class="{ 'is-bold': card.cardConfig.line1Bold, 'is-italic': card.cardConfig.line1Italic }"
+        :style="getLineStyle(card.cardConfig.line1Bold, card.cardConfig.line1Italic)"
       >
-        <!-- Linke Spalte: Status-Icon (⚭ verbundene Ringe / ⚮ getrennte Ringe) & Zähler -->
-        <div class="d-spouse-status-col">
-          <span v-if="cardConfig.showMarriageCounter" class="d-marriage-counter">({{ sIdx + 1 }})</span>
-          <span
-            class="d-spouse-status-icon"
-            :title="(spInfo.isDivorced || spInfo.divorceDate) ? t('divorced') : t('married')"
-          >{{ (spInfo.isDivorced || spInfo.divorceDate) ? '⚮' : '⚭' }}</span>
-        </div>
+        <span v-if="card.cardConfig.showHenryId && card.henryCode" class="d-henry-badge">
+          [{{ card.henryCode }}]
+        </span>
+        <span v-if="card.cardConfig.showGeneration" class="d-gen-badge">
+          Gen. {{ card.generation }}
+        </span>
+        <span v-if="card.isSubtreeMember" class="d-subtree-pill" title="Mitglied eines Sub-Baums">
+          🌿
+        </span>
+      </div>
 
-        <!-- Rechte Spalte: Name, Hochzeits/Scheidungsdatum, Lebensdaten eingerückt auf einer Höhe zum Namen -->
-        <div class="d-spouse-details-col">
-          <!-- Row 1: Name Ehepartner [Henry ID] -->
-          <div
-            v-if="(cardConfig.showSpouseName && spInfo.name) || (cardConfig.showHenryId && spInfo.henry)"
-            class="d-spouse-name-row"
-            :style="getLineStyle(cardConfig.line4Bold, cardConfig.line4Italic)"
-          >
-            <span v-if="cardConfig.showSpouseName && spInfo.name" class="d-spouse-name">{{ spInfo.name }}</span>
-            <span v-if="cardConfig.showHenryId && spInfo.henry" class="d-spouse-henry">[{{ spInfo.henry }}]</span>
-          </div>
+      <!-- Zeile #2: Name (Pflichtfeld) -->
+      <div
+        class="d-card-name"
+        :class="{ 'is-bold': card.cardConfig.line2Bold, 'is-italic': card.cardConfig.line2Italic }"
+        :style="getLineStyle(card.cardConfig.line2Bold, card.cardConfig.line2Italic)"
+      >
+        {{ card.fullName }}
+      </div>
 
-          <!-- Row 2: Hochzeits-, Scheidungs-, Geburts- und Todesdatum (in einer Zeile bei single layout) -->
+      <!-- Zeile #3: Lebensdaten & optional Beruf -->
+      <div
+        v-if="card.lifeLines.length > 0 || card.occupationText"
+        class="d-card-life"
+        :class="{
+          'is-single-row': card.cardConfig.lifeDatesLayout === 'single',
+          'is-bold': card.cardConfig.line3Bold,
+          'is-italic': card.cardConfig.line3Italic,
+        }"
+        :style="getLineStyle(card.cardConfig.line3Bold, card.cardConfig.line3Italic)"
+      >
+        <span v-for="(line, idx) in card.lifeLines" :key="idx" class="d-life-item">
+          {{ line }}
+        </span>
+        <span v-if="card.occupationText" class="d-occupation">
+          {{ card.occupationText }}
+        </span>
+      </div>
+
+      <!-- Zeile #4 & #5: Unbegrenzte Ehen / Partnerschaften -->
+      <div v-if="card.spouses.length > 0" class="d-card-marriages">
+        <div
+          v-for="sp in card.spouses"
+          :key="sp.partnerId + '-' + sp.orderIndex"
+          class="d-marriage-row"
+        >
           <div
-            v-if="spInfo.dateItems.length > 0"
-            class="d-spouse-dates-row"
-            :class="{ 'd-spouse-dates-multi': cardConfig.lifeDatesLayout === 'multi' }"
-            :style="getLineStyle(cardConfig.line5Bold, cardConfig.line5Italic)"
+            v-if="
+              card.cardConfig.showSpouseName ||
+              card.cardConfig.showMarriageCounter ||
+              (card.cardConfig.showHenryId && sp.henryCode)
+            "
+            class="d-marriage-header"
+            :class="{ 'is-bold': card.cardConfig.line4Bold, 'is-italic': card.cardConfig.line4Italic }"
+            :style="getLineStyle(card.cardConfig.line4Bold, card.cardConfig.line4Italic)"
           >
             <span
-              v-for="(item, dIdx) in spInfo.dateItems"
-              :key="item.key"
-              class="nowrap-date d-spouse-date-item"
-              :class="{ 'd-divorce-badge': item.isDivorce }"
+              class="d-marriage-symbol"
+              :class="{ 'is-divorced': Boolean(card.cardConfig.showDivorce && sp.divorceText) }"
             >
-              {{ item.text }}<span v-if="cardConfig.lifeDatesLayout === 'single' && dIdx < spInfo.dateItems.length - 1" class="d-date-sep">, </span>
+              {{ card.cardConfig.showDivorce && sp.divorceText ? '⚮' : '⚭' }}
+            </span>
+            <span v-if="card.cardConfig.showMarriageCounter" class="d-marriage-idx">
+              {{ sp.orderIndex }}.
+            </span>
+            <span v-if="card.cardConfig.showHenryId && sp.henryCode" class="d-spouse-henry">
+              [{{ sp.henryCode }}]
+            </span>
+            <span v-if="card.cardConfig.showSpouseName && sp.fullName" class="d-spouse-name">
+              {{ sp.fullName }}
+            </span>
+          </div>
+
+          <div
+            v-if="
+              (card.cardConfig.showMarriageDate && sp.marriageText) ||
+              (card.cardConfig.showDivorce && sp.divorceText) ||
+              ((card.cardConfig.showSpouseBirthDate || card.cardConfig.showSpouseBirthPlace) && sp.birthText) ||
+              ((card.cardConfig.showSpouseDeathDate || card.cardConfig.showSpouseDeathPlace) && sp.deathText)
+            "
+            class="d-marriage-dates"
+            :class="{
+              'is-single-row': card.cardConfig.lifeDatesLayout === 'single',
+              'is-bold': card.cardConfig.line5Bold,
+              'is-italic': card.cardConfig.line5Italic,
+            }"
+            :style="getLineStyle(card.cardConfig.line5Bold, card.cardConfig.line5Italic)"
+          >
+            <span v-if="card.cardConfig.showMarriageDate && sp.marriageText" class="d-marriage-date">
+              {{ sp.marriageText }}
+            </span>
+            <span v-if="card.cardConfig.showDivorce && sp.divorceText" class="d-divorce-text">
+              {{ sp.divorceText }}
+            </span>
+            <span v-if="(card.cardConfig.showSpouseBirthDate || card.cardConfig.showSpouseBirthPlace) && sp.birthText">
+              {{ sp.birthText }}
+            </span>
+            <span v-if="(card.cardConfig.showSpouseDeathDate || card.cardConfig.showSpouseDeathPlace) && sp.deathText">
+              {{ sp.deathText }}
             </span>
           </div>
         </div>
       </div>
-    </div>
+    </template>
   </div>
 </template>
 
 <style scoped>
-/* Personen-Boxen: Jede Kachel passt sich dynamisch ihrem Inhalt an */
 .design-person-card {
-  position: relative;
-  background: white;
-  border: 3px solid #1e293b;
-  border-bottom: 3.5px solid #64748b;
-  padding: 5px 6px;
+  position: absolute;
+  background: #ffffff;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 7px;
+  padding: 6px 8px 6px 8px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  justify-content: flex-start;
   gap: 2px;
   cursor: grab;
-  overflow: visible;
-  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  transition: box-shadow 0.14s ease, border-color 0.14s ease, opacity 0.15s ease;
+  z-index: 12;
+  user-select: none;
 }
-.design-person-card + .design-person-card {
-  margin-left: -3px;
+
+.design-person-card:hover {
+  border-color: #64748b;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.14);
+  z-index: 18;
 }
+
 .design-person-card:active {
   cursor: grabbing;
 }
+
 .design-person-card.male {
-  border-bottom: 3.5px solid #2980b9 !important;
+  border-color: #93c5fd;
 }
+
 .design-person-card.female {
-  border-bottom: 3.5px solid #e84393 !important;
+  border-color: #fbcfe8;
 }
+
+.design-person-card.is-subtree-member {
+  background: #faf5ff;
+  border-color: #c084fc;
+}
+
+.design-person-card.is-locked-in-parent {
+  cursor: pointer;
+}
+
+.d-implex-pill.is-locked {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
 .design-person-card.selected {
-  background: #fffde7 !important;
-  box-shadow: inset 0 0 0 2px #f39c12;
-}
-.design-person-card.has-branch-width {
-  box-shadow: inset 0 0 0 2px #8e44ad;
-}
-.design-person-card.in-partner-path {
-  background: #fef5e7;
+  border-color: #f59e0b !important;
+  background: #fffdf2 !important;
+  box-shadow: 0 0 0 2.5px rgba(245, 158, 11, 0.45), 0 8px 20px rgba(245, 158, 11, 0.2) !important;
+  z-index: 25;
 }
 
-/* Zustände der Gruppe auf die Kacheln übertragen */
-.design-person-card.is-multi-sibling-group {
-  border-top-width: 3.5px;
-  border-left-width: 3.5px;
-  border-right-width: 3.5px;
+.design-person-card.is-highlighted {
+  border-color: #ea580c !important;
+  box-shadow: 0 0 0 2px rgba(234, 88, 12, 0.35);
+  z-index: 22;
 }
-.design-person-card.is-origin-group {
-  border-top-color: #0e6251;
-  border-left-color: #0e6251;
-  border-right-color: #0e6251;
+
+.design-person-card.is-dimmed {
+  opacity: 0.4;
 }
-.design-person-card.is-docked {
-  box-shadow: 0 0 0 1.5px #27ae60;
-}
+
 .design-person-card.is-group-dragging {
-  border-color: #e67e22 !important;
-  box-shadow: 0 8px 22px rgba(230, 126, 34, 0.35) !important;
+  z-index: 40 !important;
+  box-shadow: 0 12px 26px rgba(15, 23, 42, 0.25) !important;
+  transition: none !important;
 }
 
-/* Button auf dem Eintrag zum Gruppieren der Nachkommen je Ebene */
-.group-descendants-card-btn {
+.person-accent-bar {
   position: absolute;
-  top: -12px;
-  left: 6px;
-  width: 24px;
-  height: 18px;
-  padding: 0;
-  font-size: 0.68rem;
-  line-height: 1;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3.5px;
+  background: #94a3b8;
+}
+.person-accent-bar.male {
   background: #2563eb;
-  color: white;
-  border: 1px solid #1d4ed8;
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 35;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
-  transition: transform 0.15s, background 0.15s;
 }
-.group-descendants-card-btn:hover {
-  background: #1d4ed8;
-  transform: scale(1.15);
+.person-accent-bar.female {
+  background: #db2777;
 }
 
-/* Button zum Ein- und Ausklappen der Nachfahren direkt am oberen Rand des Kästchens */
-.descendant-toggle-btn {
+/* Verweis-Kapsel */
+.design-person-card.is-capsule {
+  background: #fffbeb;
+  border: 2px dashed #d97706;
+  justify-content: space-between;
+  align-items: center;
+  text-align: center;
+  padding: 8px;
+}
+
+.capsule-accent-bar {
   position: absolute;
-  top: -12px;
-  right: 6px;
-  width: 22px;
-  height: 18px;
-  padding: 0;
-  font-size: 0.65rem;
-  font-weight: bold;
-  line-height: 1;
-  background: #34495e;
-  color: white;
-  border: 1px solid #1e293b;
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 35;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
-  transition: transform 0.15s, background 0.15s;
-}
-.descendant-toggle-btn:hover {
-  background: #2980b9;
-  transform: scale(1.15);
-}
-.descendant-toggle-btn.is-expanded {
-  background: #64748b;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  background: #f59e0b;
 }
 
+.capsule-kicker {
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  color: #b45309;
+  margin-top: 2px;
+}
+
+.capsule-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.25;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.capsule-stats {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: #78350f;
+}
+
+.capsule-open-btn {
+  border: 1px solid #d97706;
+  background: #fef3c7;
+  color: #92400e;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.capsule-open-btn:hover {
+  background: #f59e0b;
+  color: #ffffff;
+}
+
+/* Inhalte (mittig zentriert & sofortige Typografie-Vererbung) */
 .d-card-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 3px;
-}
-.d-henry-badge {
-  background: #34495e;
-  color: white;
-  font-size: 0.65rem;
-  font-weight: bold;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.d-gen-badge {
-  font-size: 0.65rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 9px;
   color: #64748b;
-  font-weight: bold;
+  text-align: center;
 }
-.d-card-mini-btns {
+
+.d-henry-badge {
+  background: #334155;
+  color: #ffffff;
+  font-size: 8.5px;
+  font-weight: inherit;
+  font-style: inherit;
+  padding: 0 4px;
+  border-radius: 3px;
+  line-height: 1.35;
+}
+
+.d-gen-badge {
+  font-weight: inherit;
+  font-style: inherit;
+}
+
+.d-subtree-pill {
+  font-size: 9px;
+}
+
+.d-implex-row {
   display: flex;
-  gap: 1px;
-  margin-left: auto;
+  flex-wrap: wrap;
+  gap: 3px;
+  justify-content: center;
+  text-align: center;
 }
-.d-mini-btn {
-  background: #f1f5f9;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  border-radius: 2px;
-  padding: 0 3px;
-  font-size: 0.58rem;
-  line-height: 1.2;
+
+.d-implex-pill {
+  font-size: 8.5px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 1px 5px;
   cursor: pointer;
+  border: 1px solid #f59e0b;
+  background: #fef3c7;
+  color: #92400e;
 }
-.d-mini-btn:hover:not(:disabled) {
-  background: #3498db;
-  color: white;
-  border-color: #2980b9;
-}
-.d-mini-btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-.d-mini-btn.d-mini-ungroup {
-  background: #fff8e1;
-  color: #b7791f;
-  border-color: #fbd38d;
-}
-.d-mini-btn.d-mini-ungroup:hover:not(:disabled) {
-  background: #e67e22;
-  color: white;
-  border-color: #d35400;
-}
-.d-mini-btn.d-mini-detach {
-  background: #ebf8ff;
-  color: #2b6cb0;
-  border-color: #bee3f8;
-}
-.d-mini-btn.d-mini-detach:hover:not(:disabled) {
-  background: #3182ce;
-  color: white;
-  border-color: #2b6cb0;
-}
-.d-mini-btn.d-mini-regroup {
-  background: #eafaf1;
-  color: #1e8449;
-  border-color: #a3e4d7;
-  font-weight: bold;
-}
-.d-mini-btn.d-mini-regroup:hover:not(:disabled) {
-  background: #27ae60;
-  color: white;
-  border-color: #1e8449;
+.d-implex-pill.is-here {
+  border-color: #16a34a;
+  background: #dcfce7;
+  color: #166534;
 }
 
 .d-card-name {
-  font-size: 0.78rem;
-  color: #1e293b;
-  white-space: normal;
+  font-size: 11.5px;
+  font-weight: 400;
+  color: #0f172a;
+  text-align: center;
+  line-height: 1.2;
   word-break: break-word;
-  overflow-wrap: break-word;
+}
+
+.density-detail .d-card-name {
+  font-size: 12px;
+}
+.density-compact .d-card-name {
+  font-size: 11px;
+}
+.density-narrow .d-card-name {
+  font-size: 10px;
+}
+
+.d-card-life {
+  font-size: 9.5px;
+  color: #475569;
   text-align: center;
   line-height: 1.25;
-  margin: 2px 0;
-}
-.d-card-line-3 {
-  font-size: 0.65rem;
-  color: #475569;
-  text-align: center;
-  line-height: 1.2;
   display: flex;
   flex-direction: column;
+  align-items: center;
   gap: 1px;
 }
-.d-card-line-3-single {
-  flex-direction: row !important;
-  flex-wrap: wrap !important;
-  justify-content: center !important;
-  gap: 5px !important;
+.d-card-life.is-single-row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px;
 }
-.nowrap-date {
-  white-space: nowrap;
+.density-compact .d-card-life {
+  font-size: 9px;
 }
-.d-spouse-henry {
-  font-size: 0.62rem;
-  font-weight: 700;
-  color: #d97706;
+.density-narrow .d-card-life {
+  font-size: 8.5px;
 }
-.d-card-marriages-block {
+
+.d-occupation {
+  color: #64748b;
+  font-style: inherit;
+  font-weight: inherit;
+}
+
+.d-card-marriages {
+  margin-top: 2px;
+  padding-top: 2px;
+  border-top: 1px dashed #cbd5e1;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 2px;
-  border-top: 1px dashed #cbd5e1;
-  padding-top: 2px;
 }
-.d-marriage-entry {
+
+.d-marriage-row {
   display: flex;
-  flex-direction: row;
-  align-items: flex-start;
-  gap: 4px;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1px;
+  font-size: 9px;
+  color: #334155;
   line-height: 1.2;
 }
-.d-spouse-status-col {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-  padding-top: 1px;
+.density-narrow .d-marriage-row {
+  font-size: 8.5px;
 }
-.d-spouse-status-icon {
-  font-size: 0.78rem;
-  line-height: 1;
-  display: inline-flex;
+
+.d-marriage-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: center;
+  text-align: center;
+  gap: 3px;
+}
+
+.d-marriage-symbol {
+  color: #475569;
+  font-weight: inherit;
+  font-style: inherit;
+}
+.d-marriage-symbol.is-divorced {
+  color: #dc2626;
+}
+
+.d-marriage-idx {
+  color: #2563eb;
+  font-weight: inherit;
+  font-style: inherit;
+}
+
+.d-spouse-henry {
+  color: #d97706;
+  font-weight: inherit;
+  font-style: inherit;
+}
+
+.d-spouse-name {
+  color: #0f172a;
+  font-weight: inherit;
+  font-style: inherit;
+}
+
+.d-marriage-dates {
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  color: #475569;
-  user-select: none;
-}
-.d-spouse-status-icon.is-divorced {
-  color: #c0392b;
-}
-.d-spouse-details-col {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
+  text-align: center;
   gap: 1px;
-  flex-grow: 1;
-  min-width: 0;
-  text-align: left;
+  padding-left: 0;
+  font-size: 8.5px;
+  color: #64748b;
 }
-.d-spouse-name-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-  font-size: 0.66rem;
-  color: #1e293b;
-  line-height: 1.2;
-}
-.d-spouse-name {
-  font-weight: 600;
-  color: #1e293b;
-}
-.d-spouse-dates-row {
-  font-size: 0.65rem;
-  color: #475569;
-  display: flex;
+.d-marriage-dates.is-single-row {
   flex-direction: row;
   flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-  line-height: 1.2;
+  justify-content: center;
+  gap: 4px;
 }
-.d-spouse-dates-row.d-spouse-dates-multi {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+
+.d-divorce-text {
+  color: #dc2626;
 }
-.d-spouse-date-item {
-  color: #475569;
-  font-size: 0.65rem;
+
+.is-bold,
+.is-bold * {
+  font-weight: 700 !important;
 }
-.d-marriage-counter {
-  font-weight: 700;
-  color: #2563eb;
-  font-size: 0.66rem;
-}
-.d-divorce-badge {
-  color: #c0392b;
-}
-.d-subtree-anchor-badge {
-  background: #059669;
-  color: #ffffff;
-  font-size: 0.65rem;
-  font-weight: 700;
-  padding: 1px 4px;
-  border-radius: 3px;
-  margin-left: 2px;
-  white-space: nowrap;
-}
-.design-person-card.is-subtree-readonly {
-  background-color: #f8fafc;
-}
-.design-person-card.is-subtree-anchor {
-  border-bottom: 2px solid #059669;
+
+.is-italic,
+.is-italic * {
+  font-style: italic !important;
 }
 </style>
-

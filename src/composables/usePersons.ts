@@ -328,13 +328,45 @@ export function parseBirthSortKey(dateStr: string | null | undefined): [number, 
   return [year, month, day];
 }
 
-export function comparePersonsByBirth(a: Person, b: Person): number {
-  const [ya, ma, da] = parseBirthSortKey(a.birth_date);
-  const [yb, mb, db] = parseBirthSortKey(b.birth_date);
+/**
+ * Compares two GEDCOM/ISO/German date strings chronologically, placing empty/unparseable dates last.
+ */
+export function compareDateSortKeys(
+  a: string | null | undefined,
+  b: string | null | undefined
+): number {
+  const [ya, ma, da] = parseBirthSortKey(a);
+  const [yb, mb, db] = parseBirthSortKey(b);
   if (ya !== yb) return ya - yb;
   if (ma !== mb) return ma - mb;
   if (da !== db) return da - db;
-  return a.id.localeCompare(b.id);
+  return 0;
+}
+
+export function comparePersonsByBirth(a: Person, b: Person): number {
+  const cmp = compareDateSortKeys(a.birth_date, b.birth_date);
+  return cmp !== 0 ? cmp : a.id.localeCompare(b.id);
+}
+
+/**
+ * Returns a copy of spouse connections sorted chronologically by wedding date.
+ */
+export function sortSpousesByDate(spouses: SpouseConnection[] | undefined): SpouseConnection[] {
+  if (!spouses || spouses.length <= 1) return spouses ? [...spouses] : [];
+  return [...spouses].sort((a, b) => compareDateSortKeys(a.date, b.date));
+}
+
+/**
+ * Returns a copy of child IDs sorted chronologically by each child's birth date.
+ */
+export function sortChildIdsByBirth(
+  childIds: string[] | undefined,
+  getPerson: (id: string) => Person | undefined
+): string[] {
+  if (!childIds || childIds.length <= 1) return childIds ? [...childIds] : [];
+  return [...childIds].sort((a, b) =>
+    compareDateSortKeys(getPerson(a)?.birth_date, getPerson(b)?.birth_date)
+  );
 }
 
 export interface UsePersonsOptions {
@@ -655,7 +687,7 @@ export function usePersons(
     }
     if (key === 'spouses') {
       if (!person.spouses || person.spouses.length === 0) return null;
-      return person.spouses
+      return sortSpousesByDate(person.spouses)
         .map(s => {
           const sp = personsMap.value.get(s.id);
           return sp ? `${sp.surname || ''}, ${sp.given_name || 'N.N.'}` : s.id;
@@ -664,7 +696,7 @@ export function usePersons(
     }
     if (key === 'children') {
       if (!person.children_ids || person.children_ids.length === 0) return null;
-      return person.children_ids
+      return sortChildIdsByBirth(person.children_ids, id => personsMap.value.get(id))
         .map(cid => {
           const c = personsMap.value.get(cid);
           return c ? `${c.surname || ''}, ${c.given_name || 'N.N.'}` : cid;

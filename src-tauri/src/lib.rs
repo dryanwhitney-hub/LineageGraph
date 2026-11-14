@@ -4,6 +4,7 @@ pub mod gedcom_export;
 pub mod gedcom_import_merge;
 pub mod csv_export;
 pub mod research;
+pub mod design_repo;
 
 use petgraph::algo::astar;
 use petgraph::graph::{DiGraph, NodeIndex};
@@ -1922,11 +1923,13 @@ fn rename_person_references(
             .map_err(|e| e.to_string())?;
     }
 
+    design_repo::rename_person_design_references(conn, from_id, to_id)?;
+
     Ok(())
 }
 
 /// Atomically updates a batch of persons, supporting cyclic ID swaps via a 2-phase temporary
-/// ID rename across all relational tables and stored JSON design layouts.
+/// ID rename across all relational tables (including Design Studio relational rules).
 fn update_persons_batch_internal(
     conn: &mut Connection,
     updates: Vec<PersonUpdate>,
@@ -2049,42 +2052,8 @@ fn update_persons_batch_internal(
             .map_err(|e| e.to_string())?;
         }
 
-        // Phase 4: Layout-Referenzen in design_layouts JSON-Daten ebenfall 2-phasig aktualisieren,
-        // damit ein ID-Tausch (I1 <-> I2) im JSON nicht kollidiert.
-        if !temp_renames.is_empty() {
-            let mut stmt = tx
-                .prepare("SELECT id, layout_data FROM design_layouts")
-                .map_err(|e| e.to_string())?;
-            let rows: Vec<(String, String)> = stmt
-                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-                .map_err(|e| e.to_string())?
-                .filter_map(Result::ok)
-                .collect();
-
-            for (dl_id, mut ldata) in rows {
-                let mut modified = false;
-                for (u, temp_id) in &temp_renames {
-                    let old_pat = format!("\"{}\"", u.original_id);
-                    if ldata.contains(&old_pat) {
-                        let tmp_pat = format!("\"{}\"", temp_id);
-                        ldata = ldata.replace(&old_pat, &tmp_pat);
-                        modified = true;
-                    }
-                }
-                if modified {
-                    for (u, temp_id) in &temp_renames {
-                        let tmp_pat = format!("\"{}\"", temp_id);
-                        let new_pat = format!("\"{}\"", u.person.id);
-                        ldata = ldata.replace(&tmp_pat, &new_pat);
-                    }
-                    tx.execute(
-                        "UPDATE design_layouts SET layout_data = ?1 WHERE id = ?2",
-                        [&ldata, &dl_id],
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-            }
-        }
+        // Phase 4: Commit transaction and restore foreign keys.
+        // Design Studio references were migrated via relational updates in `rename_person_references`.
 
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
@@ -2504,6 +2473,9 @@ pub fn merge_persons_internal(
     tx.execute("DELETE FROM research_tasks WHERE person_id = ?1", [source_id])
         .map_err(|e| e.to_string())?;
 
+    // 6.5 Design Studio v2 Referenzen übertragen
+    design_repo::reconcile_design_on_person_merge(&tx, target_id, source_id)?;
+
     // 7. Cleanup source from root_ancestors & proband_henry_codes
     tx.execute("DELETE FROM proband_henry_codes WHERE person_id = ?1 OR proband_id = ?1", [source_id])
         .map_err(|e| e.to_string())?;
@@ -2859,6 +2831,134 @@ fn delete_design_layout(state: State<'_, AppState>, id: String) -> Result<(), St
     conn.execute("DELETE FROM design_layouts WHERE id = ?1", [&id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MediaAssetPayloadDto {
+    pub meta: design_repo::MediaAssetMetaDto,
+    pub data_url: String,
+}
+
+#[tauri::command]
+fn list_design_documents(
+    state: State<'_, AppState>,
+    root_person_id: Option<String>,
+    document_kind: Option<String>,
+) -> Result<Vec<design_repo::DesignDocumentSummaryDto>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    design_repo::list_design_documents(
+        &conn,
+        root_person_id.as_deref(),
+        document_kind.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn load_design_tree_bundle(
+    state: State<'_, AppState>,
+    document_id: String,
+) -> Result<design_repo::DesignTreeBundleDto, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    design_repo::load_design_tree_bundle(&conn, &document_id)
+}
+
+#[tauri::command]
+fn save_design_document_v2(
+    state: State<'_, AppState>,
+    document: design_repo::DesignDocumentDto,
+    overwrite_same_name: Option<bool>,
+) -> Result<design_repo::DesignDocumentSummaryDto, String> {
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    design_repo::save_design_document(&mut conn, document, overwrite_same_name.unwrap_or(false))
+}
+
+#[tauri::command]
+fn delete_design_document_v2(state: State<'_, AppState>, document_id: String) -> Result<(), String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    design_repo::delete_design_document(&conn, &document_id)
+}
+
+#[tauri::command]
+fn upload_design_media_asset(
+    state: State<'_, AppState>,
+    file_name: String,
+    data_url: String,
+    width: i32,
+    height: i32,
+) -> Result<design_repo::MediaAssetMetaDto, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    design_repo::store_media_asset_from_data_url(&conn, &file_name, &data_url, width, height)
+}
+
+#[tauri::command]
+fn get_design_media_asset(
+    state: State<'_, AppState>,
+    asset_id: String,
+) -> Result<Option<MediaAssetPayloadDto>, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    match design_repo::get_media_asset_data_url(&conn, &asset_id)? {
+        Some((meta, data_url)) => Ok(Some(MediaAssetPayloadDto { meta, data_url })),
+        None => Ok(None),
+    }
+}
+
+#[tauri::command]
+fn export_encrypted_project(
+    state: State<'_, AppState>,
+    file_path: String,
+    password: String,
+) -> Result<String, String> {
+    let target_path = validate_user_file_path(&file_path, &["lgproj"])?;
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    design_repo::export_encrypted_project(&conn, target_path, &password)?;
+    Ok(target_path.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn import_encrypted_project(
+    state: State<'_, AppState>,
+    file_path: String,
+    target_tree_name: String,
+    password: String,
+) -> Result<String, String> {
+    let src_path = validate_user_file_path(&file_path, &["lgproj"])?;
+    let valid_name = validate_tree_name(&target_tree_name)?.to_string();
+    let db_bytes = design_repo::decrypt_project_to_temp_db(src_path, &password)?;
+
+    let final_db_path = state.app_dir.join(format!("{}.db", valid_name));
+    if final_db_path.exists() {
+        return Err(format!(
+            "Ein Stammbaum mit dem Namen '{}' existiert bereits.",
+            valid_name
+        ));
+    }
+
+    let tmp_path = state
+        .app_dir
+        .join(format!(".import_{}_{}.tmp", valid_name, uuid::Uuid::new_v4().simple()));
+    fs::write(&tmp_path, &db_bytes).map_err(|e| format!("Fehler beim Schreiben: {}", e))?;
+
+    let test_conn = match db::init_database(&tmp_path) {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(format!("Ungültige importierte Datenbank: {}", e));
+        }
+    };
+    drop(test_conn);
+
+    fs::rename(&tmp_path, &final_db_path).map_err(|e| {
+        let _ = fs::remove_file(&tmp_path);
+        format!("Konnte Zieldatei nicht anlegen: {}", e)
+    })?;
+
+    let new_conn = db::init_database(&final_db_path).map_err(|e| e.to_string())?;
+    let mut conn = state.db.lock().map_err(|e| e.to_string())?;
+    *conn = new_conn;
+    let mut active = state.active_tree.lock().map_err(|e| e.to_string())?;
+    *active = valid_name.clone();
+
+    Ok(valid_name)
 }
 
 #[tauri::command]
@@ -3370,6 +3470,14 @@ pub fn run() {
             save_design_layout,
             get_design_layouts,
             delete_design_layout,
+            list_design_documents,
+            load_design_tree_bundle,
+            save_design_document_v2,
+            delete_design_document_v2,
+            upload_design_media_asset,
+            get_design_media_asset,
+            export_encrypted_project,
+            import_encrypted_project,
             save_latex_template,
             get_latex_templates,
             delete_latex_template,
@@ -4486,5 +4594,197 @@ mod tests {
         // Family FAM_S1 husband should now be T1
         let fam_husband: Option<String> = conn.query_row("SELECT husband_id FROM families WHERE id = 'FAM_S1'", [], |r| r.get(0)).unwrap();
         assert_eq!(fam_husband, Some("T1".to_string()));
+    }
+
+    #[test]
+    fn test_design_relational_cascade_on_person_rename_delete_and_merge() {
+        let mut conn = db::init_in_memory_database().unwrap();
+
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Stamm', 'Ahne', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I2', 'I2', 'Kind', 'Ahne', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I3', 'I3', 'MergeSrc', 'Ahne', 'M', '{}')", []).unwrap();
+
+        let sub_doc = design_repo::DesignDocumentDto {
+            id: "sub_doc_1".to_string(),
+            name: "Zweig I2".to_string(),
+            root_person_id: "I2".to_string(),
+            document_kind: "subtree".to_string(),
+            growth_direction: "bottom_up".to_string(),
+            lineage_policy: "patrilinear".to_string(),
+            routing_style: "orthogonal_bus".to_string(),
+            enable_line_bridges: true,
+            card_density_profile: "standard".to_string(),
+            card_config_json: "{}".to_string(),
+            bg_asset_id: None,
+            bg_config_json: None,
+            created_at: "2026-11-13T12:00:00Z".to_string(),
+            updated_at: "2026-11-13T12:00:00Z".to_string(),
+            person_rules: vec![],
+            group_rules: vec![],
+            subtree_mounts: vec![],
+            edge_waypoints: vec![],
+        };
+        design_repo::save_design_document(&mut conn, sub_doc, false).unwrap();
+
+        let master_doc = design_repo::DesignDocumentDto {
+            id: "master_doc_1".to_string(),
+            name: "Haupttafel".to_string(),
+            root_person_id: "I1".to_string(),
+            document_kind: "master".to_string(),
+            growth_direction: "top_down".to_string(),
+            lineage_policy: "matrilinear".to_string(),
+            routing_style: "orthogonal_bus".to_string(),
+            enable_line_bridges: true,
+            card_density_profile: "compact_years".to_string(),
+            card_config_json: "{}".to_string(),
+            bg_asset_id: None,
+            bg_config_json: None,
+            created_at: "2026-11-13T12:00:00Z".to_string(),
+            updated_at: "2026-11-13T12:00:00Z".to_string(),
+            person_rules: vec![design_repo::PersonDesignRuleDto {
+                person_id: "I3".to_string(),
+                is_hidden: true,
+                custom_group_key: None,
+                level_offset: 1,
+                implex_active_parent_id: Some("I1".to_string()),
+                split_children_by_marriage: true,
+            }],
+            group_rules: vec![design_repo::GroupDesignRuleDto {
+                group_key: "grp_I1".to_string(),
+                anchor_parent_id: Some("I1".to_string()),
+                max_columns_per_row: Some(3),
+                relative_delta_x: 15.0,
+                dock_target_group_key: None,
+                custom_member_ids: Some(vec!["I2".to_string()]),
+                level_override: None,
+            }],
+            subtree_mounts: vec![design_repo::SubtreeMountRuleDto {
+                anchor_person_id: "I2".to_string(),
+                sub_document_id: "sub_doc_1".to_string(),
+                display_mode: "inline".to_string(),
+                relative_delta_x: 0.0,
+            }],
+            edge_waypoints: vec![design_repo::EdgeWaypointRuleDto {
+                edge_key: "I1->grp_I1".to_string(),
+                parent_person_id: "I1".to_string(),
+                lane_offset_delta: -12.0,
+                vertical_channel_delta_x: 4.0,
+            }],
+        };
+        design_repo::save_design_document(&mut conn, master_doc, false).unwrap();
+
+        // 1. Rename I1 -> I100 via update_persons_batch_internal
+        update_persons_batch_internal(
+            &mut conn,
+            vec![PersonUpdate {
+                original_id: "I1".to_string(),
+                person: Person {
+                    id: "I100".to_string(),
+                    given_name: Some("Stamm".to_string()),
+                    surname: Some("Ahne".to_string()),
+                    sex: Some("M".to_string()),
+                    ..Default::default()
+                },
+            }],
+        )
+        .unwrap();
+
+        let reloaded = design_repo::load_design_document(&conn, "master_doc_1").unwrap();
+        assert_eq!(reloaded.root_person_id, "I100");
+        assert_eq!(reloaded.person_rules[0].implex_active_parent_id.as_deref(), Some("I100"));
+        assert_eq!(reloaded.group_rules[0].anchor_parent_id.as_deref(), Some("I100"));
+        assert_eq!(reloaded.edge_waypoints[0].parent_person_id, "I100");
+
+        // 2. Merge I3 into I2 -> person_rule moves to I2
+        let merge_fields = PersonMergeFieldsDto {
+            given_name: Some("Kind".to_string()),
+            surname: Some("Ahne".to_string()),
+            sex: Some("M".to_string()),
+            birth_date: None,
+            birth_place: None,
+            death_date: None,
+            death_place: None,
+            parent_family_source: "none".to_string(),
+            spouse_resolutions: vec![],
+            selected_event_ids: vec![],
+            audit_note: None,
+        };
+        merge_persons_internal(&mut conn, "I2", "I3", &merge_fields).unwrap();
+        let reloaded_after_merge = design_repo::load_design_document(&conn, "master_doc_1").unwrap();
+        assert_eq!(reloaded_after_merge.person_rules.len(), 1);
+        assert_eq!(reloaded_after_merge.person_rules[0].person_id, "I2");
+        assert!(reloaded_after_merge.person_rules[0].is_hidden);
+
+        // 3. Delete I2 -> cascades mount + person_rule + sub_doc_1
+        delete_person_internal(&mut conn, "I2").unwrap();
+        let reloaded_after_del = design_repo::load_design_document(&conn, "master_doc_1").unwrap();
+        assert!(reloaded_after_del.person_rules.is_empty());
+        assert!(reloaded_after_del.subtree_mounts.is_empty());
+    }
+
+    #[test]
+    fn test_media_assets_sha256_deduplication() {
+        let conn = db::init_in_memory_database().unwrap();
+        let png_bytes = vec![137u8, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3, 4];
+        let m1 = design_repo::store_media_asset_bytes(&conn, "wappen1.png", "image/png", 100, 120, &png_bytes).unwrap();
+        let m2 = design_repo::store_media_asset_bytes(&conn, "wappen_kopie.png", "image/png", 100, 120, &png_bytes).unwrap();
+        assert_eq!(m1.id, m2.id);
+
+        let count: i64 = conn.query_row("SELECT count(*) FROM media_assets", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 1);
+
+        let loaded = design_repo::get_media_asset_data_url(&conn, &m1.id).unwrap();
+        assert!(loaded.is_some());
+        assert!(loaded.unwrap().1.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn test_legacy_design_layouts_migration() {
+        let conn = db::init_in_memory_database().unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Ahn', 'Test', 'M', '{}')", []).unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I2', 'I2', 'Kind', 'Test', 'M', '{}')", []).unwrap();
+
+        let legacy_json = serde_json::json!({
+            "name": "Alt-Layout",
+            "probandId": "I1",
+            "cardConfig": { "showHenryId": true },
+            "siblingGroups": [
+                { "id": "g1", "parentId": "I1", "level": 2, "memberIds": ["I2"], "isHidden": false, "manualDeltaX": 24.5 }
+            ],
+            "subLayoutReferences": []
+        }).to_string();
+
+        conn.execute(
+            "INSERT INTO design_layouts (id, proband_id, name, created_at, layout_data, layout_type, anchor_person_id)
+             VALUES ('legacy_1', 'I1', 'Alt-Layout', '2026-10-01T10:00:00Z', ?1, 'master', NULL)",
+            [&legacy_json],
+        ).unwrap();
+
+        design_repo::migrate_legacy_design_layouts(&conn).unwrap();
+        let doc = design_repo::load_design_document(&conn, "legacy_1").unwrap();
+        assert_eq!(doc.name, "Alt-Layout");
+        assert_eq!(doc.root_person_id, "I1");
+        assert_eq!(doc.group_rules.len(), 1);
+        assert_eq!(doc.group_rules[0].relative_delta_x, 24.5);
+    }
+
+    #[test]
+    fn test_encrypted_project_roundtrip() {
+        let conn = db::init_in_memory_database().unwrap();
+        conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Secret', 'Person', 'M', '{}')", []).unwrap();
+
+        let temp_proj = std::env::temp_dir().join(format!("test_enc_{}.lgproj", uuid::Uuid::new_v4().simple()));
+        design_repo::export_encrypted_project(&conn, &temp_proj, "StarkesPasswort123!").unwrap();
+        assert!(temp_proj.exists());
+
+        // Wrong password must fail
+        let bad = design_repo::decrypt_project_to_temp_db(&temp_proj, "Falsch");
+        assert!(bad.is_err());
+
+        // Correct password decrypts a valid SQLite DB
+        let decrypted_bytes = design_repo::decrypt_project_to_temp_db(&temp_proj, "StarkesPasswort123!").unwrap();
+        assert!(&decrypted_bytes[0..16] == b"SQLite format 3\0");
+
+        let _ = fs::remove_file(&temp_proj);
     }
 }

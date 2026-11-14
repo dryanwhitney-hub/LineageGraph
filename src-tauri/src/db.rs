@@ -114,6 +114,92 @@ fn setup_schema(conn: Connection) -> Result<Connection> {
         );
         CREATE INDEX IF NOT EXISTS idx_research_tasks_person ON research_tasks(person_id);
         CREATE INDEX IF NOT EXISTS idx_research_tasks_status ON research_tasks(status);
+
+        -- =====================================================================
+        -- Design Studio v2: Inhaltsadressierte Assets & Relationen
+        -- =====================================================================
+        CREATE TABLE IF NOT EXISTS media_assets (
+            id TEXT PRIMARY KEY,
+            file_name TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            width INTEGER NOT NULL,
+            height INTEGER NOT NULL,
+            byte_size INTEGER NOT NULL,
+            data BLOB NOT NULL,
+            created_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS design_documents (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            root_person_id TEXT NOT NULL,
+            document_kind TEXT NOT NULL DEFAULT 'master',
+            growth_direction TEXT NOT NULL DEFAULT 'bottom_up',
+            lineage_policy TEXT NOT NULL DEFAULT 'patrilinear',
+            routing_style TEXT NOT NULL DEFAULT 'orthogonal_bus',
+            enable_line_bridges INTEGER NOT NULL DEFAULT 1,
+            card_density_profile TEXT NOT NULL DEFAULT 'standard',
+            card_config_json TEXT NOT NULL,
+            bg_asset_id TEXT,
+            bg_config_json TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(root_person_id) REFERENCES individuals(id) ON UPDATE CASCADE ON DELETE CASCADE,
+            FOREIGN KEY(bg_asset_id) REFERENCES media_assets(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_design_docs_root ON design_documents(root_person_id);
+        CREATE INDEX IF NOT EXISTS idx_design_docs_kind ON design_documents(document_kind);
+
+        CREATE TABLE IF NOT EXISTS design_person_rules (
+            document_id TEXT NOT NULL,
+            person_id TEXT NOT NULL,
+            is_hidden INTEGER NOT NULL DEFAULT 0,
+            custom_group_key TEXT,
+            level_offset INTEGER NOT NULL DEFAULT 0,
+            implex_active_parent_id TEXT,
+            split_children_by_marriage INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (document_id, person_id),
+            FOREIGN KEY(document_id) REFERENCES design_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY(person_id) REFERENCES individuals(id) ON UPDATE CASCADE ON DELETE CASCADE,
+            FOREIGN KEY(implex_active_parent_id) REFERENCES individuals(id) ON UPDATE CASCADE ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS design_group_rules (
+            document_id TEXT NOT NULL,
+            group_key TEXT NOT NULL,
+            anchor_parent_id TEXT,
+            max_columns_per_row INTEGER,
+            relative_delta_x REAL NOT NULL DEFAULT 0.0,
+            dock_target_group_key TEXT,
+            custom_member_ids_json TEXT,
+            level_override INTEGER,
+            PRIMARY KEY (document_id, group_key),
+            FOREIGN KEY(document_id) REFERENCES design_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY(anchor_parent_id) REFERENCES individuals(id) ON UPDATE CASCADE ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS design_subtree_mounts (
+            parent_document_id TEXT NOT NULL,
+            anchor_person_id TEXT NOT NULL,
+            sub_document_id TEXT NOT NULL,
+            display_mode TEXT NOT NULL DEFAULT 'inline',
+            relative_delta_x REAL NOT NULL DEFAULT 0.0,
+            PRIMARY KEY (parent_document_id, anchor_person_id),
+            FOREIGN KEY(parent_document_id) REFERENCES design_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY(anchor_person_id) REFERENCES individuals(id) ON UPDATE CASCADE ON DELETE CASCADE,
+            FOREIGN KEY(sub_document_id) REFERENCES design_documents(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS design_edge_waypoints (
+            document_id TEXT NOT NULL,
+            edge_key TEXT NOT NULL,
+            parent_person_id TEXT NOT NULL,
+            lane_offset_delta REAL NOT NULL DEFAULT 0.0,
+            vertical_channel_delta_x REAL NOT NULL DEFAULT 0.0,
+            PRIMARY KEY (document_id, edge_key),
+            FOREIGN KEY(document_id) REFERENCES design_documents(id) ON DELETE CASCADE,
+            FOREIGN KEY(parent_person_id) REFERENCES individuals(id) ON UPDATE CASCADE ON DELETE CASCADE
+        );
     ")?;
 
     // Migration für Individuals-Tabelle (Lebensdaten)
@@ -166,6 +252,8 @@ fn setup_schema(conn: Connection) -> Result<Connection> {
     if !dsg_columns.contains(&"anchor_person_id".to_string()) {
         conn.execute("ALTER TABLE design_layouts ADD COLUMN anchor_person_id TEXT", [])?;
     }
+
+    let _ = crate::design_repo::migrate_legacy_design_layouts(&conn);
 
     Ok(conn)
 }

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import LanguageSelector from './components/common/LanguageSelector.vue';
 import { invoke } from '@tauri-apps/api/core';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import DesignTree from './components/DesignTree.vue';
@@ -23,7 +24,7 @@ import { useShortestPath } from './composables/useShortestPath';
 import { useAppUpdater } from './composables/useAppUpdater';
 import { useResearchAssistant } from './composables/useResearchAssistant';
 
-const { t, locale } = useI18n();
+const { t } = useI18n();
 
 const {
   currentVersion,
@@ -220,10 +221,6 @@ async function onQuickTreeSelectChange(val: string) {
   await handleTreeSwitch();
 }
 
-function changeLanguage(lang: string) {
-  locale.value = lang;
-}
-
 async function openUserGuide() {
   try {
     await invoke('open_user_guide');
@@ -260,6 +257,16 @@ const {
 function onResearchNavigateTree(personId: string) {
   jumpToTreePerson(personId);
   isDetailsOpen.value = true;
+}
+
+const designTreeRef = ref<InstanceType<typeof DesignTree> | null>(null);
+
+function handleDrawerJumpTo(personId: string) {
+  if (currentView.value === 'design') {
+    designTreeRef.value?.focusPersonIfVisible(personId, isDetailsOpen.value);
+    return;
+  }
+  jumpToTreePerson(personId);
 }
 
 // Person- und Zweig-Löschung
@@ -487,10 +494,7 @@ onMounted(() => {
         <button class="util-btn" @click="openUserGuide" :title="t('user_guide_tooltip')">
           📖 {{ t('user_guide_btn') }}
         </button>
-        <div class="lang-segmented">
-          <button @click="changeLanguage('de')" :class="{ active: locale === 'de' }">DE</button>
-          <button @click="changeLanguage('en')" :class="{ active: locale === 'en' }">EN</button>
-        </div>
+        <LanguageSelector />
       </div>
     </header>
 
@@ -798,13 +802,15 @@ onMounted(() => {
         @show-partner-path="showPartnerPath"
       />
 
-      <!-- 3. Stammbaum Design-Mode -->
+      <!-- 3. Design Studio -->
       <DesignTree
         v-if="currentView === 'design'"
+        ref="designTreeRef"
         :persons="persons"
         :root-ancestors="rootAncestors"
         :active-proband-id="activeProbandTab"
         :selected-id="selectedPerson?.id || ''"
+        :is-details-open="isDetailsOpen"
         :highlighted-path-ids="highlightedPathIds"
         :horizontal-lane-gap="designConfig.horizontalLaneGap"
         :auto-sub-lanes="designConfig.autoSubLanes"
@@ -816,6 +822,13 @@ onMounted(() => {
         @clear-selection="() => { selectedPerson = null; activePartnerPath = []; }"
         @select-proband="pid => setProbandTab(pid)"
         @open-settings="showSettings = true; activeSettingsTab = 'general'; loadRootAncestors()"
+        @open-details="pid => {
+          const p = persons.find(x => x.id === pid);
+          if (p) {
+            selectedPerson = p;
+            isDetailsOpen = true;
+          }
+        }"
         @update-card-config="cfg => { designConfig.cardConfig = { ...designConfig.cardConfig, ...cfg }; }"
         @update-design-config="cfg => {
           if (cfg.cardConfig) {
@@ -828,6 +841,7 @@ onMounted(() => {
           if (typeof cfg.minimizeBridges === 'boolean') designConfig.minimizeBridges = cfg.minimizeBridges;
         }"
         @jump-to="jumpToTreePerson"
+        @tree-imported="() => { initTrees(); }"
       />
 
       <!-- 4. Export-Hub -->
@@ -927,7 +941,7 @@ onMounted(() => {
         @unlink-family="familyId => unlinkFamily(familyId)"
         @add-child-link="childId => addChildLink(childId)"
         @remove-child-link="childId => removeChildLink(childId)"
-        @jump-to="jumpToTreePerson"
+        @jump-to="handleDrawerJumpTo"
         @start-shortest-path="startShortestPathTo"
         @delete-person="pid => handleRequestDeletePerson(pid)"
         @merge-person="pid => handleOpenMergeForPerson(pid)"
@@ -1146,30 +1160,6 @@ html, body, #app {
 
 .util-btn:hover {
   background: #334155;
-  color: #ffffff;
-}
-
-.lang-segmented {
-  display: flex;
-  background: #1e293b;
-  border: 1px solid #334155;
-  border-radius: 6px;
-  padding: 2px;
-}
-
-.lang-segmented button {
-  background: transparent;
-  color: #94a3b8;
-  border: none;
-  padding: 0.22rem 0.48rem;
-  font-size: 0.73rem;
-  font-weight: 700;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.lang-segmented button.active {
-  background: #2563eb;
   color: #ffffff;
 }
 

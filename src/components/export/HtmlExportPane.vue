@@ -3,6 +3,7 @@ import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { save } from '@tauri-apps/plugin-dialog';
 import { useI18n } from 'vue-i18n';
+import { FALLBACK_LOCALE, resolveLocale } from '../../locales/registry';
 import {
   buildInteractiveExportTree,
   generateInteractiveTreeHtml,
@@ -150,11 +151,10 @@ const exportTreeResult = computed(() => {
 const generatedHtml = computed<string>(() => {
   const res = exportTreeResult.value;
   if (!res || !res.rootNode) return '';
-  const lang = locale.value === 'en' ? 'en' : 'de';
   return generateInteractiveTreeHtml(res.rootNode, {
     customTitleDe: customTitleDe.value,
     customTitleEn: customTitleEn.value,
-    defaultLang: lang,
+    defaultLang: resolveLocale(locale.value) ?? FALLBACK_LOCALE,
   });
 });
 

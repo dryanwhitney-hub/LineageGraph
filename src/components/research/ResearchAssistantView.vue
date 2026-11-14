@@ -878,7 +878,7 @@ function getGapTypeName(type: string) {
                 type="button"
                 class="btn-portal-search"
                 @click="openPortalForPerson(portal, grp)"
-                :title="(locale === 'de' ? portal.description_de : portal.description_en) + ' (öffnet Browser)'"
+                :title="(locale.startsWith('de') ? (portal.description_de || portal.description_en) : (portal.description_en || portal.description_de)) + ' (öffnet Browser)'"
               >
                 <span class="portal-btn-icon">{{ portal.icon || '🔎' }}</span>
                 <span class="portal-btn-name">{{ portal.name }}</span>
@@ -1079,7 +1079,7 @@ function getGapTypeName(type: string) {
                 type="button"
                 class="btn-portal-search"
                 @click="openPortalForTask(portal, task)"
-                :title="(locale === 'de' ? portal.description_de : portal.description_en) + ' ↗'"
+                :title="(locale.startsWith('de') ? (portal.description_de || portal.description_en) : (portal.description_en || portal.description_de)) + ' ↗'"
               >
                 <span>{{ portal.icon || '🔎' }}</span>
                 <span>{{ portal.name }} ↗</span>

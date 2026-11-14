@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { FALLBACK_LOCALE, formatDateByLocale, resolveLocale } from '../../locales/registry';
 import {
   generateSampleLatexPreview,
   LATEX_VARIABLE_DEFINITIONS,
@@ -38,7 +39,7 @@ function formatLayoutDate(isoStr: string): string {
   if (!isoStr) return '';
   try {
     const d = new Date(isoStr);
-    return d.toLocaleDateString(locale.value === 'en' ? 'en-US' : 'de-DE', {
+    return formatDateByLocale(d, locale.value, {
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
@@ -61,7 +62,7 @@ function closeFloatingBox() {
 const sampleLatexPreview = computed(() => {
   return generateSampleLatexPreview(
     props.template,
-    locale.value === 'en' ? 'en' : 'de'
+    resolveLocale(locale.value) ?? FALLBACK_LOCALE
   );
 });
 

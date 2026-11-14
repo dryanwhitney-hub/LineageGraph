@@ -3,6 +3,7 @@ import {
   parseBirthSortKey,
   generateNextHenryCode,
 } from './htmlExport';
+import { getLocaleDefinition, type SupportedLocale } from '../locales/registry';
 
 export type LatexExportMode = 'proband' | 'custom';
 export type LatexExportDirection = 'descendants' | 'ancestors';
@@ -52,7 +53,7 @@ export interface LatexExportOptions {
   customDocumentTitle: string;
   customDocumentSubtitle: string;
   template: LatexTemplateConfig;
-  locale: 'de' | 'en';
+  locale: SupportedLocale;
 }
 
 export interface DetectedBranchInfo {
@@ -671,7 +672,7 @@ function resolveFatherMother(
 function getAncestorRoleLabel(
   genOffset: number,
   isFemale: boolean,
-  locale: 'de' | 'en'
+  locale: SupportedLocale
 ): string {
   if (genOffset === 0) {
     return locale === 'en' ? 'Starting Entry' : 'Ausgangsperson';
@@ -859,7 +860,7 @@ function renderSpouseItemLatex(
   order: number,
   personMap: Map<string, ExportPersonInput>,
   spouseMask: string,
-  locale: 'de' | 'en',
+  locale: SupportedLocale,
   henryMap?: Map<string, { code: string; generation: number }>
 ): string {
   const spPerson = personMap.get(spConn.id);
@@ -1336,7 +1337,7 @@ function generateMasterPreamble(
   const docClass = tpl.documentClass || 'scrbook';
   const paper = tpl.paperSize || 'a4paper';
   const fontSize = tpl.fontSize || '11pt';
-  const localeLang = options.locale === 'en' ? 'english' : 'ngerman';
+  const localeLang = getLocaleDefinition(options.locale).latexBabel;
 
   const lines: string[] = [];
   lines.push(`% ============================================================================`);
@@ -2327,7 +2328,7 @@ export function generateLatexExport(
  */
 export function generateSampleLatexPreview(
   template: LatexTemplateConfig,
-  locale: 'de' | 'en'
+  locale: SupportedLocale
 ): { previewHtml: string; texContent: string; entryCount: number } {
   const isEn = locale === 'en';
 
