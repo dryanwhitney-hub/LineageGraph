@@ -1,3 +1,14 @@
-Copyright © 2026 David Whitney. All rights reserved.
+PROPRIETARY SOFTWARE LICENSE
 
-Any use, reproduction, or distribution of this software or its source code, in whole or in part, requires the prior written consent of the copyright holder.
+Copyright (c) 2026 David Whitney. All rights reserved.
+
+This software ("LineageGraph") and its associated documentation and source code are proprietary and confidential to the copyright holder. 
+
+1. Restrictions:
+Any use, execution, reproduction, modification, adaptation, distribution, or commercial exploitation of this software or its source code, in whole or in part, is strictly prohibited without the prior written consent of the copyright holder.
+
+2. GitHub Forks:
+While GitHub's Terms of Service allow users to view and fork this public repository, a fork does not grant any right or license to use, modify, or distribute the software beyond the functionality provided by the GitHub platform.
+
+3. Licensing & Inquiries:
+To request permission for personal, academic, or commercial use, please contact the copyright holder via GitHub (@dryanwhitney-hub) or at [lineagegraph@gmail.com].
