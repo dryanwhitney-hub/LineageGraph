@@ -42,6 +42,35 @@ const backgroundImageDataUrl = ref<string>('');
 const backgroundImageName = ref<string>('');
 const backgroundImageDimensions = ref<{ width: number; height: number } | null>(null);
 const backgroundImageOpacity = ref<number>(100);
+const creatorName = ref<string>(localStorage.getItem('lineagegraph_export_creator_name') || '');
+const creatorContact = ref<string>(localStorage.getItem('lineagegraph_export_creator_contact') || '');
+const enableFeedbackForm = ref<boolean>(
+  localStorage.getItem('lineagegraph_export_feedback_enabled') !== '0'
+);
+
+watch(creatorName, val => {
+  try {
+    localStorage.setItem('lineagegraph_export_creator_name', val);
+  } catch {
+    // ignore storage quota errors
+  }
+});
+
+watch(creatorContact, val => {
+  try {
+    localStorage.setItem('lineagegraph_export_creator_contact', val);
+  } catch {
+    // ignore storage quota errors
+  }
+});
+
+watch(enableFeedbackForm, val => {
+  try {
+    localStorage.setItem('lineagegraph_export_feedback_enabled', val ? '1' : '0');
+  } catch {
+    // ignore storage quota errors
+  }
+});
 const isLeftPanelCollapsed = ref<boolean>(false);
 const saveStatusMsg = ref<string>('');
 const saveErrorMsg = ref<string>('');
@@ -162,6 +191,9 @@ const generatedHtml = computed<string>(() => {
     defaultLang: resolveLocale(locale.value) ?? FALLBACK_LOCALE,
     backgroundImageDataUrl: backgroundImageDataUrl.value || undefined,
     backgroundImageOpacity: backgroundImageOpacity.value,
+    creatorName: creatorName.value,
+    creatorContact: creatorContact.value,
+    enableFeedbackForm: enableFeedbackForm.value,
   });
 });
 
@@ -414,6 +446,31 @@ async function saveHtmlFile() {
             </div>
             <p class="bg-image-hint">{{ t('export_bg_image_hint') }}</p>
           </div>
+
+          <div class="export-form-row">
+            <label>{{ t('export_creator_name_label') }}</label>
+            <input
+              type="text"
+              v-model="creatorName"
+              :placeholder="t('export_creator_name_placeholder')"
+              class="export-input"
+            />
+          </div>
+
+          <div class="export-form-row">
+            <label>{{ t('export_creator_contact_label') }}</label>
+            <input
+              type="text"
+              v-model="creatorContact"
+              :placeholder="t('export_creator_contact_placeholder')"
+              class="export-input"
+            />
+          </div>
+
+          <label class="export-checkbox-row">
+            <input type="checkbox" v-model="enableFeedbackForm" />
+            <span>{{ t('export_feedback_enable_label') }}</span>
+          </label>
         </div>
 
         <!-- 4. Berechnete Henry-Statistik -->
@@ -1358,5 +1415,22 @@ async function saveHtmlFile() {
   font-size: 0.72rem;
   color: #64748b;
   line-height: 1.35;
+}
+
+.export-checkbox-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #334155;
+  cursor: pointer;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+
+.export-checkbox-row input {
+  margin-top: 2px;
+  accent-color: #3b82f6;
+  cursor: pointer;
 }
 </style>

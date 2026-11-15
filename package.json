@@ -4,10 +4,12 @@
   "version": "0.3.0",
   "description": "LineageGraph - Genealogie & Familienbuch-Suite",
   "author": "David Whitney <lineagegraph@gmail.com>",
+  "license": "LicenseRef-Proprietary",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "check:locales": "node scripts/check-locales.mjs",
+    "licenses:generate": "node scripts/generate-third-party-licenses.mjs",
     "build": "npm run check:locales && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri"

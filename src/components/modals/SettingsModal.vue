@@ -23,6 +23,9 @@ import type {
   ColumnConfig,
   RootAncestorConfig,
 } from '../../composables/usePersons';
+import thirdPartyLicensesText from '../../../THIRD_PARTY_LICENSES.txt?raw';
+
+const showThirdPartyLicenses = ref(false);
 
 export type SettingsTab = 'general' | 'trees' | 'storage' | 'table_view' | 'research' | 'about';
 
@@ -1648,6 +1651,28 @@ onBeforeUnmount(() => {
                 >
                   🐛 {{ t('about_link_issues') }}
                 </a>
+                <button
+                  type="button"
+                  class="btn-about-link"
+                  @click="showThirdPartyLicenses = !showThirdPartyLicenses"
+                >
+                  📜 {{ showThirdPartyLicenses ? t('about_third_party_licenses_hide') : t('about_third_party_licenses_btn') }}
+                </button>
+              </div>
+
+              <div v-if="showThirdPartyLicenses" class="about-licenses-box">
+                <div class="about-licenses-header">
+                  <span>{{ t('about_third_party_licenses_title') }}</span>
+                  <button
+                    type="button"
+                    class="about-licenses-close"
+                    @click="showThirdPartyLicenses = false"
+                    :aria-label="t('about_third_party_licenses_hide')"
+                  >
+                    ✕
+                  </button>
+                </div>
+                <pre class="about-licenses-pre">{{ thirdPartyLicensesText }}</pre>
               </div>
 
               <div class="about-update-card">
@@ -2677,6 +2702,53 @@ button:disabled {
   font-size: 0.78rem;
   color: #64748b;
   line-height: 1.4;
+}
+
+.about-licenses-box {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #f8fafc;
+  overflow: hidden;
+}
+
+.about-licenses-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.75rem;
+  background: #e2e8f0;
+  color: #1e293b;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.about-licenses-close {
+  border: none;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+  font-size: 0.9rem;
+  line-height: 1;
+  padding: 0.15rem 0.35rem;
+  border-radius: 4px;
+}
+
+.about-licenses-close:hover {
+  background: #cbd5e1;
+  color: #0f172a;
+}
+
+.about-licenses-pre {
+  margin: 0;
+  padding: 0.75rem;
+  max-height: 260px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: #334155;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .about-update-card {

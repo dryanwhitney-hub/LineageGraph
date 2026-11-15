@@ -13,7 +13,8 @@ Dieses Handbuch führt Sie Schritt für Schritt durch alle Funktionen der Anwend
   - [1.3 Stammbäume sicher entfernen](#13-stammbäume-sicher-entfernen)
   - [1.4 Arbeiten im Leerzustand](#14-arbeiten-im-leerzustand)
   - [1.5 App-Aktualisierung & Versionsprüfung](#15-app-aktualisierung--versionsprüfung)
-  - [1.6 Speicherort, Backups & Datumsformat](#16-speicherort-backups--datumsformat)
+  - [1.6 Speicherort, Netzlaufwerke, Backups & Datumsformat](#16-speicherort-netzlaufwerke-backups--datumsformat)
+    - [1.6.1 Netzlaufwerke & gemeinsames Arbeiten im Netzwerk](#161-netzlaufwerke--gemeinsames-arbeiten-im-netzwerk)
 - [Kapitel 2: Fachliche Module & Workflows](#kapitel-2-fachliche-module--workflows)
   - [2.1 Personen- und Familiendaten verwalten](#21-personen--und-familiendaten-verwalten)
     - [2.1.1 Neue Personen erfassen mit automatischer ID-Vergabe](#211-neue-personen-erfassen-mit-automatischer-id-vergabe)
@@ -176,18 +177,47 @@ Nach Bestätigung lädt LineageGraph das Update mit Fortschrittsbalken herunter.
 
 ---
 
-## 1.6 Speicherort, Backups & Datumsformat
+## 1.6 Speicherort, Netzlaufwerke, Backups & Datumsformat
 
 ### Was macht die Funktion?
-Ermöglicht es Ihnen, den Speicherordner Ihrer Stammbaum-Datenbanken frei zu wählen (z. B. ein lokales Verzeichnis, ein Netzlaufwerk oder ein Cloud-Sync-Ordner), gleichzeitige Zugriffe anderer Familienmitglieder zu erkennen, gezielte Sicherungskopien (Backups) anzulegen bzw. wiederherzustellen und das gewünschte Datumsformat festzulegen.
+Ermöglicht es Ihnen, den Speicherordner Ihrer Stammbaum-Datenbanken (`.db`) frei zu wählen – lokal, auf einem verbundenen Netzlaufwerk oder direkt auf einem UNC-Netzwerkpfad –, gemeinsame Zugriffe mehrerer Personen im Netzwerk zu koordinieren, gezielte Sicherungskopien (Backups) anzulegen bzw. wiederherzustellen und das gewünschte Datumsformat festzulegen.
 
 ### Wie bediene ich sie?
-1. **Speicherort wechseln & Team-Sync:** Öffnen Sie **„⚙️ Einstellungen“** -> Reiter **„Speicherort“**. Wählen Sie einen neuen Zielordner aus; LineageGraph prüft vorab Schreibrechte und vorhandene Datenbanken. Optional können Sie im selben Bereich Ihren **Anzeigenamen für aktive Sitzungen** hinterlegen, damit andere Nutzer im selben Netzwerkordner sehen, wer gerade arbeitet.
-2. **Backups verwalten:** Im Reiter **„Stammbäume“** bzw. **„Speicherort“** können Sie jederzeit ein manuelles Backup des aktiven Stammbaums anlegen, frühere Sicherungen wiederherstellen, nicht mehr benötigte Snapshots löschen oder mit **„Alle Datenbanken sichern“** sämtliche Stammbäume gesammelt in einen Zielordner exportieren.
-3. **Datumsformat einstellen:** Im Reiter **„Allgemein“** wählen Sie unter *„Datumsformat“* zwischen automatischer Anpassung an die Programmsprache oder festen Formaten (`TT.MM.JJJJ`, `JJJJ-MM-TT`, `TT/MM/JJJJ`, `MM/TT/JJJJ`, `TT MMM JJJJ`, `GEDCOM`).
+1. **Speicherort wechseln:** Öffnen Sie **„⚙️ Einstellungen“** -> Reiter **„Speicherort & Daten“**. Geben Sie einen neuen Pfad ein oder wählen Sie über **„Durchsuchen...“** einen Ordner aus. LineageGraph prüft vorab automatisch Erreichbarkeit, Schreibrechte, bereits vorhandene Stammbäume sowie ob es sich um ein Netzlaufwerk handelt.
+2. **Übertragungsmodus wählen:**
+   * **Daten verschieben (Empfohlen):** Verschiebt alle Stammbäume vom bisherigen in das neue Verzeichnis (nur möglich, solange keine weiteren Instanzen im bisherigen Ordner aktiv sind).
+   * **Daten kopieren:** Kopiert alle Stammbäume in das neue Verzeichnis; die Originale bleiben am bisherigen Ort erhalten.
+   * **Nur Verzeichnis wechseln:** Verschiebt keine Dateien, sondern öffnet direkt die im Zielordner vorhandenen Stammbäume.
+   * Optional können Sie *„Bestehende gleichnamige Stammbäume im Zielverzeichnis überschreiben“* aktivieren.
+3. **Backups verwalten:** Im Reiter **„Stammbäume“** bzw. **„Speicherort & Daten“** können Sie jederzeit ein manuelles Backup des aktiven Stammbaums anlegen, frühere Sicherungen wiederherstellen, nicht mehr benötigte Snapshots löschen oder mit **„Alle Datenbanken sichern“** sämtliche Stammbäume gesammelt in einen Zielordner exportieren.
+4. **Datumsformat einstellen:** Im Reiter **„Allgemein“** wählen Sie unter *„Datumsformat“* zwischen automatischer Anpassung an die Programmsprache oder festen Formaten (`TT.MM.JJJJ`, `JJJJ-MM-TT`, `TT/MM/JJJJ`, `MM/TT/JJJJ`, `TT MMM JJJJ`, `GEDCOM`).
 
 ### Was ist das Ergebnis?
-Ihre Familiendaten liegen sicher am gewünschten Ort. Ist ein Netzlaufwerk vorübergehend nicht erreichbar, fällt LineageGraph automatisch mit einer Warnmeldung auf das lokale Standardverzeichnis zurück. Änderungen anderer Nutzer im geteilten Ordner werden automatisch erkannt und nachgeladen.
+Ihre Familiendaten liegen sicher am gewünschten Speicherort. Über **„Ordner öffnen“** gelangen Sie jederzeit direkt in das aktive Verzeichnis, und über **„Auf Standard (LocalAppData) zurücksetzen“** kehren Sie bei Bedarf wieder zur lokalen Standardspeicherung zurück.
+
+### 1.6.1 Netzlaufwerke & gemeinsames Arbeiten im Netzwerk
+
+#### Was macht die Funktion?
+Ermöglicht das Ablegen und gemeinsame Pflegen Ihrer Stammbäume auf einem NAS, Dateiserver oder einem verbundenen Windows-Netzlaufwerk, sodass mehrere Familienmitglieder von verschiedenen PCs auf denselben Datenbestand zugreifen können.
+
+#### Wie bediene ich sie?
+1. **Netzlaufwerk oder UNC-Pfad einbinden:**
+   * Öffnen Sie **„⚙️ Einstellungen“** -> **„Speicherort & Daten“** und geben Sie entweder ein verbundenes Netzlaufwerk (z. B. `Z:\Ahnenforschung`) oder direkt einen UNC-Pfad (z. B. `\\Server\Freigabe\LineageGraph`) an.
+   * **Erster Rechner (Daten bereitstellen):** Wählen Sie *„Daten verschieben“* oder *„Daten kopieren“*, um Ihre bestehenden Stammbäume auf die Netzwerkfreigabe zu übertragen.
+   * **Jeder weitere Rechner (anbinden):** Wählen Sie denselben Netzwerkpfad und nutzen Sie den Modus **„Nur Verzeichnis wechseln“**, damit die dort liegenden Stammbäume direkt geladen werden, ohne etwas zu überschreiben.
+2. **Anzeigenamen für Mehrbenutzer-Sync festlegen:**
+   * Hinterlegen Sie im selben Einstellungsbereich unter *„Anzeigename für Mehrbenutzer-Sync“* einen aussagekräftigen Namen (z. B. `David (Laptop)`). Bleibt das Feld leer, verwendet LineageGraph automatisch den Gerätenamen (Hostname) Ihres Rechners.
+3. **Parallele Aktivitäten & Konflikte im Blick behalten:**
+   * Sobald weitere Nutzer auf denselben Speicherort zugreifen, erscheint das Hinweis-Badge **„Parallel aktiv“** mit einer Übersicht der aktiven Instanzen und deren aktueller Tätigkeit (z. B. *„bearbeitet Personen“*, *„Design Studio: …”* oder *„Ansicht aktiv“*).
+   * Änderungen anderer Nutzer werden automatisch erkannt und nachgeladen. Bearbeiten Sie zeitgleich dieselbe Person oder dasselbe Design-Dokument mit ungesicherten Änderungen, schützt Sie ein Konfliktbanner vor Datenverlust:
+     * **Tabellen-Bearbeitung:** Wählen Sie *„Verwerfen & neu laden“*; nicht-konfliktierende Zeilen werden automatisch aktualisiert.
+     * **Design Studio:** Entscheiden Sie flexibel zwischen *„Als Kopie speichern“*, *„Externe Version laden“* oder *„Trotzdem überschreiben“*.
+4. **Verhalten bei getrenntem Netzlaufwerk (Offline-Fallback):**
+   * Ist das Netzlaufwerk beim Programmstart vorübergehend nicht erreichbar (z. B. unterwegs ohne VPN/Heimnetz), startet LineageGraph mit einer Warnmeldung sicher im lokalen Standardverzeichnis (`LocalAppData`).
+   * Sobald die Netzwerkverbindung wiedersteht, können Sie in den Einstellungen über **„Erneut verbinden“** direkt wieder auf das Netzlaufwerk umschalten.
+
+#### Was ist das Ergebnis?
+LineageGraph erkennt Netzlaufwerke und UNC-Pfade automatisch (sichtbar am Hinweis *„Netzlaufwerk / UNC-Pfad“*) und schaltet die SQLite-Datenbank für den Netzwerkbetrieb automatisch auf das sichere **Rollback-Journal** um, um Dateibeschädigungen über SMB-Freigaben zu verhindern. Mehrere Personen können so transparent und sicher am gemeinsamen Familienarchiv arbeiten.
 
 ---
 

@@ -31,6 +31,10 @@
     "createUpdaterArtifacts": true,
     "copyright": "Copyright © 2026 David Whitney",
     "shortDescription": "LineageGraph - Stammbaum- und Ahnenforschungssoftware",
+    "resources": [
+      "../license.txt",
+      "../THIRD_PARTY_LICENSES.txt"
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
