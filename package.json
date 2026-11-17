@@ -1,7 +1,7 @@
 {
   "name": "lineagegraph",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "LineageGraph - Genealogie & Familienbuch-Suite",
   "author": "David Whitney <lineagegraph@gmail.com>",
   "license": "LicenseRef-Proprietary",

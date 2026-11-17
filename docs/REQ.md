@@ -1,9 +1,9 @@
 # Fachliches Anforderungsdokument (Requirements Specification - REQ)
 
 **System:** LineageGraph (Froning Familienbuch)  
-**Dokument-Version:** 3.1.0  
+**Dokument-Version:** 3.2.0  
 **Status:** Freigegebener Ist-Stand  
-**Datum:** 14. November 2026  
+**Datum:** 17. November 2026  
 **Referenzierte Dokumente:** [SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md), [Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)
 
 ---
@@ -115,9 +115,9 @@ graph TD
 - **Akzeptanzkriterien & Geschäftsregeln:**
   1. Beim Start der Desktop-Applikation muss im Hintergrund über einen Low-Level-TCP-Ping geprüft werden, ob eine Internetverbindung aufgebaut werden kann.
   2. Nur bei aktiver Internetverbindung wird die Update-Schnittstelle (GitHub Releases / Tauri Updater) abgefragt. Ist keine Verbindung vorhanden, bleibt die App geräuschlos im regulären Betrieb, ohne blockierende Fehlermeldungen anzuzeigen.
-  3. Im Einstellungsfenster (`⚙️ Einstellungen` -> dedizierter Bereich `ℹ️ Über LineageGraph`) sowie in der oberen Kopfleiste muss der Anwender jederzeit das Anwenderhandbuch (`USER_GUIDE.md`) aufrufen, manuell nach neuen Versionen suchen sowie App-Metadaten (Logo, Entwickler & Kontakt, Version, Technologie, Lizenz, 100% lokale Datenspeicherung) einsehen können.
+  3. Im Einstellungsfenster (`⚙️ Einstellungen` -> dedizierter Bereich `ℹ️ Über LineageGraph`) sowie in der oberen Kopfleiste muss der Anwender jederzeit das Anwenderhandbuch (`USER_GUIDE.md`) aufrufen, manuell nach neuen Versionen suchen sowie App-Metadaten (Logo, Entwickler & Kontakt, Version, Technologie, proprietäre Lizenz gemäß `license.txt`, 100% lokale Datenspeicherung) und die Drittanbieter-Lizenzen (`THIRD_PARTY_LICENSES.txt`) einsehen können.
   4. Liegt eine neuere Version vor (sowohl beim Start als auch bei manueller Suche), muss ein Bestätigungsdialog eingeblendet werden, der Versionsnummer, optionale Release Notes und Optionen zum sofortigen Installieren (`✨ Jetzt aktualisieren`) oder Verschieben (`Später erinnern`) anbietet.
-  5. Erst nach expliziter Bestätigung durch den Anwender wird das Installationspaket heruntergeladen und die Installation eingeleitet.
+  5. Erst nach expliziter Bestätigung durch den Anwender wird das Installationspaket heruntergeladen und die Installation eingeleitet. Nach erfolgreichem Versionswechsel kann ein „Was ist neu“-Dialog (`WhatsNewModal.vue`) die Versionshinweise (Markdown XSS-bereinigt via `releaseNotes.ts`) übersichtlich darstellen.
 - **Technische Spezifikation:** Siehe [SPEC-TRM-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-trm-004---req-trm-004)
 
 #### REQ-TRM-005: Konfigurierbarer Speicherort & Peer-Synchronisation
@@ -449,6 +449,7 @@ graph TD
   5. Touch- & Viewport-Optimierung: Viewport mit `viewport-fit=cover`, Mindestgröße von 44x44px für Steuerelemente und transparente SVG-Knoten-Hitboxen (`r=22`), Dynamic Viewport Units (`100dvh`), Safe-Area-Insets (`env(safe-area-inset-*)`) und `touch-action: none` auf dem SVG-Container gegen Gestenkonflikte. Auf mobilen Bildschirmen bleibt das Suchfeld stets vollflächig sichtbar und Vorschlagslisten öffnen unbeschnitten über dem Canvas, während Werkzeug-Aktionen in einem Touch-Kontextmenü (`[☰ Menü]`) gebündelt werden.
   6. Resilientes State Management & Dateninjektion: Datenhaltung über isoliertes `<script type="application/json" id="tree-data-json">` und abgesicherter Speicher-Zugriff (`safeStorage` mit In-Memory-Fallback) zur Prävention von `SecurityError`-Abbrüchen in iOS-Sandboxes.
   7. Mehrsprachige Export-Generierung (`de`, `en`, `fr`, `pt`) über `ExportLanguageSelect.vue` und `tLocale`, inklusive umschaltbarer Desktop- und Mobile-Vorschau (Portrait/Landscape) direkt im Export-Panel (`HtmlExportPane.vue`).
+  8. Optional hinterlegbare Ersteller-Informationen (Name, Kontakt/E-Mail), eingebettetes Favicon (`faviconIconLight.ts`) sowie ein optionales, direkt in die HTML-Chronik integriertes **Info- & Rückmeldeformular**, mit dem Leser Korrekturen oder Ergänzungen (Personendaten, Ehepartner, Kind oder allgemeine Hinweise) strukturiert erfassen und per E-Mail (`mailto:`) oder Zwischenablage übermitteln können.
 - **Technische Spezifikation:** Siehe [SPEC-EXP-003 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-003---req-exp-003)
 
 #### REQ-EXP-004: Hochauflösender Bild- & Vektorexport des Stammbaums
@@ -459,13 +460,15 @@ graph TD
   2. Vektorbasierter SVG-Export für verlustfreie Weiterverarbeitung in Vektorgrafikprogrammen.
 - **Technische Spezifikation:** Siehe [SPEC-EXP-004 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-004---req-exp-004)
 
-#### REQ-EXP-005: Automatisierte LaTeX/TikZ-Buchchronik
-- **Titel & Kurzbeschreibung:** Rendern eines mehrseitigen genealogischen Buchwerks via Tera-Templates und automatisierte PDF-Kompilierung via `pdflatex`.
-- **Fachlicher Zweck / Business Value:** Hochprofessionelle Buchdruck-Veröffentlichung der Familiengeschichte.
+#### REQ-EXP-005: Automatisierte LaTeX/TikZ-Buchchronik & Buchverzeichnis-Sync
+- **Titel & Kurzbeschreibung:** Rendern eines mehrseitigen genealogischen Buchwerks über eine AST-basierte Masken-Engine, Tera-Templates, optionale Design-Studio-Integration und geschützten Buchverzeichnis-Sync sowie automatisierte PDF-Kompilierung via `pdflatex`.
+- **Fachlicher Zweck / Business Value:** Hochprofessionelle Buchdruck-Veröffentlichung der Familiengeschichte mit flexiblen bedingten Formatierungsmasken und sicherer Wiederverwendung manuell gepflegter Einleitungstexte in laufenden Buchprojekten.
 - **Akzeptanzkriterien & Geschäftsregeln:**
-  1. Strukturierte Gliederung nach Generationen mit Ahnenbäumen via TikZ/Forest.
-  2. Vollständige LaTeX-Sonderzeichenmaskierung zur Verhinderung von Satzfehlern oder Injection.
-  3. Speichern benutzerdefinierter Buch-Vorlagen in der Datenbank.
+  1. Strukturierte Gliederung nach Generationen mit Ahnenbäumen via TikZ/Forest, optionaler Stamm-Übersichtstabelle, Generations-Badges und Personen-/Ortsregister (`\index` / `imakeidx`).
+  2. Datenquelle wählbar zwischen **Design Studio** (gespeicherter Arbeitsstand inklusive Übernahme von Teilbäumen), **Stammahn** oder **Andere Linie**, jeweils mit konfigurierbarer Linienführung (`patrilinear`, `matrilinear`, `oldest_branch`) und Stämme-Zuschnitt.
+  3. Vollständige LaTeX-Sonderzeichenmaskierung sowie AST-basierte Template-Auswertung (`latexAst.ts`: Variablen, Kurzschreibweisen, bedingte `@if`-Verzweigungen) für individuelle Personen- und Partnertemplates.
+  4. Speichern benutzerdefinierter Buch-Vorlagen in der Datenbank (`latex_export_templates`).
+  5. **Buchverzeichnis-Sync:** Vorab-Inspektion (`inspect_latex_book_directory`) und Synchronisation (`sync_latex_book_directory`) eines Ziel-Buchordners mit Schutz bestehender manueller Dateien (`Buchformat.tex`, `*_intro.tex`, Master `_gesamt.tex`) und Vorschau (`Geschützt`, `Update`, `Neu`).
 - **Technische Spezifikation:** Siehe [SPEC-EXP-005 in SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-005---req-exp-005)
 
 ### 2.8 Forschungsassistent & Genealogischer Lücken-Finder (RES)

@@ -165,7 +165,7 @@ Hält LineageGraph stets auf dem neuesten Stand. Bei jedem Start prüft die Anwe
 2. **Manuelle Prüfung in den Einstellungen:**
    * Klicken Sie in der Kopfzeile auf **„⚙️ Einstellungen“**.
    * Ganz unten in der linken Navigationsleiste finden Sie den eigenen Bereich **„ℹ️ Über LineageGraph“**.
-   * Dort werden Ihnen das offizielle App-Logo (mit markantem Anthrazit-Hintergrund, `icon_dark.png`), der Entwickler samt Kontaktadresse in einer zusammengeführten Kachel (David Whitney, `lineagegraph@gmail.com`), der Technologie-Stack, die Lizenz, die 100% lokale Speicherung sowie Ihre installierte Versionsnummer (z. B. `v0.2.2`) übersichtlich präsentiert. Über Schnellzugriff-Schaltflächen können Sie direkt das Anwenderhandbuch (`📖 Anwenderhandbuch (USER_GUIDE.md)`), das GitHub-Repository oder den Issue-Tracker im Browser aufrufen. Zudem befindet sich in der oberen Menüleiste neben den Einstellungen eine direkte Schaltfläche **„📖 Handbuch“**, über die das Handbuch jederzeit mit einem Klick aufgerufen werden kann. Ein Klick auf die E-Mail-Adresse öffnet direkt Ihr Standard-Mailprogramm.
+   * Dort werden Ihnen das offizielle App-Logo (mit markantem Anthrazit-Hintergrund, `icon_dark.png`), der Entwickler samt Kontaktadresse in einer zusammengeführten Kachel (David Whitney, `lineagegraph@gmail.com`), der Technologie-Stack, die proprietäre Lizenz (`license.txt`), die 100% lokale Speicherung sowie Ihre installierte Versionsnummer (z. B. `v0.3.0`) übersichtlich präsentiert. Über **„Drittanbieter-Lizenzen“** können Sie zudem alle Hinweise zu verwendeten Open-Source-Bibliotheken einsehen. Über Schnellzugriff-Schaltflächen rufen Sie direkt das Anwenderhandbuch (`📖 Anwenderhandbuch (USER_GUIDE.md)`), das GitHub-Repository oder den Issue-Tracker im Browser auf. Zudem befindet sich in der oberen Menüleiste neben den Einstellungen eine direkte Schaltfläche **„📖 Handbuch“**. Ein Klick auf die E-Mail-Adresse öffnet direkt Ihr Standard-Mailprogramm.
    * Klicken Sie auf die Schaltfläche **„🔍 Auf Updates prüfen“**.
 3. **Bestätigungsdialog:**
    * Wenn eine Aktualisierung verfügbar ist, zeigt Ihnen der Dialog die neue Versionsnummer und die Versionshinweise (Changelog) an.
@@ -173,7 +173,7 @@ Hält LineageGraph stets auf dem neuesten Stand. Bei jedem Start prüft die Anwe
    * Klicken Sie auf **„Jetzt aktualisieren“**, um den Download und die Installation zu starten.
 
 ### Was ist das Ergebnis?
-Nach Bestätigung lädt LineageGraph das Update mit Fortschrittsbalken herunter. Der Windows-Installer übernimmt die Aktualisierung und startet die Anwendung anschließend auf Wunsch mit der neuen Version neu. Ihre Stammbäume und Einstellungen bleiben dabei vollständig erhalten.
+Nach Bestätigung lädt LineageGraph das Update mit Fortschrittsbalken herunter. Der Windows-Installer übernimmt die Aktualisierung und startet die Anwendung anschließend auf Wunsch mit der neuen Version neu. Beim ersten Start nach einem Versionssprung informiert Sie ein **„Neu in v...“**-Dialog über die wichtigsten Neuerungen. Ihre Stammbäume und Einstellungen bleiben dabei vollständig erhalten.
 
 ---
 
@@ -693,7 +693,7 @@ Erzeugt eine vollständig autarke, [interaktive HTML-Chronik](#glossar-html-chro
 #### Wie bediene ich sie?
 1. Wählen Sie im Export-Modul den Reiter **„Interaktiver HTML-Export“**.
 2. Wählen Sie den gewünschten Stammahn aus.
-3. Vergeben Sie nach Wunsch einen Titel und wählen Sie die gewünschte **Exportsprache** (`Deutsch`, `English`, `Français`, `Português`).
+3. Vergeben Sie nach Wunsch einen Titel, hinterlegen Sie optional **Erstellername & Kontakt** sowie das **Rückmeldeformular** und wählen Sie die gewünschte **Exportsprache** (`Deutsch`, `English`, `Français`, `Português`).
 4. Testen Sie die interaktive Vorschau direkt im Fenster:
    * **Desktop-Modus:** Großflächige Ansicht mit Maus-Navigation und ausklappbarer Seitenleiste.
    * **Mobile-Modus:** Testen Sie die Ansicht im Smartphone-Mockup (umschaltbar zwischen Hoch- und Querformat mit Notch- und Safe-Area-Simulation).
@@ -705,7 +705,8 @@ Eine einzige, 100 % in sich geschlossene `.html`-Datei ohne externe Server- oder
 * Blitzschnelle clientseitige Volltextsuche nach Namen, Geburtsorten und Henry-Codes (auf Smartphones dauerhaft vollflächig sichtbar mit frei schwebender Vorschlagsliste).
 * Ein kompaktes mobiles Kontextmenü (`[☰ Menü]`), das alle Navigationsaktionen (Zentrieren, Äste isolieren, Einklappen, Generationen ausklappen, Ehepartner ein/aus) übersichtlich und ohne horizontales Leistenscrollen bereitstellt.
 * Einen aufklappbaren Detail-Drawer mit biografischen Daten, Ehen, Implex-Sprüngen und anklickbaren Kinder-Listen.
-* Fehlertolerante Zustandsspeicherung (Sprache DE/EN und Ehepartner-Anzeige) mit automatischem Fallback für restriktive Sandbox-Umgebungen.
+* Optional ein integriertes **Info- & Rückmeldeformular** (*„Korrektur / Ergänzung melden“*), über das Familienmitglieder Änderungswünsche zu Personendaten, Ehepartnern, Kindern oder allgemeine Hinweise direkt per E-Mail absenden oder in die Zwischenablage kopieren können.
+* Fehlertolerante Zustandsspeicherung (Sprache DE/EN/FR/PT und Ehepartner-Anzeige) mit automatischem Fallback für restriktive Sandbox-Umgebungen.
 
 ---
 
@@ -737,10 +738,10 @@ Für höchste buchbinderische Ansprüche: Generiert mehrseitige, gesetzte Buchch
 
 #### Wie bediene ich sie?
 1. Wählen Sie den Reiter **„Druckformat (LaTeX)“**.
-2. Wählen Sie Modus und Richtung (*„Nachkommenliste“* oder *„Ahnenliste“*) sowie die gewünschte Generationstiefe.
-3. Über **„Erscheinungsbild & Textmaske anpassen...“** können Sie Textelemente, genealogische Zeichen (`*`, `†`, `⚭`) und Schriftstile individuell festlegen.
-4. Schalten Sie bei großen Werken die Option *„Stämme erkennen & in eigene Dateien aufteilen“* ein.
-5. Klicken Sie auf **„LaTeX-Datei speichern“** (oder exportieren Sie das fertige Gesamtbündel).
+2. Wählen Sie unter **„Datenquelle & Linienführung“** Ihren Ausgangspunkt: **Design Studio** (gespeicherter Arbeitsstand inklusive Übernahme definierter Teilbäume), **Stammahn** oder **Andere Linie**, sowie Modus/Richtung (*„Nachkommenliste“* oder *„Ahnenliste“*), Linienführung (*Patrilinear*, *Matrilinear*, *Ältester Zweig*) und Generationstiefe.
+3. Über **„Maske & Layout“** können Sie Textelemente, bedingte Formatierungsregeln (`@if`), genealogische Zeichen (`*`, `†`, `⚭`), Generations-Badges, Stamm-Übersichtstabellen sowie das Personen- und Ortsregister (`\index` / `imakeidx`) individuell festlegen.
+4. Schalten Sie bei großen Werken den **Stämme-Zuschnitt** (*„Aufteilen“*) ein, um Stämme sauber in eigene Dateien zu gliedern.
+5. Für laufende Buchprojekte nutzen Sie den **Buchverzeichnis-Sync**: Wählen Sie Ihren Buch-Projektordner und prüfen Sie die Synchronisations-Vorschau (*Geschützt*, *Update*, *Neu*). Bestehende manuelle Dateien wie `Buchformat.tex`, `*_intro.tex` und die Master-Datei werden standardmäßig vor dem Überschreiben geschützt. Alternativ exportieren Sie über **„LaTeX-Datei speichern“** oder das vollständige Paket.
 
 #### Was ist das Ergebnis?
 Ein professioneller Buchdruck-Satz (`.tex`), der über gängige LaTeX-Compiler direkt in ein edles Familienbuch im PDF-Format umgewandelt werden kann.

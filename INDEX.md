@@ -1,8 +1,8 @@
 # Dokumentations-Hub & System-Index: LineageGraph (Froning Familienbuch)
 
 **System:** LineageGraph (*stammbaum*)  
-**Dokument-Version:** 3.2.0  
-**Datum:** 15. November 2026  
+**Dokument-Version:** 3.2.1  
+**Datum:** 17. November 2026  
 **Technologie-Stack:** Desktop-Applikation (Tauri v2 + Vue 3 + TypeScript + Rust 2024 + SQLite)
 
 ---
@@ -79,6 +79,6 @@ Die Dokumentation von LineageGraph ist in fünf aufeinander abgestimmte Teildoku
 | **Benutzeroberfläche & Views** | `UI` | Multi-Filter-Datentabelle, Infinite-Canvas-Stammbaum, Slide-Over Detail Drawer, Freie Schnellsuche, I18n DE/EN/FR/PT, Statistik-Ansicht (D3.js) | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#24-benutzeroberfl%C3%A4che--views-ui) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#24-dom%C3%A4ne-benutzeroberfl%C3%A4che--views-ui) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#23-benutzeroberfl%C3%A4che--interaktive-ansichten) |
 | **Design Studio & Layout** | `DSG` | Hierarchisches Kontur-Pedigree-Layout, Track Assignment & organische Kurven, Dichteprofile, Medien-Assets, Undo/Redo, Stamm-/Zweig-Komposition, verschlüsseltes `.lgproj` | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#25-stammbaum-design-studio-dsg) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#25-dom%C3%A4ne-stammbaum-design-studio-dsg) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#24-stammbaum-design-studio) |
 | **Import & Merge-System** | `IMP` | Atomarer GEDCOM-Vollimport, RAM-Staging & Konfidenz-Matching, differentieller 3-Wege-Merge mit Konfliktlösung | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#26-import--differentieller-datenabgleich-imp) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#26-dom%C3%A4ne-import--differentieller-datenabgleich-imp) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#25-gedcom-import--3-wege-datenabgleich) |
-| **Export & Publikation** | `EXP` | Scoped GEDCOM-Export, strukturierter CSV-Export mit BOM, autarke Single-File-HTML-Chronik, SVG/PNG-Export, LaTeX/PDF | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#27-multi-format-export--chronik-erstellung-exp) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#27-dom%C3%A4ne-multi-format-export--chronik-erstellung-exp) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#26-export-center--chronik-erstellung) |
+| **Export & Publikation** | `EXP` | Scoped GEDCOM-Export, strukturierter CSV-Export mit BOM, autarke Single-File-HTML-Chronik mit Feedback-Formular, SVG/PNG-Export, LaTeX/PDF mit AST-Masken & Buchverzeichnis-Sync | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#27-multi-format-export--chronik-erstellung-exp) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#27-dom%C3%A4ne-multi-format-export--chronik-erstellung-exp) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#26-export-center--chronik-erstellung) |
 | **Forschungsassistent & Lücken-Finder** | `RES` | Regelbasierte Lückenerkennung (Eltern, Tod, Orte, Kinderlücken), konfigurierbare Portale & Personendossiers, Insel-Finder (Erkennung isolierter Zweige über *n* Generationen mit Anknüpfungs-Vorschlägen) | [REQ](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#28-forschungsassistent--genealogischer-l%C3%BCcken-finder-res) · [SPEC](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#38-forschungsassistent--genealogischer-l%C3%BCcken-finder-res) · [Guide](file:///c:/dev/Froning/app/LineageGraph/USER_GUIDE.md#27-forschungsassistent--l%C3%BCcken-finder) |
 

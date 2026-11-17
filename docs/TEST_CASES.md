@@ -1,9 +1,9 @@
 # Test- und Qualitäts-Dokument (TEST_CASES.md)
 
 **System:** LineageGraph (Froning Familienbuch)  
-**Dokument-Version:** 3.1.0  
+**Dokument-Version:** 3.2.0  
 **Status:** Freigegebenes Qualitäts- und Testdokument  
-**Datum:** 14. November 2026  
+**Datum:** 17. November 2026  
 **Referenzierte Dokumente:** [REQ.md](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md), [SPEC.md](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md), [Architecture.md](file:///c:/dev/Froning/app/LineageGraph/docs/Architecture.md)
 
 ---
@@ -102,7 +102,7 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   2. IPC-Aufruf `check_internet_connection` im Frontend über `useAppUpdater` absetzen.
   3. Beim Start (`onMounted` in `App.vue`): Verhalten bei fehlender Verbindung (kein Popup) vs. aktiver Verbindung prüfen.
   4. Im Einstellungsfenster (`SettingsModal.vue` -> Bereich `ℹ️ Über LineageGraph`) auf `🔍 Auf Updates prüfen` klicken.
-  5. Bei gefundener neuer Version Anzeige von `UpdateConfirmModal.vue` und Abbruch via `Später erinnern` vs. Ausführung via `✨ Jetzt aktualisieren` prüfen.
+  5. Bei gefundener neuer Version Anzeige von `UpdateConfirmModal.vue` und Abbruch via `Später erinnern` vs. Ausführung via `✨ Jetzt aktualisieren` prüfen; nach Versionswechsel Anzeige von `WhatsNewModal.vue` mit `renderReleaseNotesHtml` (XSS-Schutz) sowie Einsicht in Drittanbieter-Lizenzen (`THIRD_PARTY_LICENSES.txt`) im Bereich `ℹ️ Über LineageGraph` prüfen.
   6. Klick auf `📖 Handbuch` in der Menüleiste bzw. `📖 Anwenderhandbuch (USER_GUIDE.md)` in den Einstellungen auslösen und prüfen, dass `open_user_guide` die lokale Markdown-Datei oder das Web-Repository öffnet.
 - **Erwartetes Ergebnis:**
   * `check_connectivity()` bzw. `check_internet_connection()` terminiert innerhalb des Timeouts (<= 1500 ms) ohne Panic oder Blockieren der UI-Engine.
@@ -571,6 +571,7 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   5. Touch-Hitboxen (`circle.touch-hitbox` mit `r=22`) und Mindest-Touch-Größen (44x44px) verifizieren.
   6. Ausführen in simulierter Offline-/Null-Origin-Sandbox testen (Absicherung gegen `SecurityError` beim Web Storage über `safeStorage`).
   7. In-App-Vorschau in Produktions-Builds (WebView2) prüfen: Validieren, dass die CSP-Direktiven in `tauri.conf.json` (`script-src 'self' 'unsafe-inline' ...`, `frame-src 'self' blob: data:`) die Skriptausführung des Vorschau-Iframes nicht unterbinden.
+  8. Ersteller-Metadaten (Name, Kontakt) und aktiviertes Rückmeldeformular (`Info & Feedback`) prüfen: Tabs für Personendaten, Ehepartner, Kind ergänzen und allgemeine Hinweise testen sowie `mailto:`-Link und Zwischenablage-Kopie verifizieren.
 - **Erwartetes Ergebnis:**
   * 0 externe Netzwerkabfragen (`<script src="...">` und `<link href="...">` sind nicht vorhanden).
   * Voll funktionsfähige clientseitige Volltextsuche, D3-Zoom/Pan mit `touch-action: none` ohne Gesten-Konflikte.
@@ -579,7 +580,7 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
 
 #### TC-EXP-004: Hochauflösender Bild- & Vektorexport (SVG / PNG)
 - **Traceability:** [REQ-EXP-004](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-004-hochaufl%C3%B6sender-bild---vektorexport-des-stammbaums) -> [SPEC-EXP-004](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-004---req-exp-004)
-- **Test-Typ:** Component / Export Test (`src/utils/designExport.ts`)
+- **Test-Typ:** Component / Export Test (`src/utils/designSceneExport.ts`)
 - **Test-Ziel:** Validieren, dass der Stammbaum als maßstabsgetreues Vektor-SVG und als hochauflösendes Raster-PNG ohne abgeschnittene Ränder exportiert wird.
 - **Preconditions:** Vollständig gelayouteter Design-Stammbaum auf der Leinwand.
 - **Testschritte:**
@@ -589,17 +590,19 @@ LineageGraph folgt einer mehrstufigen Test- und Qualitätssicherungsstrategie (*
   * SVG ist wohlgeformtes XML mit korrekter `viewBox` passend zur Gesamtbreite/-höhe.
   * PNG besitzt die doppelte Pixelauflösung und scharfe Schriften.
 
-#### TC-EXP-005: LaTeX/TikZ-Buchchronik-Generierung & PDF-Kompilierung
-- **Traceability:** [REQ-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-005-automatisierte-latextikz-buchchronik) -> [SPEC-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-005---req-exp-005)
-- **Test-Typ:** Unit & Integration Test (`escape_latex`, `export_latex_pdf`)
-- **Test-Ziel:** Prüfung der LaTeX-Sonderzeichenmaskierung gegen Kompilierungsfehler und Verifikation des `pdflatex`-Subprozesses.
-- **Preconditions:** Personendaten mit Zeichen wie `&`, `%`, `$`, `_` und `#` im Namen/Beruf.
+#### TC-EXP-005: LaTeX/TikZ-Buchchronik-Generierung, AST-Masken & Buchverzeichnis-Sync
+- **Traceability:** [REQ-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/REQ.md#req-exp-005-automatisierte-latextikz-buchchronik--buchverzeichnis-sync) -> [SPEC-EXP-005](file:///c:/dev/Froning/app/LineageGraph/docs/SPEC.md#spec-exp-005---req-exp-005)
+- **Test-Typ:** Unit & Integration Test (`escape_latex`, `export_latex_pdf`, `latexAst.ts`, `inspect_latex_book_directory`, `sync_latex_book_directory`, *Implemented: `tests::test_validate_latex_relative_subpath`*)
+- **Test-Ziel:** Prüfung der LaTeX-Sonderzeichenmaskierung, der AST-Auswertung bedingter Masken (`parseMaskAst`, `evaluateMaskAst`), der Design-Studio-Datenquelle, des Path-Traversal-Schutzes und der geschützten Buchverzeichnis-Synchronisation.
+- **Preconditions:** Personendaten mit Sonderzeichen (`&`, `%`, `$`, `_`, `#`), konfigurierte Maske mit `@if`-Bedingung und Ziel-Buchordner mit bestehender `Buchformat.tex` sowie `*_intro.tex`.
 - **Testschritte:**
   1. `escape_latex("Müller & Co. / 100% Chef_Ehe")` aufrufen.
-  2. TeX-Quelltext generieren.
+  2. `parseMaskAst` und `evaluateMaskAst` auf eine bedingte Maske anwenden.
+  3. `inspect_latex_book_directory` und `sync_latex_book_directory` (ohne Force-Flags) sowie `cargo test -- test_validate_latex_relative_subpath` ausführen.
 - **Erwartetes Ergebnis:**
   * `escape_latex` liefert `Müller \& Co. / 100\% Chef\_Ehe`.
-  * Kein LaTeX-Kompilierungsabbruch; standardkonformes Dokument wird erzeugt.
+  * AST-Auswertung rendert bedingte Zweige ohne Syntaxfehler in LaTeX und HTML-Vorschau.
+  * `validate_latex_relative_subpath` weist Path-Traversal (`..`) ab; geschützte Dateien (`Buchformat.tex`, `*_intro.tex`, Master `_gesamt.tex`) bleiben beim Sync unangetastet.
 
 ### 2.8 Domäne: Forschungsassistent & Genealogischer Lücken-Finder (RES)
 

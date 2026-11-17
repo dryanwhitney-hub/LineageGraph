@@ -1,6 +1,6 @@
 LINEAGEGRAPH - THIRD-PARTY SOFTWARE NOTICES AND LICENSES
 ================================================================================
-Product:    LineageGraph v0.3.0
+Product:    LineageGraph v0.3.1
 Copyright:  Copyright (c) 2026 David Whitney. All rights reserved.
 
 LineageGraph itself is proprietary software governed by LICENSE.txt.

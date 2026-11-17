@@ -25,6 +25,7 @@ Die gesamte Dokumentation ist modular strukturiert und über den zentralen **[IN
 
 - `npm run dev` startet den Vite-Entwicklungsserver für das Frontend.
 - `npm run check:locales` prüft die vollständige Schlüssel-Parität aller Sprachdateien (`de`, `en`, `fr`, `pt`).
+- `npm run licenses:generate` aktualisiert [THIRD_PARTY_LICENSES.txt](file:///c:/dev/Froning/app/LineageGraph/THIRD_PARTY_LICENSES.txt) aus den installierten Abhängigkeiten.
 - `npm run build` führt `check:locales`, die TypeScript-Typenprüfung (`vue-tsc`) und den Produktions-Build durch.
 - `npm run tauri dev` startet die vollständige Desktop-Anwendung im Entwicklungsmodus.
 - `cargo test --manifest-path src-tauri/Cargo.toml` führt alle Backend-Tests aus.
@@ -33,5 +34,5 @@ Die gesamte Dokumentation ist modular strukturiert und über den zentralen **[IN
 
 ## Lizenz & Sicherheit
 
-- **Lizenz:** Alle Rechte vorbehalten – siehe [license.txt](file:///c:/dev/Froning/app/LineageGraph/license.txt).
+- **Lizenz:** Proprietär (Alle Rechte vorbehalten) – siehe [license.txt](file:///c:/dev/Froning/app/LineageGraph/license.txt). Hinweise zu verwendeten Open-Source-Komponenten finden sich in [THIRD_PARTY_LICENSES.txt](file:///c:/dev/Froning/app/LineageGraph/THIRD_PARTY_LICENSES.txt).
 - **Sicherheitsanalyse:** Automatisierte CodeQL-Scans für JavaScript/TypeScript und Rust über [`.github/workflows/codeql.yml`](file:///c:/dev/Froning/app/LineageGraph/.github/workflows/codeql.yml).

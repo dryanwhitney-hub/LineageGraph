@@ -32,7 +32,7 @@ export function useAppUpdater() {
       try {
         currentVersion.value = await getVersion();
       } catch {
-        currentVersion.value = '0.3.0';
+        currentVersion.value = '0.3.1';
       }
     }
     return currentVersion.value;

@@ -1,6 +1,6 @@
 [package]
 name = "lineagegraph"
-version = "0.3.0"
+version = "0.3.1"
 description = "LineageGraph - Family tree viewer and designer"
 authors = ["David Whitney <lineagegraph@gmail.com>"]
 edition = "2024"

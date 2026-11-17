@@ -5,7 +5,7 @@
 - **Frontend:** Vue 3 (Composition API) + TypeScript built with Vite and packaged as a Tauri v2 desktop application.
   - Entry point: `src/main.ts`. Primary shell: `src/App.vue`.
   - Views: Table view (`src/components/table/PersonTableView.vue`), Canvas tree (`src/components/tree/TreeCanvasView.vue`), Design studio (`src/components/DesignTree.vue`), Statistics (`src/components/stats/StatisticsView.vue`), Research assistant (`src/components/research/ResearchAssistantView.vue`), Export hub (`src/components/ExportView.vue`).
-  - Core composables & domain: `src/composables/usePersons.ts` (Entity state & mutations), `src/composables/useShortestPath.ts` (BFS/A* pathfinding), `src/composables/useStatistics.ts` (D3 statistics), `src/composables/useDateFormat.ts` (Date formatting & GEDCOM normalization), `src/composables/useDesignStudioStore.ts` + `src/domain/design/*` (Design Studio layout, edge routing & scene graph).
+  - Core composables & domain: `src/composables/usePersons.ts` (Entity state & mutations), `src/composables/useShortestPath.ts` (BFS/A* pathfinding), `src/composables/useStatistics.ts` (D3 statistics), `src/composables/useDateFormat.ts` (Date formatting & GEDCOM normalization), `src/composables/useDesignStudioStore.ts` + `src/domain/design/*` (Design Studio layout, edge routing & scene graph), `src/utils/latexAst.ts` + `src/utils/latexExport.ts` (AST-based LaTeX book generation).
   - Localization: `src/locales/de.json`, `en.json`, `fr.json`, and `pt.json`, registered in `src/locales/registry.ts` and configured in `src/i18n.ts` (verified via `npm run check:locales`).
 - **Backend:** Rust 2024 / Tauri v2 application located in `src-tauri/`.
   - Main & command router: `src-tauri/src/lib.rs` (registered IPC commands, AppState mutex holding active SQLite connection, storage & peer-sync state).
@@ -21,7 +21,9 @@
 ## Commands
 
 - `npm run dev`: Starts the Vite development server.
-- `npm run build`: Runs TypeScript verification (`vue-tsc --noEmit`) and creates the frontend production bundle.
+- `npm run check:locales`: Verifies key parity across all locale files (`de`, `en`, `fr`, `pt`).
+- `npm run licenses:generate`: Regenerates `THIRD_PARTY_LICENSES.txt` from dependencies.
+- `npm run build`: Runs locale parity check, TypeScript verification (`vue-tsc --noEmit`), and creates the frontend production bundle.
 - `npm run tauri dev`: Runs the full Tauri desktop application in development mode.
 - `cargo check --manifest-path src-tauri/Cargo.toml`: Type-checks the Rust backend.
 - `cargo test --manifest-path src-tauri/Cargo.toml`: Runs the Rust automated unit/integration test suite.
