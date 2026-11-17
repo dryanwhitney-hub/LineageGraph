@@ -154,7 +154,8 @@ export function computeCardMetricsForPerson(
 ): ComputedCardMetrics {
   const spec = DENSITY_PROFILE_SPECS[profile] || DENSITY_PROFILE_SPECS.standard;
   const width = spec.cardWidth;
-  const innerW = width - spec.horizontalPadding * 2;
+  // 3px border (1.5px * 2) + 2px Subpixel-Puffer, damit DOM-Umbrüche nie schmaler sind als die Messung
+  const innerW = Math.max(40, width - spec.horizontalPadding * 2 - 5);
   const onlyYears = Boolean(cfg.showOnlyYears);
   const compactMode = cfg.dynamicCompactHeight !== false;
 
@@ -251,40 +252,45 @@ export function computeCardMetricsForPerson(
       })
     : [];
 
-  // Höhe berechnen
-  // Top gender accent bar (3px) + vertical paddings (10px)
-  let h = 13;
+  // Höhe exakt passend zu CSS-Padding, Border (3px), Line-Heights und Flex-Gaps berechnen
+  const vPad = profile === 'narrow' ? 8 : profile === 'compact_years' ? 10 : 12;
+  let h = vPad + 5; // Border (3px) + vertikales Padding + 2px Sicherheitsreserve
 
-  // #1 Henry & Gen Header
+  // #1 Henry & Gen Header (inkl. margin-top: 2px & 2px Card-Flex-Gap)
   const showHeader = (cfg.showHenryId && Boolean(meta.henryCode)) || (cfg.showGeneration && meta.generation > 0);
   if (showHeader || !compactMode) {
-    h += 16;
+    h += 18;
   }
 
-  // #2 Name
-  h += nameLineCount * spec.lineHeightName + 2;
+  // #2 Name (CSS line-height: 1.25 + 2px Card-Flex-Gap)
+  const nameLineH = Math.max(spec.lineHeightName, Math.ceil(spec.nameFontSize * 1.25));
+  h += nameLineCount * nameLineH + 2;
 
-  // #3 Lebensdaten + Beruf
-  if (lifeLines.length > 0) {
-    h += lifeLines.length * spec.lineHeightMeta + 2;
+  // #3 Lebensdaten + Beruf (CSS line-height: 1.25, 1px Item-Gap, + 2px Card-Flex-Gap)
+  const metaLineH = Math.max(spec.lineHeightMeta, Math.ceil(spec.metaFontSize * 1.28));
+  if (lifeLines.length > 0 || occuLines.length > 0) {
+    const totalLifeItems = lifeLines.length + occuLines.length;
+    h += totalLifeItems * metaLineH + Math.max(0, totalLifeItems - 1) * 1 + 2;
   } else if (!compactMode) {
-    h += spec.lineHeightMeta + 2;
-  }
-
-  if (occuLines.length > 0) {
-    h += occuLines.length * spec.lineHeightMeta + 2;
+    h += metaLineH + 2;
   }
 
   // #4 & #5 Ehen + Implex-Badges
   if (renderedSpouses.length > 0) {
-    h += 7; // Divider + Abstand
+    // .d-card-marriages: margin-top: 2px + padding-top: 2px + border-top: 1px + Row-Gaps
+    h += 5 + Math.max(0, renderedSpouses.length - 1) * 2;
+    const spouseHeaderLineH = Math.max(spec.lineHeightMeta, Math.ceil(spec.metaFontSize * 1.25));
+    const spouseDateLineH = Math.max(spec.lineHeightMeta - 1, Math.ceil((spec.metaFontSize - 0.5) * 1.25));
+
     for (const sp of renderedSpouses) {
       let spH = 0;
+      let hasHeader = false;
       const headerPieces: string[] = [];
       if (cfg.showMarriageCounter) headerPieces.push(`${sp.orderIndex}.`);
       if (cfg.showHenryId && sp.henryCode) headerPieces.push(`[${sp.henryCode}]`);
       if (cfg.showSpouseName && sp.fullName) headerPieces.push(sp.fullName);
       if (headerPieces.length > 0) {
+        hasHeader = true;
         const spNameLines = wrapTextToWidth(
           `${cfg.showDivorce && sp.divorceText ? '⚮' : '⚭'} ${headerPieces.join(' ')}`,
           innerW,
@@ -292,7 +298,7 @@ export function computeCardMetricsForPerson(
           cfg.line4Bold,
           cfg.line4Italic
         );
-        spH += Math.max(1, spNameLines.length) * spec.lineHeightMeta;
+        spH += Math.max(1, spNameLines.length) * spouseHeaderLineH;
       }
       const spDates: string[] = [];
       if (cfg.showMarriageDate && sp.marriageText) {
@@ -308,6 +314,7 @@ export function computeCardMetricsForPerson(
         spDates.push(sp.deathText);
       }
       if (spDates.length > 0) {
+        if (hasHeader) spH += 1; // .d-marriage-row gap: 1px
         if (cfg.lifeDatesLayout === 'single') {
           const wrapped = wrapTextToWidth(
             spDates.join(', '),
@@ -316,8 +323,9 @@ export function computeCardMetricsForPerson(
             cfg.line5Bold,
             cfg.line5Italic
           );
-          spH += wrapped.length * (spec.lineHeightMeta - 1);
+          spH += Math.max(1, wrapped.length) * spouseDateLineH;
         } else {
+          let dateLineCount = 0;
           for (const sd of spDates) {
             const wrapped = wrapTextToWidth(
               sd,
@@ -326,11 +334,12 @@ export function computeCardMetricsForPerson(
               cfg.line5Bold,
               cfg.line5Italic
             );
-            spH += Math.max(1, wrapped.length) * (spec.lineHeightMeta - 1);
+            dateLineCount += Math.max(1, wrapped.length);
           }
+          spH += dateLineCount * spouseDateLineH + Math.max(0, spDates.length - 1) * 1;
         }
       }
-      h += Math.max(14, spH) + 4;
+      h += Math.max(14, spH) + 2;
     }
   }
 

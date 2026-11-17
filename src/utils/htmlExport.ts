@@ -2177,20 +2177,144 @@ function renderCreatorMeta(hasSelectedPerson) {
                     el.style.display = rows.length > 0 ? "flex" : "none";
 }
 
-function localizeDateStr(str) {
-                    if (!str) return "";
-                    if (currentLang === "en") {
-                        return str.replace(/vor/gi, "before")
-                                  .replace(/nach/gi, "after")
-                                  .replace(/ca\\./gi, "abt.")
-                                  .replace(/zwischen/gi, "between")
-                                  .replace(/und/gi, "and")
-                                  .replace(/Mär/g, "Mar")
-                                  .replace(/Mai/g, "May")
-                                  .replace(/Okt/g, "Oct")
-                                  .replace(/Dez/g, "Dec");
+const DATE_MONTH_MAP = {
+                    JAN: 1, JANUAR: 1, JANUARY: 1, JANVIER: 1, JANEIRO: 1,
+                    FEB: 2, FEBRUAR: 2, FEBRUARY: 2, FEV: 2, "FÉV": 2, FEVR: 2, "FÉVR": 2, FEVRIER: 2, "FÉVRIER": 2, FEVEREIRO: 2,
+                    MAR: 3, "MÄR": 3, MRZ: 3, MAER: 3, MAERZ: 3, "MÄRZ": 3, MARCH: 3, MARS: 3, "MARÇO": 3, MARCO: 3,
+                    APR: 4, APRIL: 4, AVR: 4, AVRIL: 4, ABR: 4, ABRIL: 4,
+                    MAY: 5, MAI: 5, MAIO: 5,
+                    JUN: 6, JUNI: 6, JUNE: 6, JUIN: 6, JUNHO: 6,
+                    JUL: 7, JULI: 7, JULY: 7, JUIL: 7, JUILLET: 7, JULHO: 7,
+                    AUG: 8, AUGUST: 8, "AOÛ": 8, AOU: 8, "AOÛT": 8, AOUT: 8, AGO: 8, AGOSTO: 8,
+                    SEP: 9, SEPT: 9, SEPTEMBER: 9, SEPTEMBRE: 9, SET: 9, SETEMBRO: 9,
+                    OCT: 10, OKT: 10, OKTOBER: 10, OCTOBER: 10, OCTOBRE: 10, OUT: 10, OUTUBRO: 10,
+                    NOV: 11, NOVEMBER: 11, NOVEMBRE: 11, NOVEMBRO: 11,
+                    DEC: 12, DEZ: 12, DEZEMBER: 12, DECEMBER: 12, "DÉC": 12, DECEMBRE: 12, "DÉCEMBRE": 12, DEZEMBRO: 12
+};
+
+const DATE_QUAL_DISPLAY = {
+                    BEF: { de: "vor", en: "before", fr: "avant", pt: "antes de" },
+                    AFT: { de: "nach", en: "after", fr: "après", pt: "depois de" },
+                    ABT: { de: "ca.", en: "abt.", fr: "env.", pt: "cerca de" },
+                    CAL: { de: "ber.", en: "cal.", fr: "calc.", pt: "calc." },
+                    EST: { de: "gesch.", en: "est.", fr: "est.", pt: "est." }
+};
+
+function pad2Date(n) {
+                    return n < 10 ? "0" + n : String(n);
+}
+
+function parseSimpleDateStr(raw) {
+                    const s = (raw || "").trim();
+                    if (!s) return null;
+                    let m = s.match(/^(\\d{4})$/);
+                    if (m) return { year: Number(m[1]), month: null, day: null };
+
+                    m = s.match(/^(\\d{4})-(\\d{1,2})(?:-(\\d{1,2}))?$/);
+                    if (m) {
+                        const y = Number(m[1]), mo = Number(m[2]), d = m[3] ? Number(m[3]) : null;
+                        if (mo >= 1 && mo <= 12 && (!d || (d >= 1 && d <= 31))) return { year: y, month: mo, day: d };
                     }
-                    return str;
+
+                    m = s.match(/^(\\d{1,2})\\.(\\d{1,2})\\.(\\d{4})$/);
+                    if (m) {
+                        const d = Number(m[1]), mo = Number(m[2]), y = Number(m[3]);
+                        if (mo >= 1 && mo <= 12 && d >= 1 && d <= 31) return { year: y, month: mo, day: d };
+                    }
+
+                    m = s.match(/^(\\d{1,2})\\.(\\d{4})$/);
+                    if (m) {
+                        const mo = Number(m[1]), y = Number(m[2]);
+                        if (mo >= 1 && mo <= 12) return { year: y, month: mo, day: null };
+                    }
+
+                    m = s.match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})$/);
+                    if (m) {
+                        const a = Number(m[1]), b = Number(m[2]), y = Number(m[3]);
+                        if (a > 12 && b >= 1 && b <= 12) return { year: y, month: b, day: a };
+                        if (b > 12 && a >= 1 && a <= 12) return { year: y, month: a, day: b };
+                        if (b >= 1 && b <= 12 && a >= 1 && a <= 31) return { year: y, month: b, day: a };
+                    }
+
+                    m = s.match(/^(\\d{1,2})\\/(\\d{4})$/);
+                    if (m) {
+                        const mo = Number(m[1]), y = Number(m[2]);
+                        if (mo >= 1 && mo <= 12) return { year: y, month: mo, day: null };
+                    }
+
+                    m = s.match(/^(?:(\\d{1,2})\\.?\\s+)?([A-Za-zÄÖÜäöüßÀ-ÿ]+)\\.?\\s+(\\d{4})$/);
+                    if (m) {
+                        const mo = DATE_MONTH_MAP[m[2].toUpperCase()];
+                        if (mo) {
+                            const d = m[1] ? Number(m[1]) : null;
+                            if (!d || (d >= 1 && d <= 31)) return { year: Number(m[3]), month: mo, day: d };
+                        }
+                    }
+
+                    m = s.match(/^([A-Za-zÄÖÜäöüßÀ-ÿ]+)\\.?\\s+(\\d{1,2}),\\s*(\\d{4})$/);
+                    if (m) {
+                        const mo = DATE_MONTH_MAP[m[1].toUpperCase()];
+                        const d = Number(m[2]);
+                        if (mo && d >= 1 && d <= 31) return { year: Number(m[3]), month: mo, day: d };
+                    }
+                    return null;
+}
+
+function formatSimpleDateForLocale(d, lang) {
+                    if (!d.month) return String(d.year);
+                    if (lang === "en") {
+                        return d.day ? \`\${pad2Date(d.month)}/\${pad2Date(d.day)}/\${d.year}\` : \`\${pad2Date(d.month)}/\${d.year}\`;
+                    }
+                    if (lang === "fr" || lang === "pt") {
+                        return d.day ? \`\${pad2Date(d.day)}/\${pad2Date(d.month)}/\${d.year}\` : \`\${pad2Date(d.month)}/\${d.year}\`;
+                    }
+                    return d.day ? \`\${pad2Date(d.day)}.\${pad2Date(d.month)}.\${d.year}\` : \`\${pad2Date(d.month)}.\${d.year}\`;
+}
+
+function localizeDateStr(str) {
+                    const raw = (str || "").trim();
+                    if (!raw) return "";
+                    const lang = ["de", "en", "fr", "pt"].includes(currentLang) ? currentLang : "de";
+
+                    let m = raw.match(/^(?:BET|BETWEEN|ZWISCHEN|ENTRE)\\s+(.+?)\\s+(?:AND|UND|ET|E)\\s+(.+)$/i);
+                    if (m) {
+                        const d1 = parseSimpleDateStr(m[1]), d2 = parseSimpleDateStr(m[2]);
+                        if (d1 && d2) {
+                            const words = { de: ["zwischen", "und"], en: ["between", "and"], fr: ["entre", "et"], pt: ["entre", "e"] }[lang];
+                            return \`\${words[0]} \${formatSimpleDateForLocale(d1, lang)} \${words[1]} \${formatSimpleDateForLocale(d2, lang)}\`;
+                        }
+                    }
+
+                    m = raw.match(/^(?:FROM|VON|DE)\\s+(.+?)\\s+(?:TO|BIS|À|A)\\s+(.+)$/i);
+                    if (m) {
+                        const d1 = parseSimpleDateStr(m[1]), d2 = parseSimpleDateStr(m[2]);
+                        if (d1 && d2) {
+                            const words = { de: ["von", "bis"], en: ["from", "to"], fr: ["de", "à"], pt: ["de", "a"] }[lang];
+                            return \`\${words[0]} \${formatSimpleDateForLocale(d1, lang)} \${words[1]} \${formatSimpleDateForLocale(d2, lang)}\`;
+                        }
+                    }
+
+                    const qualPatterns = [
+                        { q: "BEF", re: /^(?:BEF\\.?|BEFORE|VOR|AVANT|ANTES\\s+DE)\\s+(.+)$/i },
+                        { q: "AFT", re: /^(?:AFT\\.?|AFTER|NACH|APRÈS|APRES|DEPOIS\\s+DE)\\s+(.+)$/i },
+                        { q: "ABT", re: /^(?:ABT\\.?|ABOUT|CA\\.?|CIRCA|UM|ETWA|ENV\\.?|ENVIRON|CERCA\\s+DE)\\s+(.+)$/i },
+                        { q: "CAL", re: /^(?:CAL\\.?|BER\\.?|CALC\\.?)\\s+(.+)$/i },
+                        { q: "EST", re: /^(?:EST\\.?|GESCH\\.?)\\s+(.+)$/i }
+                    ];
+                    for (let i = 0; i < qualPatterns.length; i++) {
+                        const qm = raw.match(qualPatterns[i].re);
+                        if (qm) {
+                            const d = parseSimpleDateStr(qm[1]);
+                            if (d) {
+                                const qLabel = DATE_QUAL_DISPLAY[qualPatterns[i].q][lang];
+                                return \`\${qLabel} \${formatSimpleDateForLocale(d, lang)}\`;
+                            }
+                        }
+                    }
+
+                    const exact = parseSimpleDateStr(raw);
+                    if (exact) return formatSimpleDateForLocale(exact, lang);
+                    return raw;
 }
 
 function updateStaticUI() {

@@ -210,7 +210,7 @@ function onDoubleClick() {
   background: #ffffff;
   border: 1.5px solid #cbd5e1;
   border-radius: 7px;
-  padding: 6px 8px 6px 8px;
+  padding: 6px 8px;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
@@ -221,6 +221,18 @@ function onDoubleClick() {
   transition: box-shadow 0.14s ease, border-color 0.14s ease, opacity 0.15s ease;
   z-index: 12;
   user-select: none;
+}
+
+.design-person-card.density-detail {
+  padding: 6px 9px;
+}
+
+.design-person-card.density-compact {
+  padding: 5px 6px;
+}
+
+.design-person-card.density-narrow {
+  padding: 4px 5px;
 }
 
 .design-person-card:hover {
@@ -414,7 +426,7 @@ function onDoubleClick() {
   font-weight: 400;
   color: #0f172a;
   text-align: center;
-  line-height: 1.2;
+  line-height: 1.25;
   word-break: break-word;
 }
 
@@ -481,12 +493,20 @@ function onDoubleClick() {
 }
 
 .d-marriage-header {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  justify-content: center;
+  display: block;
   text-align: center;
-  gap: 3px;
+  line-height: 1.25;
+  word-break: break-word;
+}
+
+.d-marriage-symbol,
+.d-marriage-idx,
+.d-spouse-henry {
+  margin-right: 3px;
+}
+
+.d-marriage-header > span:last-child {
+  margin-right: 0;
 }
 
 .d-marriage-symbol {

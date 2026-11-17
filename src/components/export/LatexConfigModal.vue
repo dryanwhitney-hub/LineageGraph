@@ -32,8 +32,21 @@ const activeFloatingBox = ref<
   'entry-vars' | 'entry-conds' | 'spouse-vars' | 'spouse-conds' | null
 >(null);
 
+const latexCodeMaskRef = ref<HTMLInputElement | null>(null);
+const latexNameMaskRef = ref<HTMLInputElement | null>(null);
 const latexEntryMaskRef = ref<HTMLTextAreaElement | null>(null);
 const latexSpouseMaskRef = ref<HTMLTextAreaElement | null>(null);
+const activeEntrySlot = ref<'code' | 'name' | 'entry'>('entry');
+
+const previewSheetStyle = computed(() => {
+  const fontPt = parseInt(props.template.fontSize || '11pt', 10) || 11;
+  return {
+    '--sheet-margin-mm': `${Math.max(10, Math.min(45, props.template.marginMm || 22))}px`,
+    '--sheet-font-pt': `${fontPt}pt`,
+    '--entry-indent-em': `${props.template.indentStepEm ?? 1.15}em`,
+    '--entry-spacing-em': `${props.template.entrySpacingEm ?? 0.45}em`,
+  };
+});
 
 function formatLayoutDate(isoStr: string): string {
   if (!isoStr) return '';
@@ -82,34 +95,24 @@ const spouseVariablesCategorized = [
     titleKey: 'export_latex_sec_marriage',
     vars: [
       {
-        token: '{heiratsinfo}',
-        descDe: 'Heiratsangabe komplett (z. B. 1848 in Münster)',
-        descEn: 'Complete marriage record (e.g. 1848 in Münster)',
+        token: '{hochzeit}',
+        descDe: 'Heiratsangabe komplett (⚭ Datum & Ort)',
+        descEn: 'Complete marriage record (⚭ date & place)',
       },
       {
-        token: '{heiratsjahr}',
-        descDe: 'Heiratsjahr',
-        descEn: 'Marriage year',
-      },
-      {
-        token: '{heiratsdatum}',
+        token: '{hochzeitsdatum}',
         descDe: 'Exaktes Heiratsdatum',
         descEn: 'Exact marriage date',
       },
       {
-        token: '{heiratsort}',
+        token: '{hochzeitsort}',
         descDe: 'Heiratsort',
         descEn: 'Marriage place',
       },
       {
-        token: '{ehe_nr}',
-        descDe: 'Ehenummer (1, 2, ...)',
-        descEn: 'Marriage number (1, 2, ...)',
-      },
-      {
-        token: '{ehen_gesamt}',
-        descDe: 'Gesamtzahl aller Ehen',
-        descEn: 'Total marriages count',
+        token: '{ehe_nummer}',
+        descDe: 'Ehenummer (1., 2., ... bei Mehrfachehe)',
+        descEn: 'Marriage number (1., 2., ...)',
       },
     ],
   },
@@ -123,19 +126,19 @@ const spouseVariablesCategorized = [
         descEn: 'Full name of spouse',
       },
       {
-        token: '{partner_henry_id}',
-        descDe: 'Henry-ID des Partners',
-        descEn: 'Henry Code of spouse',
-      },
-      {
         token: '{partner_lebensdaten}',
         descDe: 'Lebensdaten des Partners (*, †)',
         descEn: 'Vital dates of spouse (*, †)',
       },
       {
-        token: '{partner_eltern}',
-        descDe: 'Eltern des Partners',
-        descEn: 'Parents of spouse',
+        token: '{partner_beruf}',
+        descDe: 'Beruf des Partners',
+        descEn: 'Occupation of spouse',
+      },
+      {
+        token: '{partner_verweis}',
+        descDe: 'Querverweis auf Hauptstamm (falls vorhanden)',
+        descEn: 'Cross-reference to main lineage (if present)',
       },
     ],
   },
@@ -154,9 +157,9 @@ const spouseVariablesCategorized = [
         descEn: 'Divorce date',
       },
       {
-        token: '{ist_geschieden}',
-        descDe: 'Wahrheitswert (Ja/Nein)',
-        descEn: 'Boolean value (Yes/No)',
+        token: '{scheidungsort}',
+        descDe: 'Scheidungsort',
+        descEn: 'Divorce place',
       },
     ],
   },
@@ -169,68 +172,27 @@ const entryConditionsCategorized = [
     conds: [
       {
         label: "{if sohn_tochter == 'Sohn'}",
-        code: "{if sohn_tochter == 'Sohn'} (Sohn){else if sohn_tochter == 'Tochter'} (Tochter){endif}",
-        descDe: 'Unterscheidung Sohn / Tochter',
-        descEn: 'Distinction Son / Daughter',
+        code: "{if sohn_tochter == 'Sohn'} (Sohn){elseif sohn_tochter == 'Tochter'} (Tochter){endif}",
+        descDe: 'Unterscheidung Sohn / Tochter mit elseif',
+        descEn: 'Distinction Son / Daughter with elseif',
       },
       {
-        label: '{if sohn_tochter}',
-        code: '{if sohn_tochter}, {sohn_tochter}{endif}',
-        descDe: 'Sohn/Tochter nur bei Nachkommen anhängen (nicht bei Gen. 1)',
-        descEn: 'Append Son/Daughter only for descendants (not Gen. 1)',
+        label: '{if generation_badge}',
+        code: '{if generation_badge}\\textsf{\\footnotesize {generation_badge}} {endif}',
+        descDe: 'Generations-Badge nur ausgeben, wenn Option aktiv',
+        descEn: 'Render generation badge only when enabled',
       },
       {
-        label: '{if aus_ehe}',
-        code: '{if aus_ehe}, {aus_ehe}{endif}',
-        descDe: 'Ehe-Herkunft (aus 1. Ehe / aus 2. Ehe) nur bei Mehrfachehe',
-        descEn: 'Marriage origin (from 1st marriage / from 2nd marriage)',
-      },
-      {
-        label: '{if eltern_mehrfachehe}',
-        code: '{if eltern_mehrfachehe} (aus {eltern_ehe_nr}. Ehe){endif}',
-        descDe: 'Bedingung für Mehrfachehe der Eltern',
-        descEn: 'Condition for parents multiple marriages',
-      },
-      {
-        label: '{if eltern_genau}',
-        code: '\\newline {eltern_genau}',
-        descDe: 'Genaue Eltern inkl. Ehe-Ausweisung',
-        descEn: 'Detailed parents with marriage origin',
-      },
-    ],
-  },
-  {
-    titleKey: 'export_latex_sec_cond_marriage',
-    conds: [
-      {
-        label: '{if ehen_gesamt > 1}',
-        code: '{if ehen_gesamt > 1} ({ehen_gesamt} Ehen){endif}',
-        descDe: 'Mehrere Ehen kennzeichnen',
-        descEn: 'Indicate multiple marriages',
-      },
-      {
-        label: '{if ist_geschieden}',
-        code: '{if ist_geschieden} \\textbf{⚮} {scheidung}{endif}',
-        descDe: 'Scheidungssymbol und -daten bei geschiedenen Personen',
-        descEn: 'Divorce symbol and dates for divorced individuals',
-      },
-      {
-        label: '{if scheidung}',
-        code: '{if scheidung} {scheidung}{endif}',
-        descDe: 'Scheidungsangabe falls vorhanden',
-        descEn: 'Divorce details if present',
-      },
-      {
-        label: '{if kinder_anzahl > 0}',
-        code: '{if kinder_anzahl > 0} ({kinder_anzahl}){endif}',
-        descDe: 'Kinderanzahl ausgeben',
-        descEn: 'Show children count',
+        label: '{if stamm_verweis}',
+        code: '{if stamm_verweis}\\newline\\emph{\\footnotesize{stamm_verweis}}{endif}',
+        descDe: 'Automatischer Stamm-Fortführungs- oder Brücken-Verweis',
+        descEn: 'Automatic branch continuation or bridge cross-reference',
       },
       {
         label: '{if implex}',
-        code: '{if implex} \\textbf{[Implex: {implex}]}{endif}',
-        descDe: 'Ahnenschwund / Implex-Verweis',
-        descEn: 'Pedigree collapse / implex reference',
+        code: '{if implex} \\emph{\\footnotesize{implex}}{endif}',
+        descDe: 'Ahnenschwund / Implex-Verweis mit Seitenzahl',
+        descEn: 'Pedigree collapse / implex reference with page number',
       },
     ],
   },
@@ -238,34 +200,34 @@ const entryConditionsCategorized = [
     titleKey: 'export_latex_sec_cond_details',
     conds: [
       {
-        label: '{if lebensdaten}',
-        code: '{if lebensdaten} — {lebensdaten}{endif}',
-        descDe: 'Lebensdaten nur anhängen, wenn vorhanden',
-        descEn: 'Append vital dates only if present',
+        label: '{, ?beruf}',
+        code: '{, ?beruf}',
+        descDe: 'Kurzschreibweise: Komma + Beruf nur wenn vorhanden',
+        descEn: 'Shorthand: comma + occupation only if present',
       },
       {
-        label: '{if beruf}',
-        code: '{if beruf}, {beruf}{endif}',
-        descDe: 'Beruf nur anhängen, wenn dokumentiert',
-        descEn: 'Append occupation only if documented',
+        label: '{ (wh. ?wohnort)}',
+        code: '{ (wh. ?wohnort)}',
+        descDe: 'Kurzschreibweise: Wohnort in Klammern nur wenn vorhanden',
+        descEn: 'Shorthand: residence in parentheses only if present',
       },
       {
-        label: '{if religion}',
-        code: '{if religion}, {religion}{endif}',
-        descDe: 'Religion nur anhängen, wenn dokumentiert',
-        descEn: 'Append religion only if documented',
+        label: '{ [?religion]}',
+        code: '{ [?religion]}',
+        descDe: 'Kurzschreibweise: Konfession nur wenn vorhanden',
+        descEn: 'Shorthand: religion only if present',
       },
       {
-        label: '{if wohnort}',
-        code: '{if wohnort}, {wohnort}{endif}',
-        descDe: 'Wohnort nur anhängen, wenn dokumentiert',
-        descEn: 'Append residence only if documented',
+        label: '{if kinder_anzahl > 0}',
+        code: '{if kinder_anzahl > 0} ({kinder_anzahl} Kinder){endif}',
+        descDe: 'Kinderanzahl nur bei Nachkommen ausgeben',
+        descEn: 'Show children count only if > 0',
       },
       {
         label: '{if notizen}',
-        code: '{if notizen}\\newline \\footnotesize{{notizen}}{endif}',
-        descDe: 'Notizen als Fußnote ausgeben',
-        descEn: 'Output notes as footnote',
+        code: '{if notizen}\\newline\\footnotesize{Anm.: {notizen}}{endif}',
+        descDe: 'Notizen als abgesetzte Anmerkung ausgeben',
+        descEn: 'Output notes as separate annotation',
       },
     ],
   },
@@ -274,15 +236,15 @@ const entryConditionsCategorized = [
     conds: [
       {
         label: '{if ...} ... {endif}',
-        code: '{if bedingung} text {endif}',
+        code: '{if beruf} ({beruf}){endif}',
         descDe: 'Einfache Wenn-Bedingung',
         descEn: 'Simple if-condition',
       },
       {
-        label: '{if ...} ... {else} ... {endif}',
-        code: '{if bedingung} fall_wahr {else} fall_falsch {endif}',
-        descDe: 'Wenn-Dann-Sonst-Bedingung',
-        descEn: 'If-then-else condition',
+        label: '{if ...} {elseif ...} {else} {endif}',
+        code: '{if beruf}{beruf}{elseif wohnort}wh. {wohnort}{else}—{endif}',
+        descDe: 'Verschachtelbare Wenn-Dann-Sonst-Kette',
+        descEn: 'Nestable if-elseif-else chain',
       },
     ],
   },
@@ -294,22 +256,16 @@ const spouseConditionsCategorized = [
     titleKey: 'export_latex_sec_marriage',
     conds: [
       {
-        label: '{if heiratsort}',
-        code: '{if heiratsort} in {heiratsort}{endif}',
+        label: '{, ?hochzeit}',
+        code: '{, ?hochzeit}',
+        descDe: 'Kurzschreibweise: Hochzeit nur wenn vorhanden',
+        descEn: 'Shorthand: marriage only if present',
+      },
+      {
+        label: '{if hochzeitsort}',
+        code: '{if hochzeitsort} in {hochzeitsort}{endif}',
         descDe: 'Heiratsort nur ausgeben, wenn vorhanden',
         descEn: 'Show marriage place only if present',
-      },
-      {
-        label: '{if heiratsdatum}',
-        code: '{if heiratsdatum} am {heiratsdatum}{endif}',
-        descDe: 'Heiratsdatum nur ausgeben, wenn vorhanden',
-        descEn: 'Show marriage date only if present',
-      },
-      {
-        label: '{if heiratsjahr}',
-        code: '{if heiratsjahr} ({heiratsjahr}){endif}',
-        descDe: 'Heiratsjahr in Klammern',
-        descEn: 'Marriage year in parentheses',
       },
     ],
   },
@@ -317,22 +273,22 @@ const spouseConditionsCategorized = [
     titleKey: 'export_latex_sec_partner',
     conds: [
       {
-        label: '{if partner_lebensdaten}',
-        code: '{if partner_lebensdaten} {partner_lebensdaten}{endif}',
-        descDe: 'Lebensdaten des Partners',
-        descEn: 'Vital dates of spouse',
+        label: '{ ?partner_lebensdaten}',
+        code: '{ ?partner_lebensdaten}',
+        descDe: 'Lebensdaten des Partners nur wenn vorhanden',
+        descEn: 'Vital dates of spouse if present',
       },
       {
-        label: '{if partner_eltern}',
-        code: '{if partner_eltern} {partner_eltern}{endif}',
-        descDe: 'Eltern des Partners',
-        descEn: 'Parents of spouse',
+        label: '{, ?partner_beruf}',
+        code: '{, ?partner_beruf}',
+        descDe: 'Beruf des Partners nur wenn vorhanden',
+        descEn: 'Occupation of spouse if present',
       },
       {
-        label: '{if partner_henry_id}',
-        code: '{if partner_henry_id} [{partner_henry_id}]{endif}',
-        descDe: 'Henry-Code des Partners',
-        descEn: 'Henry Code of spouse',
+        label: '{ ?partner_verweis}',
+        code: '{ ?partner_verweis}',
+        descDe: 'Stamm-Querverweis auf Partner',
+        descEn: 'Lineage cross-reference for spouse',
       },
     ],
   },
@@ -340,22 +296,49 @@ const spouseConditionsCategorized = [
     titleKey: 'export_latex_sec_divorce',
     conds: [
       {
-        label: '{if ist_geschieden}',
-        code: '{if ist_geschieden} \\textbf{⚮} {scheidung}{endif}',
-        descDe: 'Scheidungssymbol & Daten',
-        descEn: 'Divorce symbol & dates',
-      },
-      {
-        label: '{if scheidungsdatum}',
-        code: '{if scheidungsdatum} (⚮ {scheidungsdatum}){endif}',
-        descDe: 'Scheidungsdatum in Klammern',
-        descEn: 'Divorce date in parentheses',
+        label: '{, ?scheidung}',
+        code: '{, ?scheidung}',
+        descDe: 'Scheidungsangabe nur wenn vorhanden',
+        descEn: 'Divorce details if present',
       },
     ],
   },
 ];
 
 function insertTokenIntoEntryMask(token: string) {
+  if (activeEntrySlot.value === 'code') {
+    const el = latexCodeMaskRef.value;
+    if (!el) {
+      props.template.codeMask += token;
+      return;
+    }
+    const start = el.selectionStart ?? props.template.codeMask.length;
+    const end = el.selectionEnd ?? start;
+    const cur = props.template.codeMask;
+    props.template.codeMask = cur.slice(0, start) + token + cur.slice(end);
+    setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+    return;
+  }
+  if (activeEntrySlot.value === 'name') {
+    const el = latexNameMaskRef.value;
+    if (!el) {
+      props.template.nameMask += token;
+      return;
+    }
+    const start = el.selectionStart ?? props.template.nameMask.length;
+    const end = el.selectionEnd ?? start;
+    const cur = props.template.nameMask;
+    props.template.nameMask = cur.slice(0, start) + token + cur.slice(end);
+    setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(start + token.length, start + token.length);
+    }, 0);
+    return;
+  }
+
   const el = latexEntryMaskRef.value;
   if (!el) {
     props.template.entryMask += token;
@@ -568,6 +551,21 @@ function insertTokenIntoSpouseMask(token: string) {
                   />
                 </div>
               </div>
+
+              <div class="book-options-checks">
+                <label class="export-checkbox-label compact">
+                  <input type="checkbox" v-model="template.showGenerationBadge" />
+                  <span>{{ t('export_latex_opt_gen_badge') }}</span>
+                </label>
+                <label class="export-checkbox-label compact">
+                  <input type="checkbox" v-model="template.enableIndexGeneration" />
+                  <span>{{ t('export_latex_opt_index_gen') }}</span>
+                </label>
+                <label class="export-checkbox-label compact">
+                  <input type="checkbox" v-model="template.enableBranchOverviewTable" />
+                  <span>{{ t('export_latex_opt_branch_table') }}</span>
+                </label>
+              </div>
             </div>
           </div>
 
@@ -747,13 +745,42 @@ function insertTokenIntoSpouseMask(token: string) {
               </div>
             </div>
 
-            <textarea
-              ref="latexEntryMaskRef"
-              v-model="template.entryMask"
-              rows="4"
-              class="export-textarea mono-textarea modal-mask-textarea"
-              placeholder="({generation}{if sohn_tochter}, {sohn_tochter}{endif}) — {lebensdaten}{ehepartner}"
-            ></textarea>
+            <div class="slots-row">
+              <div class="slot-field-group slot-code" :class="{ active: activeEntrySlot === 'code' }">
+                <label class="mini-lbl">{{ t('export_latex_slot_code_lbl') }} (<code>#3</code>)</label>
+                <input
+                  ref="latexCodeMaskRef"
+                  type="text"
+                  v-model="template.codeMask"
+                  @focus="activeEntrySlot = 'code'"
+                  class="export-input mono-input"
+                  placeholder="{if ordnungs_id}[{ordnungs_id}]{endif}"
+                />
+              </div>
+              <div class="slot-field-group slot-name" :class="{ active: activeEntrySlot === 'name' }">
+                <label class="mini-lbl">{{ t('export_latex_slot_name_lbl') }} (<code>#4</code>)</label>
+                <input
+                  ref="latexNameMaskRef"
+                  type="text"
+                  v-model="template.nameMask"
+                  @focus="activeEntrySlot = 'name'"
+                  class="export-input mono-input"
+                  placeholder="{nachname}{, ?vorname}"
+                />
+              </div>
+            </div>
+
+            <div class="slot-field-group slot-details" :class="{ active: activeEntrySlot === 'entry' }">
+              <label class="mini-lbl">{{ t('export_latex_slot_details_lbl') }} (<code>#5</code>)</label>
+              <textarea
+                ref="latexEntryMaskRef"
+                v-model="template.entryMask"
+                @focus="activeEntrySlot = 'entry'"
+                rows="4"
+                class="export-textarea mono-textarea modal-mask-textarea"
+                placeholder="{?lebensdaten}{, ?beruf}{ (wh. ?wohnort)}"
+              ></textarea>
+            </div>
           </div>
 
           <!-- Bereich 4: Masken-Editor für Ehepartner -->
@@ -888,6 +915,8 @@ function insertTokenIntoSpouseMask(token: string) {
             <div
               v-if="modalPreviewMode === 'visual'"
               class="latex-visual-scroll latex-modal-visual-scroll"
+              :class="`paper-${template.paperSize}`"
+              :style="previewSheetStyle"
               v-html="sampleLatexPreview.previewHtml"
             ></div>
             <div v-else class="latex-source-scroll latex-modal-source-scroll">
@@ -1644,6 +1673,98 @@ function insertTokenIntoSpouseMask(token: string) {
 
 .btn-modal-apply:hover {
   background: #1d4ed8;
+}
+
+.book-options-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.export-checkbox-label.compact {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #334155;
+  cursor: pointer;
+}
+
+.slots-row {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.slot-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.slot-field-group.active {
+  border-color: #3b82f6;
+  background: #eff6ff;
+}
+
+.mono-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+}
+
+.latex-modal-visual-scroll {
+  padding: var(--sheet-margin-mm, 22px);
+  font-size: var(--sheet-font-pt, 11pt);
+  font-family: 'Georgia', 'Times New Roman', serif;
+  color: #1e293b;
+  background: #ffffff;
+}
+
+.latex-modal-visual-scroll :deep(.preview-entry) {
+  margin-left: calc(var(--entry-indent, 0) * var(--entry-indent-em, 1.15em));
+  margin-top: var(--entry-spacing-em, 0.45em);
+  line-height: 1.45;
+}
+
+.latex-modal-visual-scroll :deep(.preview-code) {
+  font-weight: 700;
+  color: #0f172a;
+  margin-right: 5px;
+}
+
+.latex-modal-visual-scroll :deep(.preview-name) {
+  font-weight: 700;
+  color: #0f172a;
+  margin-right: 5px;
+}
+
+.latex-modal-visual-scroll :deep(.preview-spouse-row) {
+  margin-left: 1.4em;
+  margin-top: 2px;
+  font-size: 0.94em;
+  color: #334155;
+}
+
+.latex-modal-visual-scroll :deep(.preview-marriage-sym) {
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.latex-modal-visual-scroll :deep(.preview-small) {
+  font-size: 0.85em;
+  color: #475569;
+}
+
+.latex-modal-visual-scroll :deep(.preview-sc) {
+  font-variant: small-caps;
 }
 </style>
 

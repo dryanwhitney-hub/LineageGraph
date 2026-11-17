@@ -3,9 +3,7 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
-use hmac::Hmac;
-use pbkdf2::pbkdf2;
-use rand::RngCore;
+use pbkdf2::pbkdf2_hmac_array;
 use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1031,14 +1029,10 @@ pub fn export_encrypted_project(
     let db_bytes = fs::read(&temp_db).map_err(|e| format!("Lesen des Snapshots fehlgeschlagen: {}", e))?;
     let _ = fs::remove_file(&temp_db);
 
-    let mut salt = [0u8; 16];
-    let mut nonce_bytes = [0u8; 12];
-    rand::thread_rng().fill_bytes(&mut salt);
-    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let salt: [u8; 16] = rand::random();
+    let nonce_bytes: [u8; 12] = rand::random();
 
-    let mut key = [0u8; 32];
-    pbkdf2::<Hmac<Sha256>>(password.as_bytes(), &salt, PBKDF2_ITERS, &mut key)
-        .map_err(|e| format!("Schlüsselableitung fehlgeschlagen: {}", e))?;
+    let key = pbkdf2_hmac_array::<Sha256, 32>(password.as_bytes(), &salt, PBKDF2_ITERS);
 
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| format!("AES-Init fehlgeschlagen: {}", e))?;
@@ -1070,9 +1064,7 @@ pub fn decrypt_project_to_temp_db(source_path: &Path, password: &str) -> Result<
     let nonce_bytes = &raw[24..36];
     let ciphertext = &raw[36..];
 
-    let mut key = [0u8; 32];
-    pbkdf2::<Hmac<Sha256>>(password.as_bytes(), salt, PBKDF2_ITERS, &mut key)
-        .map_err(|e| format!("Schlüsselableitung fehlgeschlagen: {}", e))?;
+    let key = pbkdf2_hmac_array::<Sha256, 32>(password.as_bytes(), salt, PBKDF2_ITERS);
 
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| format!("AES-Init fehlgeschlagen: {}", e))?;

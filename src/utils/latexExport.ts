@@ -1,11 +1,27 @@
+import type { Person } from '../composables/usePersons';
 import {
-  type ExportPersonInput,
-  parseBirthSortKey,
-  generateNextHenryCode,
-} from './htmlExport';
+  resolveGenealogyTree,
+  readPersonOccupation,
+  type ResolvedLineageResult,
+} from '../domain/design/lineageResolver';
+import type {
+  DesignDocumentModel,
+  DesignTreeBundle,
+  LineagePolicy,
+} from '../domain/design/sceneTypes';
 import { getLocaleDefinition, type SupportedLocale } from '../locales/registry';
+import type { ExportPersonInput } from './htmlExport';
+import {
+  cleanupRenderedMaskOutput,
+  escapeHtmlText,
+  escapeLatexText,
+  evaluateMaskAst,
+  parseMaskAst,
+  type AstNode,
+} from './latexAst';
 
-export type LatexExportMode = 'proband' | 'custom';
+export type LatexSourceMode = 'design_document' | 'root_ancestor' | 'custom_person';
+export type LatexExportMode = LatexSourceMode;
 export type LatexExportDirection = 'descendants' | 'ancestors';
 export type AncestorSortPattern =
   | 'kekule_patrilineal'
@@ -17,6 +33,8 @@ export interface LatexTemplateConfig {
   id: string;
   name: string;
   description?: string;
+  codeMask: string;
+  nameMask: string;
   entryMask: string;
   spouseMask: string;
   documentClass: 'scrartcl' | 'scrbook' | 'article';
@@ -27,6 +45,8 @@ export interface LatexTemplateConfig {
   indentStepEm: number;
   showGenerationBadge: boolean;
   includeHeaderInfo: boolean;
+  enableIndexGeneration: boolean;
+  enableBranchOverviewTable: boolean;
 }
 
 export interface LatexTemplateEntry {
@@ -36,10 +56,20 @@ export interface LatexTemplateEntry {
   config_data: string;
 }
 
+export interface LatexRootAncestorInput {
+  person_id: string;
+  starting_code: string;
+  given_name: string | null;
+  surname: string | null;
+}
+
 export interface LatexExportOptions {
-  mode: LatexExportMode;
+  sourceMode: LatexSourceMode;
   rootPersonId: string;
   startCode: string;
+  lineagePolicy: LineagePolicy;
+  designBundle?: DesignTreeBundle | null;
+  rootAncestors?: LatexRootAncestorInput[];
   direction: LatexExportDirection;
   maxGenerations: number;
   ancestorSortPattern: AncestorSortPattern;
@@ -48,8 +78,10 @@ export interface LatexExportOptions {
   customUnknownMotherText: string;
   enableBranchSplit: boolean;
   branchSplitGeneration: number;
-  selectedBranchIds: string[]; // If empty when enableBranchSplit=true, all branches at branchSplitGeneration are exported
-  includeBranchInputsInMain: boolean;
+  selectedBranchIds: string[]; // Person IDs of chosen branch anchors (across any generation)
+  baseFileName: string;
+  treeSubdir?: string;
+  textsSubdir?: string;
   customDocumentTitle: string;
   customDocumentSubtitle: string;
   template: LatexTemplateConfig;
@@ -58,7 +90,8 @@ export interface LatexExportOptions {
 
 export interface DetectedBranchInfo {
   personId: string;
-  henryCode: string;
+  code: string;
+  safeFileCode: string;
   name: string;
   surname: string;
   givenName: string;
@@ -67,6 +100,8 @@ export interface DetectedBranchInfo {
   generation: number;
   descendantCount: number;
   fileName: string;
+  isDesignSubtree: boolean;
+  isAutoDeferred?: boolean;
 }
 
 export interface GenerationSummary {
@@ -75,12 +110,15 @@ export interface GenerationSummary {
   branchesWithChildrenCount: number;
 }
 
+export type LatexFileRole = 'master' | 'format' | 'structure' | 'data' | 'intro';
+
 export interface GeneratedLatexFile {
   fileName: string;
   label: string;
+  role: LatexFileRole;
   isMasterFile: boolean;
   isMainFile: boolean;
-  branchHenryCode?: string;
+  branchCode?: string;
   branchPersonName?: string;
   entryCount: number;
   maxGeneration: number;
@@ -89,22 +127,420 @@ export interface GeneratedLatexFile {
 }
 
 export interface LatexExportResult {
-  baseSurname: string;
+  baseFileName: string;
+  treeSubdir: string;
+  textsSubdir: string;
   masterFileName: string;
+  structureFileName: string;
   files: GeneratedLatexFile[];
   totalEntries: number;
   maxGenerationReached: number;
   unknownBranchesStopped: number;
+  bridgeRefsCount: number;
   detectedGenerations: GenerationSummary[];
-  detectedBranchesAtSelectedGen: DetectedBranchInfo[];
+  allAvailableBranches: DetectedBranchInfo[];
+  activeSplitBranches: DetectedBranchInfo[];
 }
 
-/**
- * Vergleicht zwei Henry-Codes bzw. Ordnungscodes für eine natürliche genealogische Sortierung:
- * - Generation für Generation (z. B. 11 vor 12, 19 vor 1A, 1A vor 1B).
- * - Frühere Geschwister und alle deren Nachkommen vor späteren Geschwistern (z. B. 11, 111, 112 vor 12).
- * - Unterstützt auch punktgetrennte Pfade (z. B. 1.2 vor 1.10).
- */
+export interface LatexVariableDefinition {
+  token: string;
+  shorthandExample?: string;
+  labelKey: string;
+  labelDe: string;
+  labelEn: string;
+  example: string;
+  category: 'identity' | 'vital' | 'family' | 'extra';
+}
+
+export const LATEX_VARIABLE_DEFINITIONS: LatexVariableDefinition[] = [
+  {
+    token: '{ordnungs_id}',
+    labelKey: 'var_ordnungs_id',
+    labelDe: 'Ordnungs-Code (Henry / Kekulé)',
+    labelEn: 'Order Code (Henry / Kekulé)',
+    example: '121',
+    category: 'identity',
+  },
+  {
+    token: '{henry_id}',
+    labelKey: 'var_henry_id',
+    labelDe: 'Henry-Code (Stammahn)',
+    labelEn: 'Henry Code (Root Ancestor)',
+    example: '121',
+    category: 'identity',
+  },
+  {
+    token: '{kekule_id}',
+    labelKey: 'var_kekule_id',
+    labelDe: 'Kekulé-Nr. (Vorfahren)',
+    labelEn: 'Kekulé No. (Ancestors)',
+    example: '4',
+    category: 'identity',
+  },
+  {
+    token: '{nachname}',
+    labelKey: 'var_nachname',
+    labelDe: 'Nachname',
+    labelEn: 'Surname',
+    example: 'Froning',
+    category: 'identity',
+  },
+  {
+    token: '{vorname}',
+    shorthandExample: '{, ?vorname}',
+    labelKey: 'var_vorname',
+    labelDe: 'Vorname',
+    labelEn: 'Given Name',
+    example: 'Johann Henrich',
+    category: 'identity',
+  },
+  {
+    token: '{vollname}',
+    labelKey: 'var_vollname',
+    labelDe: 'Vor- & Nachname',
+    labelEn: 'Full Name',
+    example: 'Johann Henrich Froning',
+    category: 'identity',
+  },
+  {
+    token: '{generation}',
+    labelKey: 'var_generation',
+    labelDe: 'Generation (z.B. Gen. 3)',
+    labelEn: 'Generation (e.g. Gen. 3)',
+    example: 'Gen. 3',
+    category: 'identity',
+  },
+  {
+    token: '{generation_badge}',
+    labelKey: 'var_generation_badge',
+    labelDe: 'Generations-Badge (falls aktiv)',
+    labelEn: 'Generation Badge (if enabled)',
+    example: '[Gen. 3]',
+    category: 'identity',
+  },
+  {
+    token: '{sohn_tochter}',
+    labelKey: 'var_sohn_tochter',
+    labelDe: 'Sohn / Tochter',
+    labelEn: 'Son / Daughter',
+    example: 'Sohn',
+    category: 'identity',
+  },
+  {
+    token: '{rolle}',
+    labelKey: 'var_rolle',
+    labelDe: 'Verwandtschaftsrolle',
+    labelEn: 'Relationship Role',
+    example: 'Vater',
+    category: 'identity',
+  },
+  {
+    token: '{xref}',
+    labelKey: 'var_xref',
+    labelDe: 'GEDCOM-ID',
+    labelEn: 'GEDCOM ID',
+    example: '@I12@',
+    category: 'identity',
+  },
+  {
+    token: '{implex}',
+    labelKey: 'var_implex',
+    labelDe: 'Implex-Hinweis (mit Seitenzahl)',
+    labelEn: 'Implex Notice (with page ref)',
+    example: '[Implex → 112, S. 14]',
+    category: 'identity',
+  },
+  {
+    token: '{stamm_verweis}',
+    labelKey: 'var_stamm_verweis',
+    labelDe: 'Stamm- / Brücken-Querverweis',
+    labelEn: 'Branch / Bridge Cross-Reference',
+    example: '→ Stamm [12], S. 24',
+    category: 'identity',
+  },
+  {
+    token: '{lebensdaten}',
+    labelKey: 'var_lebensdaten',
+    labelDe: 'Lebensdaten komplett (* / †)',
+    labelEn: 'Vital Dates (* / †)',
+    example: '* 12.04.1820 in Coesfeld, † 03.11.1891 in Münster',
+    category: 'vital',
+  },
+  {
+    token: '{geburtsdatum}',
+    labelKey: 'var_geburtsdatum',
+    labelDe: 'Geburtsdatum',
+    labelEn: 'Birth Date',
+    example: '12.04.1820',
+    category: 'vital',
+  },
+  {
+    token: '{geburtsort}',
+    labelKey: 'var_geburtsort',
+    labelDe: 'Geburtsort',
+    labelEn: 'Birth Place',
+    example: 'Coesfeld',
+    category: 'vital',
+  },
+  {
+    token: '{taufe}',
+    labelKey: 'var_taufe',
+    labelDe: 'Taufe komplett',
+    labelEn: 'Baptism Block',
+    example: '~ 14.04.1820 in St. Lamberti',
+    category: 'vital',
+  },
+  {
+    token: '{sterbedatum}',
+    labelKey: 'var_sterbedatum',
+    labelDe: 'Sterbedatum',
+    labelEn: 'Death Date',
+    example: '03.11.1891',
+    category: 'vital',
+  },
+  {
+    token: '{sterbeort}',
+    labelKey: 'var_sterbeort',
+    labelDe: 'Sterbeort',
+    labelEn: 'Death Place',
+    example: 'Münster',
+    category: 'vital',
+  },
+  {
+    token: '{beerdigung}',
+    labelKey: 'var_beerdigung',
+    labelDe: 'Beerdigung komplett',
+    labelEn: 'Burial Block',
+    example: '▭ 06.11.1891 in Münster',
+    category: 'vital',
+  },
+  {
+    token: '{ehepartner}',
+    labelKey: 'var_ehepartner',
+    labelDe: 'Ehepartner inline (falls im Slot #5 gewünscht)',
+    labelEn: 'Spouses inline (optional in Slot #5)',
+    example: '⚭ Anna Maria Meyer',
+    category: 'family',
+  },
+  {
+    token: '{hochzeit}',
+    labelKey: 'var_hochzeit',
+    labelDe: 'Hochzeit komplett (⚭)',
+    labelEn: 'Marriage Block (⚭)',
+    example: '⚭ 18.05.1845 in Coesfeld',
+    category: 'family',
+  },
+  {
+    token: '{scheidung}',
+    labelKey: 'var_scheidung',
+    labelDe: 'Scheidung komplett (⚮)',
+    labelEn: 'Divorce Block (⚮)',
+    example: '⚮ 15.06.1985 in Münster',
+    category: 'family',
+  },
+  {
+    token: '{kinder_anzahl}',
+    labelKey: 'var_kinder_anzahl',
+    labelDe: 'Anzahl Kinder',
+    labelEn: 'Children Count',
+    example: '4',
+    category: 'family',
+  },
+  {
+    token: '{beruf}',
+    shorthandExample: '{, ?beruf}',
+    labelKey: 'var_beruf',
+    labelDe: 'Beruf / Stand (Rohwert)',
+    labelEn: 'Occupation (Raw)',
+    example: 'Ackersmann',
+    category: 'extra',
+  },
+  {
+    token: '{religion}',
+    shorthandExample: '{ [?religion]}',
+    labelKey: 'var_religion',
+    labelDe: 'Konfession (Rohwert)',
+    labelEn: 'Religion (Raw)',
+    example: 'kath.',
+    category: 'extra',
+  },
+  {
+    token: '{wohnort}',
+    shorthandExample: '{ (wh. ?wohnort)}',
+    labelKey: 'var_wohnort',
+    labelDe: 'Wohnort (Rohwert)',
+    labelEn: 'Residence (Raw)',
+    example: 'Münster',
+    category: 'extra',
+  },
+  {
+    token: '{notizen}',
+    labelKey: 'var_notizen',
+    labelDe: 'Notizen / Anmerkungen (Rohwert)',
+    labelEn: 'Notes (Raw)',
+    example: 'Pächter auf Hof Schulze',
+    category: 'extra',
+  },
+];
+
+export const DEFAULT_LATEX_TEMPLATES: LatexTemplateConfig[] = [
+  {
+    id: 'builtin_book_classic',
+    name: 'Klassischer Buchdruck (Kompakt)',
+    description: 'Sauberes 3-Slot-Satzbild für Familienchroniken mit Register und Stamm-Übersicht.',
+    codeMask: '{if ordnungs_id}[{ordnungs_id}]{endif}',
+    nameMask: '{nachname}{, ?vorname}',
+    entryMask:
+      '{if generation_badge}\\textsf{\\footnotesize {generation_badge}} {endif}{?lebensdaten}{, ?beruf}{ (wh. ?wohnort)}{ [?religion]}{if implex} \\emph{\\footnotesize{implex}}{endif}{if stamm_verweis}\\newline\\emph{\\footnotesize{stamm_verweis}}{endif}{if notizen}\\newline\\footnotesize{Anm.: {notizen}}{endif}',
+    spouseMask:
+      '\\textbf{{partner_name}}{ ?partner_lebensdaten}{, ?partner_beruf}{, ?hochzeit}{, ?scheidung}{ ?partner_verweis}',
+    documentClass: 'scrbook',
+    paperSize: 'a4paper',
+    fontSize: '11pt',
+    marginMm: 22,
+    entrySpacingEm: 0.45,
+    indentStepEm: 1.15,
+    showGenerationBadge: true,
+    includeHeaderInfo: true,
+    enableIndexGeneration: true,
+    enableBranchOverviewTable: true,
+  },
+  {
+    id: 'builtin_chronicle_narrative',
+    name: 'Chronik & Familienbuch (Narrativ)',
+    description: 'Ausführliche Lebensläufe mit Taufe, Beerdigung und abgesetzten Anmerkungen.',
+    codeMask: '{if ordnungs_id}{ordnungs_id}.{endif}',
+    nameMask: '{vollname}',
+    entryMask:
+      '{if generation_badge}\\textit{({generation})} {endif}{if geburtsdatum}* {geburtsdatum}{ in ?geburtsort}{endif}{if taufe}, {taufe}{endif}{if sterbedatum}, † {sterbedatum}{ in ?sterbeort}{endif}{if beerdigung}, {beerdigung}{endif}{if beruf}. Beruf: {beruf}{endif}{if wohnort}, wohnhaft in {wohnort}{endif}{if religion} ({religion}){endif}.{if implex}\\newline\\emph{\\footnotesize{implex}}{endif}{if stamm_verweis}\\newline\\emph{\\footnotesize{stamm_verweis}}{endif}{if notizen}\\newline\\footnotesize\\textit{Anmerkung:} {notizen}{endif}',
+    spouseMask:
+      '\\textbf{{partner_name}}{ ?partner_lebensdaten}{, ?partner_beruf}{ — ?hochzeit}{, ?scheidung}{ ?partner_verweis}',
+    documentClass: 'scrbook',
+    paperSize: 'a4paper',
+    fontSize: '11pt',
+    marginMm: 25,
+    entrySpacingEm: 0.55,
+    indentStepEm: 1.25,
+    showGenerationBadge: false,
+    includeHeaderInfo: true,
+    enableIndexGeneration: true,
+    enableBranchOverviewTable: true,
+  },
+  {
+    id: 'builtin_register_tabular',
+    name: 'Register-Stil (Nachname hervorgehoben)',
+    description: 'Kapitälchen-Nachnamen und knappe Eckdaten für große Nachkommenverzeichnisse.',
+    codeMask: '{if ordnungs_id}[{ordnungs_id}]{endif}',
+    nameMask: '\\textsc{{nachname}}{, ?vorname}',
+    entryMask:
+      '{?lebensdaten}{, ?beruf}{if stamm_verweis} \\emph{\\footnotesize{stamm_verweis}}{endif}{if implex} \\emph{\\footnotesize{implex}}{endif}',
+    spouseMask: '{partner_name}{ ?partner_lebensdaten}{, ?hochzeit}{ ?partner_verweis}',
+    documentClass: 'scrartcl',
+    paperSize: 'a4paper',
+    fontSize: '10pt',
+    marginMm: 18,
+    entrySpacingEm: 0.35,
+    indentStepEm: 1.0,
+    showGenerationBadge: false,
+    includeHeaderInfo: true,
+    enableIndexGeneration: true,
+    enableBranchOverviewTable: true,
+  },
+  {
+    id: 'builtin_research_dossier',
+    name: 'Forschungsbericht (Alle Details & GEDCOM-ID)',
+    description: 'Enthält GEDCOM-XREF, vollständige Daten, Notizen und Konfession für Arbeitsmappen.',
+    codeMask: '{if ordnungs_id}[{ordnungs_id}]{endif}{if xref} \\texttt{\\tiny {xref}}{endif}',
+    nameMask: '{nachname}{, ?vorname}',
+    entryMask:
+      '{if generation_badge}[{generation}] {endif}{?lebensdaten}{, ?taufe}{, ?beerdigung}{, ?beruf}{ (wh. ?wohnort)}{ [?religion]}{if kinder_anzahl > 0} ({kinder_anzahl} Kinder){endif}{if implex}\\newline\\emph{\\footnotesize{implex}}{endif}{if stamm_verweis}\\newline\\emph{\\footnotesize{stamm_verweis}}{endif}{if notizen}\\newline\\footnotesize{notizen}{endif}',
+    spouseMask:
+      '\\textbf{{partner_name}}{ ?partner_lebensdaten}{, ?partner_beruf}{, ?hochzeit}{, ?scheidung}{ ?partner_verweis}',
+    documentClass: 'scrartcl',
+    paperSize: 'a4paper',
+    fontSize: '10pt',
+    marginMm: 18,
+    entrySpacingEm: 0.45,
+    indentStepEm: 1.1,
+    showGenerationBadge: true,
+    includeHeaderInfo: true,
+    enableIndexGeneration: true,
+    enableBranchOverviewTable: true,
+  },
+  {
+    id: 'builtin_minimal_tree',
+    name: 'Minimalistisch (Strukturbaum)',
+    description: 'Reine Namen und Jahreszahlen für eine maximale Übersicht auf wenigen Seiten.',
+    codeMask: '{if ordnungs_id}{ordnungs_id}{endif}',
+    nameMask: '{vollname}',
+    entryMask:
+      '{if geburtsjahr || sterbejahr}({geburtsjahr}–{sterbejahr}){endif}{if stamm_verweis} \\emph{\\footnotesize{stamm_verweis}}{endif}',
+    spouseMask: '{partner_name}{ ?hochzeit}',
+    documentClass: 'scrartcl',
+    paperSize: 'a4paper',
+    fontSize: '10pt',
+    marginMm: 16,
+    entrySpacingEm: 0.25,
+    indentStepEm: 0.95,
+    showGenerationBadge: false,
+    includeHeaderInfo: false,
+    enableIndexGeneration: false,
+    enableBranchOverviewTable: false,
+  },
+];
+
+export function normalizeLatexTemplateConfig(
+  raw: Partial<LatexTemplateConfig> & { id?: string; name?: string }
+): LatexTemplateConfig {
+  const fallback = DEFAULT_LATEX_TEMPLATES[0];
+  const entryMask = typeof raw.entryMask === 'string' ? raw.entryMask : fallback.entryMask;
+  const legacyHadNameInEntry =
+    entryMask.includes('{nachname}') || entryMask.includes('{vollname}');
+
+  return {
+    id: raw.id || `tpl_${Date.now()}`,
+    name: raw.name || fallback.name,
+    description: raw.description,
+    codeMask:
+      typeof raw.codeMask === 'string'
+        ? raw.codeMask
+        : legacyHadNameInEntry
+          ? '{if ordnungs_id}[{ordnungs_id}]{endif}'
+          : fallback.codeMask,
+    nameMask:
+      typeof raw.nameMask === 'string'
+        ? raw.nameMask
+        : legacyHadNameInEntry
+          ? ''
+          : fallback.nameMask,
+    entryMask,
+    spouseMask: typeof raw.spouseMask === 'string' ? raw.spouseMask : fallback.spouseMask,
+    documentClass: raw.documentClass || fallback.documentClass,
+    paperSize: raw.paperSize || fallback.paperSize,
+    fontSize: raw.fontSize || fallback.fontSize,
+    marginMm: typeof raw.marginMm === 'number' ? raw.marginMm : fallback.marginMm,
+    entrySpacingEm:
+      typeof raw.entrySpacingEm === 'number' ? raw.entrySpacingEm : fallback.entrySpacingEm,
+    indentStepEm: typeof raw.indentStepEm === 'number' ? raw.indentStepEm : fallback.indentStepEm,
+    showGenerationBadge:
+      typeof raw.showGenerationBadge === 'boolean'
+        ? raw.showGenerationBadge
+        : fallback.showGenerationBadge,
+    includeHeaderInfo:
+      typeof raw.includeHeaderInfo === 'boolean'
+        ? raw.includeHeaderInfo
+        : fallback.includeHeaderInfo,
+    enableIndexGeneration:
+      typeof raw.enableIndexGeneration === 'boolean'
+        ? raw.enableIndexGeneration
+        : fallback.enableIndexGeneration,
+    enableBranchOverviewTable:
+      typeof raw.enableBranchOverviewTable === 'boolean'
+        ? raw.enableBranchOverviewTable
+        : fallback.enableBranchOverviewTable,
+  };
+}
+
 export function compareHenryCodes(a: string, b: string): number {
   if (a === b) return 0;
   if (!a) return -1;
@@ -119,7 +555,7 @@ export function compareHenryCodes(a: string, b: string): number {
       if (i >= segsB.length) return 1;
       const numA = parseInt(segsA[i], 10);
       const numB = parseInt(segsB[i], 10);
-      if (!isNaN(numA) && !isNaN(numB)) {
+      if (!Number.isNaN(numA) && !Number.isNaN(numB)) {
         if (numA !== numB) return numA - numB;
       } else {
         const cmp = segsA[i].localeCompare(segsB[i]);
@@ -129,7 +565,7 @@ export function compareHenryCodes(a: string, b: string): number {
     return 0;
   }
 
-  function parseHenryTokens(s: string): number[] {
+  const parseTokens = (s: string): number[] => {
     const tokens: number[] = [];
     let i = 0;
     while (i < s.length) {
@@ -154,2381 +590,1749 @@ export function compareHenryCodes(a: string, b: string): number {
       }
     }
     return tokens;
-  }
+  };
 
-  const tokA = parseHenryTokens(a);
-  const tokB = parseHenryTokens(b);
+  const tokA = parseTokens(a);
+  const tokB = parseTokens(b);
   const minLen = Math.min(tokA.length, tokB.length);
   for (let i = 0; i < minLen; i++) {
-    if (tokA[i] !== tokB[i]) {
-      return tokA[i] - tokB[i];
-    }
+    if (tokA[i] !== tokB[i]) return tokA[i] - tokB[i];
   }
   return tokA.length - tokB.length;
 }
 
-export interface LatexVariableDefinition {
-  token: string;
-  labelKey: string;
-  labelDe: string;
-  labelEn: string;
-  example: string;
-  category: 'identity' | 'vital' | 'family' | 'extra';
+export function sanitizeLatexFileSlug(raw: string): string {
+  return (raw || 'Chronik')
+    .replace(/ä/g, 'ae')
+    .replace(/ö/g, 'oe')
+    .replace(/ü/g, 'ue')
+    .replace(/Ä/g, 'Ae')
+    .replace(/Ö/g, 'Oe')
+    .replace(/Ü/g, 'Ue')
+    .replace(/ß/g, 'ss')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '') || 'Chronik';
 }
 
-export const LATEX_VARIABLE_DEFINITIONS: LatexVariableDefinition[] = [
-  {
-    token: '{henry_id}',
-    labelKey: 'var_henry_id',
-    labelDe: 'Henry-Code (Proband)',
-    labelEn: 'Henry Code (Proband)',
-    example: '121',
-    category: 'identity',
-  },
-  {
-    token: '{kekule_id}',
-    labelKey: 'var_kekule_id',
-    labelDe: 'Kekulé-Nr. (Vorfahren)',
-    labelEn: 'Kekulé No. (Ancestors)',
-    example: '4',
-    category: 'identity',
-  },
-  {
-    token: '{ordnungs_id}',
-    labelKey: 'var_ordnungs_id',
-    labelDe: 'Ordnungscode (Auto)',
-    labelEn: 'Order Code (Auto)',
-    example: '1.2.1',
-    category: 'identity',
-  },
-  {
-    token: '{nachname}',
-    labelKey: 'var_nachname',
-    labelDe: 'Nachname',
-    labelEn: 'Surname',
-    example: 'Froning',
-    category: 'identity',
-  },
-  {
-    token: '{vorname}',
-    labelKey: 'var_vorname',
-    labelDe: 'Vorname',
-    labelEn: 'Given Name',
-    example: 'Johann Henrich',
-    category: 'identity',
-  },
-  {
-    token: '{vollname}',
-    labelKey: 'var_vollname',
-    labelDe: 'Vor- & Nachname',
-    labelEn: 'Full Name',
-    example: 'Johann Henrich Froning',
-    category: 'identity',
-  },
-  {
-    token: '{sohn_tochter}',
-    labelKey: 'var_sohn_tochter',
-    labelDe: 'Kennzeichnung als Sohn / Tochter',
-    labelEn: 'Designation (Son / Daughter)',
-    example: 'Sohn',
-    category: 'identity',
-  },
-  {
-    token: '{geschlecht}',
-    labelKey: 'var_geschlecht',
-    labelDe: 'Geschlecht',
-    labelEn: 'Sex',
-    example: 'm',
-    category: 'identity',
-  },
-  {
-    token: '{generation}',
-    labelKey: 'var_generation',
-    labelDe: 'Generation',
-    labelEn: 'Generation',
-    example: 'Gen. 3',
-    category: 'identity',
-  },
-  {
-    token: '{rolle}',
-    labelKey: 'var_rolle',
-    labelDe: 'Verwandtschaftsrolle',
-    labelEn: 'Relationship Role',
-    example: 'Vater',
-    category: 'identity',
-  },
-  {
-    token: '{xref}',
-    labelKey: 'var_xref',
-    labelDe: 'GEDCOM-ID',
-    labelEn: 'GEDCOM ID',
-    example: '@I12@',
-    category: 'identity',
-  },
-  {
-    token: '{implex}',
-    labelKey: 'var_implex',
-    labelDe: 'Implex-Hinweis',
-    labelEn: 'Implex Notice',
-    example: '[Implex]',
-    category: 'identity',
-  },
-  {
-    token: '{lebensdaten}',
-    labelKey: 'var_lebensdaten',
-    labelDe: 'Lebensdaten komplett (* / †)',
-    labelEn: 'Vital Dates Block (* / †)',
-    example: '* 12.04.1820 in Coesfeld, † 03.11.1891 in Münster',
-    category: 'vital',
-  },
-  {
-    token: '{geburtsdatum}',
-    labelKey: 'var_geburtsdatum',
-    labelDe: 'Geburtsdatum',
-    labelEn: 'Birth Date',
-    example: '12.04.1820',
-    category: 'vital',
-  },
-  {
-    token: '{geburtsjahr}',
-    labelKey: 'var_geburtsjahr',
-    labelDe: 'Geburtsjahr',
-    labelEn: 'Birth Year',
-    example: '1820',
-    category: 'vital',
-  },
-  {
-    token: '{geburtsort}',
-    labelKey: 'var_geburtsort',
-    labelDe: 'Geburtsort',
-    labelEn: 'Birth Place',
-    example: 'Coesfeld',
-    category: 'vital',
-  },
-  {
-    token: '{taufdatum}',
-    labelKey: 'var_taufdatum',
-    labelDe: 'Taufdatum',
-    labelEn: 'Baptism Date',
-    example: '14.04.1820',
-    category: 'vital',
-  },
-  {
-    token: '{taufort}',
-    labelKey: 'var_taufort',
-    labelDe: 'Taufort',
-    labelEn: 'Baptism Place',
-    example: 'St. Lamberti',
-    category: 'vital',
-  },
-  {
-    token: '{sterbedatum}',
-    labelKey: 'var_sterbedatum',
-    labelDe: 'Sterbedatum',
-    labelEn: 'Death Date',
-    example: '03.11.1891',
-    category: 'vital',
-  },
-  {
-    token: '{sterbejahr}',
-    labelKey: 'var_sterbejahr',
-    labelDe: 'Sterbejahr',
-    labelEn: 'Death Year',
-    example: '1891',
-    category: 'vital',
-  },
-  {
-    token: '{sterbeort}',
-    labelKey: 'var_sterbeort',
-    labelDe: 'Sterbeort',
-    labelEn: 'Death Place',
-    example: 'Münster',
-    category: 'vital',
-  },
-  {
-    token: '{scheidung}',
-    labelKey: 'var_scheidung',
-    labelDe: 'Scheidungsinformation (⚮)',
-    labelEn: 'Divorce Information (⚮)',
-    example: '⚮ 15.06.1985 in Münster',
-    category: 'family',
-  },
-  {
-    token: '{scheidungsdatum}',
-    labelKey: 'var_scheidungsdatum',
-    labelDe: 'Scheidungsdatum',
-    labelEn: 'Divorce Date',
-    example: '15.06.1985',
-    category: 'family',
-  },
-  {
-    token: '{partner_henry_id}',
-    labelKey: 'var_partner_henry_id',
-    labelDe: 'Henry-Code des Ehepartners',
-    labelEn: 'Partner Henry Code',
-    example: '121',
-    category: 'family',
-  },
-  {
-    token: '{ehen_gesamt}',
-    labelKey: 'var_ehen_gesamt',
-    labelDe: 'Gesamtzahl Ehen',
-    labelEn: 'Total Marriages',
-    example: '2',
-    category: 'family',
-  },
-  {
-    token: '{ehepartner}',
-    labelKey: 'var_ehepartner',
-    labelDe: 'Ehepartner-Zeile(n) (⚭)',
-    labelEn: 'Spouse Line(s) (⚭)',
-    example: '⚭ 1848 Anna Maria Schulze (* 1824, † 1899)',
-    category: 'family',
-  },
-  {
-    token: '{eltern}',
-    labelKey: 'var_eltern',
-    labelDe: 'Eltern (Vater & Mutter)',
-    labelEn: 'Parents (Father & Mother)',
-    example: 'Eltern: Bernhard Froning u. Catharina Wesseling',
-    category: 'family',
-  },
-  {
-    token: '{eltern_genau}',
-    labelKey: 'var_eltern_genau',
-    labelDe: 'Genaue Eltern (inkl. Ehekennzeichnung bei Mehrfachehe)',
-    labelEn: 'Exact Parents (incl. marriage info in case of remarriage)',
-    example: 'Eltern (aus 2. Ehe): Bernhard Froning u. Catharina Wesseling',
-    category: 'family',
-  },
-  {
-    token: '{aus_ehe}',
-    labelKey: 'var_aus_ehe',
-    labelDe: 'Ehe-Herkunft ("aus 1. Ehe", "aus 2. Ehe" bei Mehrfachehe)',
-    labelEn: 'Marriage of Origin ("from 1st marriage", "from 2nd marriage")',
-    example: 'aus 2. Ehe',
-    category: 'family',
-  },
-  {
-    token: '{eltern_ehe_nr}',
-    labelKey: 'var_eltern_ehe_nr',
-    labelDe: 'Ehenummer der Eltern (1, 2, ...)',
-    labelEn: 'Parents Marriage Number (1, 2, ...)',
-    example: '2',
-    category: 'family',
-  },
-  {
-    token: '{vater}',
-    labelKey: 'var_vater',
-    labelDe: 'Name des Vaters',
-    labelEn: 'Father Name',
-    example: 'Bernhard Froning',
-    category: 'family',
-  },
-  {
-    token: '{mutter}',
-    labelKey: 'var_mutter',
-    labelDe: 'Name der Mutter',
-    labelEn: 'Mother Name',
-    example: 'Catharina Wesseling',
-    category: 'family',
-  },
-  {
-    token: '{kinder_anzahl}',
-    labelKey: 'var_kinder_anzahl',
-    labelDe: 'Anzahl Kinder',
-    labelEn: 'Children Count',
-    example: '5',
-    category: 'family',
-  },
-  {
-    token: '{beruf}',
-    labelKey: 'var_beruf',
-    labelDe: 'Beruf',
-    labelEn: 'Occupation',
-    example: 'Ackersmann',
-    category: 'extra',
-  },
-  {
-    token: '{religion}',
-    labelKey: 'var_religion',
-    labelDe: 'Religion / Konfession',
-    labelEn: 'Religion',
-    example: 'rk.',
-    category: 'extra',
-  },
-  {
-    token: '{wohnort}',
-    labelKey: 'var_wohnort',
-    labelDe: 'Wohnort',
-    labelEn: 'Residence',
-    example: 'Goxel',
-    category: 'extra',
-  },
-  {
-    token: '{notizen}',
-    labelKey: 'var_notizen',
-    labelDe: 'Notizen',
-    labelEn: 'Notes',
-    example: 'Hofübernahme 1848',
-    category: 'extra',
-  },
-];
+export function sanitizeLatexLabel(raw: string): string {
+  return (raw || 'node')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .replace(/_+/g, '_');
+}
 
-export const BUILTIN_LATEX_TEMPLATES: LatexTemplateConfig[] = [
-  {
-    id: 'builtin-genealogie-stammfolge',
-    name: 'Genealogische Stammfolge (Standard)',
-    description: 'Entspricht dem Referenz-Layout mit \\genealogieEintrag & \\genealogieEhe, hängendem Einzug und dynamischen Generationsabständen.',
-    entryMask:
-      '({generation}{if sohn_tochter}, {sohn_tochter}{endif}{if aus_ehe}, {aus_ehe}{endif}){if implex} \\textbf{[Implex: {implex}]}{endif} — {lebensdaten}{beruf}{religion}{wohnort}{notizen}',
-    spouseMask:
-      '⚭ {heiratsinfo}: \\textit{{partner_name}} {partner_lebensdaten}{if ist_geschieden} \\textbf{⚮} {scheidung}{endif}{partner_eltern}',
-    documentClass: 'scrbook',
-    paperSize: 'a4paper',
-    fontSize: '11pt',
-    marginMm: 25,
-    entrySpacingEm: 0.3,
-    indentStepEm: 1.5,
-    showGenerationBadge: true,
-    includeHeaderInfo: true,
-  },
-  {
-    id: 'builtin-classic-stammliste',
-    name: 'Klassische Stammliste (Kompakt)',
-    description: 'Fettdruck für Code & Familienname in der Maske, Genealogiezeichen (*, †, ≈, ⚭, ⚮).',
-    entryMask:
-      '\\textbf{[{henry_id}] {nachname}}, {vorname} ({generation}){if sohn_tochter} — {sohn_tochter}{endif}{if implex} \\textbf{[Implex]}{endif} — {lebensdaten}{beruf}{ehepartner}',
-    spouseMask:
-      '\\newline \\textit{⚭ {heiratsinfo}: {partner_name}} {partner_lebensdaten}{if ist_geschieden} \\textit{(⚮ {scheidung})}{endif}{partner_eltern}',
-    documentClass: 'scrbook',
-    paperSize: 'a4paper',
-    fontSize: '11pt',
-    marginMm: 25,
-    entrySpacingEm: 0.4,
-    indentStepEm: 1.5,
-    showGenerationBadge: true,
-    includeHeaderInfo: true,
-  },
-  {
-    id: 'builtin-compact-chronik',
-    name: 'Kompakte Chronik (Einzeilig)',
-    description: 'Platzsparende Darstellung mit Genealogiezeichen (*, †, ⚭, ⚮), fokussiert auf Namen und Jahre.',
-    entryMask:
-      '\\textbf{[{henry_id}]} \\textsc{{nachname}}, {vorname} (* {geburtsjahr}, † {sterbejahr}){if ist_geschieden} ⚮{endif} {ehepartner}',
-    spouseMask: ' — ⚭ {heiratsjahr} {partner_name}{if ist_geschieden} (⚮ {scheidungsdatum}){endif}',
-    documentClass: 'scrartcl',
-    paperSize: 'a4paper',
-    fontSize: '10pt',
-    marginMm: 16,
-    entrySpacingEm: 0.25,
-    indentStepEm: 1.3,
-    showGenerationBadge: false,
-    includeHeaderInfo: true,
-  },
-  {
-    id: 'builtin-detailed-familienbuch',
-    name: 'Ausführliches Familienbuch',
-    description: 'Mehrzeiliger Eintrag mit {sohn_tochter}, Taufe (≈), Ehen (⚭), Scheidung (⚮) und Conditionals.',
-    entryMask:
-      '\\textbf{[{henry_id}] {vollname}} \\textit{({rolle} {generation}, {sohn_tochter})}{if implex} \\textbf{[Implex: {implex}]}{endif}{if ehen_gesamt > 1} \\textbf{({ehen_gesamt} Ehen)}{endif}\\newline {lebensdaten}{beruf}{religion}{wohnort}{ehepartner}{notizen}',
-    spouseMask:
-      '\\newline \\textbf{⚭ {ehe_nr}. Ehe} {heiratsinfo}: \\textit{{partner_name}} {partner_lebensdaten}{if ist_geschieden} \\textbf{⚮} {scheidung}{endif}{partner_eltern}',
-    documentClass: 'scrbook',
-    paperSize: 'a4paper',
-    fontSize: '11pt',
-    marginMm: 22,
-    entrySpacingEm: 0.6,
-    indentStepEm: 1.6,
-    showGenerationBadge: true,
-    includeHeaderInfo: true,
-  },
-  {
-    id: 'builtin-ahnenliste-kekule',
-    name: 'Ahnenliste (Vorfahren nach Kekulé)',
-    description: 'Optimiert für Vorfahren-Exporte mit Kekulé-Nummerierung, Verwandtschaftsrolle und Genealogiezeichen.',
-    entryMask:
-      '\\textbf{[{kekule_id}] {rolle}: {nachname}}, {vorname} ({generation}){if sohn_tochter} ({sohn_tochter}){endif} — {lebensdaten}{beruf}{ehepartner}',
-    spouseMask:
-      '\\newline \\textit{⚭ {heiratsinfo}: {partner_name}} {partner_lebensdaten}{if ist_geschieden} \\textit{(⚮ {scheidung})}{endif}',
-    documentClass: 'scrartcl',
-    paperSize: 'a4paper',
-    fontSize: '11pt',
-    marginMm: 20,
-    entrySpacingEm: 0.4,
-    indentStepEm: 1.5,
-    showGenerationBadge: true,
-    includeHeaderInfo: true,
-  },
-];
-
-/**
- * Escapes arbitrary user/GEDCOM strings so they are 100% safe inside LaTeX documents.
- * Preserves recognized genealogy symbols (*, †, ≈, ⚭, ⚮).
- */
-export function escapeLatexText(input: string | null | undefined): string {
-  if (!input) return '';
+function toRoman(num: number): string {
+  if (num <= 0) return '';
+  const map: Array<[number, string]> = [
+    [100, 'C'],
+    [90, 'XC'],
+    [50, 'L'],
+    [40, 'XL'],
+    [10, 'X'],
+    [9, 'IX'],
+    [5, 'V'],
+    [4, 'IV'],
+    [1, 'I'],
+  ];
+  let rem = num;
   let out = '';
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-    switch (ch) {
-      case '\\':
-        out += '\\textbackslash{}';
-        break;
-      case '{':
-        out += '\\{';
-        break;
-      case '}':
-        out += '\\}';
-        break;
-      case '$':
-        out += '\\$';
-        break;
-      case '&':
-        out += '\\&';
-        break;
-      case '#':
-        out += '\\#';
-        break;
-      case '^':
-        out += '\\textasciicircum{}';
-        break;
-      case '_':
-        out += '\\_';
-        break;
-      case '~':
-        out += '\\textasciitilde{}';
-        break;
-      case '%':
-        out += '\\%';
-        break;
-      default:
-        out += ch;
-        break;
+  for (const [val, sym] of map) {
+    while (rem >= val) {
+      out += sym;
+      rem -= val;
     }
   }
   return out;
 }
 
-/**
- * Sanitizes a surname or person identifier for use as a filesystem-safe filename stem.
- */
-export function sanitizeExportBaseName(raw: string | null | undefined, fallback = 'Stammbaum'): string {
-  const trimmed = (raw || '').trim();
-  if (!trimmed) return fallback;
-  const cleaned = trimmed
-    .replace(/[<>:"/\\|?*\x00-\x1F]+/g, '_')
-    .replace(/\s+/g, '_')
-    .replace(/^_+|_+$/g, '');
-  return cleaned || fallback;
+function extractYear(dateStr?: string | null): string {
+  if (!dateStr) return '';
+  const m = /\b(\d{4})\b/.exec(dateStr);
+  return m ? m[1] : '';
 }
 
-function readGedcomSub(extra: Record<string, any> | undefined, tag: string, subKey: string): string {
-  if (!extra || !extra[tag]) return '';
-  const entry = extra[tag];
-  if (typeof entry === 'string') {
-    return subKey === '_val' ? entry : '';
-  }
+function readGedcomTagValue(person: ExportPersonInput | Person | undefined, tag: string): {
+  date: string;
+  place: string;
+  text: string;
+} {
+  if (!person?.gedcom_extra) return { date: '', place: '', text: '' };
+  const entry = person.gedcom_extra[tag];
+  if (!entry) return { date: '', place: '', text: '' };
+  if (typeof entry === 'string') return { date: '', place: '', text: entry.trim() };
   if (typeof entry === 'object' && entry !== null) {
-    const val = entry[subKey];
-    return typeof val === 'string' ? val : '';
+    const obj = entry as Record<string, unknown>;
+    return {
+      date: typeof obj.DATE === 'string' ? obj.DATE.trim() : '',
+      place: typeof obj.PLAC === 'string' ? obj.PLAC.trim() : '',
+      text:
+        typeof obj._val === 'string'
+          ? obj._val.trim()
+          : typeof obj.value === 'string'
+            ? obj.value.trim()
+            : '',
+    };
+  }
+  return { date: '', place: '', text: '' };
+}
+
+function readPersonNotes(person: ExportPersonInput | Person | undefined): string {
+  if (!person?.gedcom_extra) return '';
+  const note = person.gedcom_extra.NOTE;
+  if (typeof note === 'string') return note.trim();
+  if (Array.isArray(note)) {
+    return note
+      .map(n => (typeof n === 'string' ? n.trim() : typeof n?._val === 'string' ? n._val.trim() : ''))
+      .filter(Boolean)
+      .join(' ');
+  }
+  if (typeof note === 'object' && note !== null) {
+    const val = (note as Record<string, unknown>)._val || (note as Record<string, unknown>).value;
+    return typeof val === 'string' ? val.trim() : '';
   }
   return '';
 }
 
-function extractYear(dateStr: string | null | undefined): string {
-  if (!dateStr) return '';
-  const m = dateStr.match(/\b(\d{3,4})\b/);
-  return m ? m[1] : '';
-}
-
-function getFullName(p: ExportPersonInput | undefined, fallback = 'N.N.'): string {
-  if (!p) return fallback;
-  const fn = (p.given_name || '').trim();
-  const ln = (p.surname || '').trim();
-  const full = `${fn} ${ln}`.trim();
-  return full || fallback;
-}
-
-function resolveFatherMother(
-  person: ExportPersonInput,
-  personMap: Map<string, ExportPersonInput>
-): { father: ExportPersonInput | undefined; mother: ExportPersonInput | undefined } {
-  const pids = person.parent_ids || [];
-  if (pids.length === 0) return { father: undefined, mother: undefined };
-  if (pids.length === 1) {
-    const p0 = personMap.get(pids[0]);
-    if (p0?.sex === 'F') return { father: undefined, mother: p0 };
-    return { father: p0, mother: undefined };
+function formatLifeDatesText(
+  birthDate?: string | null,
+  birthPlace?: string | null,
+  deathDate?: string | null,
+  deathPlace?: string | null,
+  locale: SupportedLocale = 'de'
+): string {
+  const inWord = locale === 'en' ? 'in' : locale === 'fr' ? 'à' : locale === 'pt' ? 'em' : 'in';
+  const parts: string[] = [];
+  if (birthDate || birthPlace) {
+    let b = '*';
+    if (birthDate) b += ` ${birthDate}`;
+    if (birthPlace) b += ` ${inWord} ${birthPlace}`;
+    parts.push(b);
   }
-  const p0 = personMap.get(pids[0]);
-  const p1 = personMap.get(pids[1]);
-  if (p0?.sex === 'F' && p1?.sex === 'M') {
-    return { father: p1, mother: p0 };
+  if (deathDate || deathPlace) {
+    let d = '†';
+    if (deathDate) d += ` ${deathDate}`;
+    if (deathPlace) d += ` ${inWord} ${deathPlace}`;
+    parts.push(d);
   }
-  return { father: p0, mother: p1 };
+  return parts.join(', ');
 }
 
-function getAncestorRoleLabel(
-  genOffset: number,
-  isFemale: boolean,
+function toDomainPersons(persons: ExportPersonInput[]): Person[] {
+  const childrenByParent = new Map<string, string[]>();
+  for (const p of persons) {
+    for (const pid of p.parent_ids || []) {
+      const arr = childrenByParent.get(pid) || [];
+      if (!arr.includes(p.id)) arr.push(p.id);
+      childrenByParent.set(pid, arr);
+    }
+  }
+  return persons.map(p => ({
+    id: p.id,
+    given_name: p.given_name,
+    surname: p.surname,
+    sex: p.sex,
+    birth_date: p.birth_date,
+    birth_place: p.birth_place,
+    death_date: p.death_date,
+    death_place: p.death_place,
+    gedcom_extra: p.gedcom_extra || {},
+    spouses: p.spouses || [],
+    parent_ids: p.parent_ids || [],
+    children_ids: (p as unknown as Person).children_ids || childrenByParent.get(p.id) || [],
+    proband_data: (p as unknown as Person).proband_data || {},
+  }));
+}
+
+function createSyntheticDoc(rootPersonId: string, lineagePolicy: LineagePolicy): DesignDocumentModel {
+  const now = new Date().toISOString();
+  return {
+    id: `latex_synth_${rootPersonId}`,
+    name: 'LaTeX Export',
+    rootPersonId,
+    documentKind: 'master',
+    growthDirection: 'top_down',
+    lineagePolicy,
+    routingStyle: 'orthogonal_bus',
+    enableLineBridges: true,
+    cardDensityProfile: 'standard',
+    cardConfig: {} as DesignDocumentModel['cardConfig'],
+    bgAssetId: null,
+    bgConfig: {} as DesignDocumentModel['bgConfig'],
+    createdAt: now,
+    updatedAt: now,
+    personRules: {},
+    groupRules: {},
+    subtreeMounts: {},
+    edgeWaypoints: {},
+  };
+}
+
+interface GlobalStammahnEntry {
+  henryCode: string;
+  rootAncestorId: string;
+  rootAncestorName: string;
+  labelKey: string;
+}
+
+function adjustStartCode(code: string, startCode: string): string {
+  const trimmed = (startCode || '1').trim();
+  if (!trimmed || trimmed === '1') return code;
+  if (code.startsWith('1')) {
+    return trimmed + code.slice(1);
+  }
+  return code;
+}
+
+function buildGlobalStammahnHenryLookup(
+  domainPersons: Person[],
+  rootAncestors: LatexRootAncestorInput[],
+  lineagePolicy: LineagePolicy,
   locale: SupportedLocale
-): string {
-  if (genOffset === 0) {
-    return locale === 'en' ? 'Starting Entry' : 'Ausgangsperson';
-  }
-  if (genOffset === 1) {
-    return locale === 'en' ? (isFemale ? 'Mother' : 'Father') : isFemale ? 'Mutter' : 'Vater';
-  }
-  if (genOffset === 2) {
-    return locale === 'en'
-      ? isFemale
-        ? 'Grandmother'
-        : 'Grandfather'
-      : isFemale
-      ? 'Großmutter'
-      : 'Großvater';
-  }
-  if (genOffset === 3) {
-    return locale === 'en'
-      ? isFemale
-        ? 'Great-Grandmother'
-        : 'Great-Grandfather'
-      : isFemale
-      ? 'Urgroßmutter'
-      : 'Urgroßvater';
-  }
-  const urPrefix = 'Ur-'.repeat(Math.max(1, genOffset - 2));
-  return locale === 'en'
-    ? `${'Great-'.repeat(genOffset - 1)}Grand${isFemale ? 'mother' : 'father'}`
-    : `${urPrefix}${isFemale ? 'Großmutter' : 'Großvater'}`;
-}
-
-export function resolveUnknownParentText(
-  isMother: boolean,
-  genOffset: number,
-  options: LatexExportOptions
-): string {
-  const role = getAncestorRoleLabel(genOffset, isMother, options.locale);
-  if (options.unknownParentPreset === 'custom') {
-    const raw = isMother
-      ? options.customUnknownMotherText.trim()
-      : options.customUnknownFatherText.trim();
-    if (raw) {
-      return raw.replace(/\{rolle\}/g, role);
-    }
-  }
-  if (options.unknownParentPreset === 'archival') {
-    return options.locale === 'en'
-      ? `${role}: Not documented in records — branch ends here`
-      : `${role}: Urkundlich nicht dokumentiert — Zweig endet hier`;
-  }
-  if (options.unknownParentPreset === 'short') {
-    return options.locale === 'en' ? `${role}: Unknown` : `${role}: Nicht bekannt`;
-  }
-  // Default 'classic'
-  return options.locale === 'en'
-    ? `${role}: N.N. (not known — branch ends here)`
-    : `${role}: N.N. (nicht bekannt — Zweig endet hier)`;
-}
-
-/**
- * Condition evaluation engine for format masks.
- * Supports:
- * - {if condition}...{else}...{endif}
- * - {wenn bedingung}...{sonst}...{endwenn}
- * Condition expressions:
- * - "eintrag == implex" / "implex" / "ist_implex"
- * - "ehen_gesamt > 1" / "ehen_gesamt == 0"
- * - "geschieden" / "ist_geschieden"
- * - "sohn_tochter == 'Sohn'"
- * - "kinder_anzahl > 0"
- * - presence checks: "beruf", "sterbedatum", "notizen", "eltern", etc.
- */
-export function evaluateCondition(expr: string, ctx: Record<string, any>): boolean {
-  const trimmed = expr.trim();
-  if (!trimmed) return false;
-
-  const compMatch = trimmed.match(/^(.+?)\s*(==|!=|>=|<=|>|<)\s*(.+)$/);
-  if (compMatch) {
-    const rawLhs = compMatch[1].trim();
-    const op = compMatch[2];
-    const rawRhs = compMatch[3].trim();
-
-    const cleanRhs = rawRhs.replace(/^['"]|['"]$/g, '');
-    const lhsLower = rawLhs.toLowerCase();
-    const rhsLower = cleanRhs.toLowerCase();
-
-    // Special aliases
-    if (lhsLower === 'eintrag' && rhsLower === 'implex') {
-      const isImp = Boolean(ctx.implex || ctx.ist_implex);
-      return op === '==' ? isImp : !isImp;
-    }
-    if ((lhsLower === 'gesamtzahl ehen' || lhsLower === 'gesamtzahl_ehen') && !isNaN(Number(rhsLower))) {
-      const ehen = Number(ctx.ehen_gesamt ?? 0);
-      const target = Number(rhsLower);
-      if (op === '==') return ehen === target;
-      if (op === '!=') return ehen !== target;
-      if (op === '>') return ehen > target;
-      if (op === '>=') return ehen >= target;
-      if (op === '<') return ehen < target;
-      if (op === '<=') return ehen <= target;
-    }
-
-    const lhsVal = ctx[lhsLower] ?? ctx[rawLhs];
-    const numLhs = Number(lhsVal);
-    const numRhs = Number(cleanRhs);
-    const bothNumbers = !isNaN(numLhs) && !isNaN(numRhs) && cleanRhs !== '';
-
-    if (bothNumbers) {
-      if (op === '==') return numLhs === numRhs;
-      if (op === '!=') return numLhs !== numRhs;
-      if (op === '>') return numLhs > numRhs;
-      if (op === '>=') return numLhs >= numRhs;
-      if (op === '<') return numLhs < numRhs;
-      if (op === '<=') return numLhs <= numRhs;
-    }
-
-    const strLhs = String(lhsVal ?? '').toLowerCase();
-    if (op === '==') return strLhs === rhsLower;
-    if (op === '!=') return strLhs !== rhsLower;
-    return false;
-  }
-
-  // Unary / truthy check
-  let key = trimmed.toLowerCase();
-  let negate = false;
-  if (key.startsWith('!')) {
-    negate = true;
-    key = key.slice(1).trim();
-  }
-
-  if (key === 'implex' || key === 'ist_implex') {
-    const isImp = Boolean(ctx.implex || ctx.ist_implex);
-    return negate ? !isImp : isImp;
-  }
-  if (key === 'geschieden' || key === 'ist_geschieden') {
-    const isDiv = Boolean(ctx.ist_geschieden || ctx.geschieden || ctx.scheidungsdatum);
-    return negate ? !isDiv : isDiv;
-  }
-
-  const val = ctx[key] ?? ctx[trimmed];
-  const truthy = Boolean(val && val !== '0' && val !== 0 && val !== '');
-  return negate ? !truthy : truthy;
-}
-
-export function evaluateConditionals(template: string, ctx: Record<string, any>): string {
-  const condRegex = /\{(?:if|wenn)\s+([^{}]+?)\}([\s\S]*?)(?:\{(?:else|sonst)\}([\s\S]*?))?\{(?:endif|endwenn)\}/i;
-  let result = template;
-  let iterations = 0;
-  while (condRegex.test(result) && iterations < 30) {
-    result = result.replace(condRegex, (_match, expr, truthyBlock, falsyBlock = '') => {
-      const isTrue = evaluateCondition(expr, ctx);
-      return isTrue ? truthyBlock : falsyBlock;
-    });
-    iterations++;
-  }
-  return result;
-}
-
-interface InternalExportItem {
-  indentLevel: number; // Pure level step: 0 for generation 1, 1 for gen 2, 2 for gen 3...
-  generationNumber: number;
-  isUnknownPlaceholder: boolean;
-  unknownText?: string;
-  person?: ExportPersonInput;
-  henryCode?: string;
-  kekuleId?: number;
-  orderCode?: string;
-  roleLabel?: string;
-  childrenCount: number;
-  isImplex?: boolean;
-  implexNotice?: string;
-}
-
-/**
- * Formats a single spouse using the configured `spouseMask`, supporting genealogy symbols & conditionals.
- */
-function renderSpouseItemLatex(
-  spConn: {
-    id: string;
-    date: string | null;
-    place: string | null;
-    divorce_date: string | null;
-    is_divorced: boolean;
-  },
-  order: number,
-  personMap: Map<string, ExportPersonInput>,
-  spouseMask: string,
-  locale: SupportedLocale,
-  henryMap?: Map<string, { code: string; generation: number }>
-): string {
-  const spPerson = personMap.get(spConn.id);
-  const partnerHenryId = escapeLatexText(henryMap?.get(spConn.id)?.code || '');
-  const partnerName = escapeLatexText(
-    getFullName(spPerson, locale === 'en' ? 'Unknown' : 'Unbekannt')
-  );
-  const mDate = escapeLatexText(spConn.date || '');
-  const mPlace = escapeLatexText(spConn.place || '');
-  const mYear = escapeLatexText(extractYear(spConn.date));
-
-  let heiratsInfo = '';
-  if (mDate && mPlace) {
-    heiratsInfo = `${mDate} in ${mPlace}`;
-  } else if (mDate) {
-    heiratsInfo = mDate;
-  } else if (mPlace) {
-    heiratsInfo = `in ${mPlace}`;
-  }
-
-  // Divorce info with ⚮
-  const isDivorced = Boolean(spConn.is_divorced || spConn.divorce_date);
-  const divDateStr = escapeLatexText(spConn.divorce_date || '');
-  let scheidungInfo = '';
-  if (isDivorced) {
-    scheidungInfo = divDateStr
-      ? (locale === 'en' ? `div. ${divDateStr}` : `gesch. ${divDateStr}`)
-      : (locale === 'en' ? 'divorced' : 'geschieden');
-  }
-
-  let partnerLebensdaten = '';
-  if (spPerson) {
-    const bDate = escapeLatexText(spPerson.birth_date || '');
-    const bPlace = escapeLatexText(spPerson.birth_place || '');
-    const dDate = escapeLatexText(spPerson.death_date || '');
-    const dPlace = escapeLatexText(spPerson.death_place || '');
-    const parts: string[] = [];
-    if (bDate || bPlace) {
-      parts.push(`* ${[bDate, bPlace ? `in ${bPlace}` : ''].filter(Boolean).join(' ')}`);
-    }
-    if (dDate || dPlace) {
-      parts.push(`† ${[dDate, dPlace ? `in ${dPlace}` : ''].filter(Boolean).join(' ')}`);
-    }
-    if (parts.length > 0) {
-      partnerLebensdaten = `(${parts.join(', ')})`;
-    }
-  }
-
-  let partnerEltern = '';
-  if (spPerson) {
-    const { father, mother } = resolveFatherMother(spPerson, personMap);
-    const pNames = [
-      father ? escapeLatexText(getFullName(father, '')) : '',
-      mother ? escapeLatexText(getFullName(mother, '')) : '',
-    ].filter(Boolean);
-    if (pNames.length > 0) {
-      partnerEltern =
-        locale === 'en' ? ` [Parents: ${pNames.join(' \\& ')}]` : ` [Eltern: ${pNames.join(' u. ')}]`;
-    }
-  }
-
-  const spouseCtx: Record<string, any> = {
-    partner_henry_id: partnerHenryId,
-    ehe_nr: order,
-    heiratsinfo: heiratsInfo,
-    heiratsdatum: mDate,
-    heiratsort: mPlace,
-    heiratsjahr: mYear,
-    partner_name: partnerName,
-    partner_lebensdaten: partnerLebensdaten,
-    partner_eltern: partnerEltern,
-    scheidung: scheidungInfo,
-    scheidungsdatum: divDateStr,
-    ist_geschieden: isDivorced,
-    geschieden: isDivorced,
-  };
-
-  const processedMask = evaluateConditionals(spouseMask, spouseCtx);
-
-  let out = processedMask
-    .replace(/\{partner_henry_id\}/g, partnerHenryId)
-    .replace(/\{ehe_nr\}/g, String(order))
-    .replace(/\{heiratsinfo\}/g, heiratsInfo)
-    .replace(/\{heiratsdatum\}/g, mDate)
-    .replace(/\{heiratsort\}/g, mPlace)
-    .replace(/\{heiratsjahr\}/g, mYear)
-    .replace(/\{partner_name\}/g, partnerName)
-    .replace(/\{partner_lebensdaten\}/g, partnerLebensdaten)
-    .replace(/\{partner_eltern\}/g, partnerEltern)
-    .replace(/\{scheidung\}/g, scheidungInfo)
-    .replace(/\{scheidungsdatum\}/g, divDateStr)
-    .replace(/\{ist_geschieden\}/g, isDivorced ? (locale === 'en' ? 'Yes' : 'Ja') : (locale === 'en' ? 'No' : 'Nein'));
-
-  // Clean up punctuation
-  out = out
-    .replace(/:\s*:/g, ':')
-    .replace(/⚭\s*:\s*/g, '⚭ ')
-    .replace(/\s+/g, ' ');
-
-  return out;
-}
-
-function getOrdinalSuffix(n: number): string {
-  if (n === 1) return 'st';
-  if (n === 2) return 'nd';
-  if (n === 3) return 'rd';
-  return 'th';
-}
-
-/**
- * Substitutes template variables and evaluates conditionals for an entry, returning clean LaTeX code.
- */
-function renderPersonEntryLatex(
-  item: InternalExportItem,
-  personMap: Map<string, ExportPersonInput>,
-  options: LatexExportOptions,
-  henryMap?: Map<string, { code: string; generation: number }>
-): string {
-  if (item.isUnknownPlaceholder) {
-    const escapedUnknown = escapeLatexText(item.unknownText || '');
-    return `\\textit{${escapedUnknown}}`;
-  }
-
-  const p = item.person!;
-  const tpl = options.template;
-  const loc = options.locale;
-
-  const givenName = escapeLatexText((p.given_name || '').trim() || 'N.N.');
-  const surname = escapeLatexText((p.surname || '').trim() || 'N.N.');
-  const fullName = escapeLatexText(getFullName(p, 'N.N.'));
-
-  // Sex & Sohn / Tochter designation
-  const sexStr =
-    p.sex === 'M'
-      ? 'm'
-      : p.sex === 'F'
-      ? (loc === 'en' ? 'f' : 'w')
-      : '';
-
-  // Kennzeichnung als Sohn / Tochter:
-  // Für die Ausgangsperson (Gen. 1) oder Personen ohne Eltern im Baum leer lassen,
-  // damit Bedingung {if sohn_tochter} Gen. 1 ohne ', Sohn' ausgibt.
-  const isRootOrHasNoParents =
-    item.generationNumber === 1 ||
-    !p.parent_ids ||
-    p.parent_ids.length === 0;
-
-  const sohnTochter = isRootOrHasNoParents
-    ? ''
-    : p.sex === 'M'
-    ? (loc === 'en' ? 'Son' : 'Sohn')
-    : p.sex === 'F'
-    ? (loc === 'en' ? 'Daughter' : 'Tochter')
-    : (loc === 'en' ? 'Child' : 'Kind');
-
-  const henryId = escapeLatexText(item.henryCode || '');
-  const kekuleId = item.kekuleId !== undefined ? String(item.kekuleId) : '';
-  const orderCode = escapeLatexText(item.orderCode || item.henryCode || kekuleId || '');
-  const genLabel = `Gen. ${item.generationNumber}`;
-  const roleLabel = escapeLatexText(item.roleLabel || '');
-  const xref = escapeLatexText(p.id);
-
-  const bDate = escapeLatexText(p.birth_date || '');
-  const bYear = escapeLatexText(extractYear(p.birth_date));
-  const bPlace = escapeLatexText(p.birth_place || '');
-
-  const chrDate = escapeLatexText(
-    readGedcomSub(p.gedcom_extra, 'CHR', 'DATE') ||
-      readGedcomSub(p.gedcom_extra, 'BAPM', 'DATE')
-  );
-  const chrPlace = escapeLatexText(
-    readGedcomSub(p.gedcom_extra, 'CHR', 'PLAC') ||
-      readGedcomSub(p.gedcom_extra, 'BAPM', 'PLAC')
-  );
-
-  const dDate = escapeLatexText(p.death_date || '');
-  const dYear = escapeLatexText(extractYear(p.death_date));
-  const dPlace = escapeLatexText(p.death_place || '');
-
-  // Genealogical symbols (*, ≈, †) in vital dates block
-  const vitalParts: string[] = [];
-  if (bDate || bPlace) {
-    vitalParts.push(`* ${[bDate, bPlace ? `in ${bPlace}` : ''].filter(Boolean).join(' ')}`);
-  }
-  if (chrDate || chrPlace) {
-    vitalParts.push(`≈ ${[chrDate, chrPlace ? `in ${chrPlace}` : ''].filter(Boolean).join(' ')}`);
-  }
-  if (dDate || dPlace) {
-    vitalParts.push(`† ${[dDate, dPlace ? `in ${dPlace}` : ''].filter(Boolean).join(' ')}`);
-  }
-  const lebensdaten = vitalParts.join(', ');
-
-  const rawOccu = readGedcomSub(p.gedcom_extra, 'OCCU', '_val');
-  const rawReli = readGedcomSub(p.gedcom_extra, 'RELI', '_val');
-  const rawResi =
-    readGedcomSub(p.gedcom_extra, 'RESI', 'PLAC') ||
-    readGedcomSub(p.gedcom_extra, 'RESI', '_val');
-  const rawNote = readGedcomSub(p.gedcom_extra, 'NOTE', '_val');
-
-  const beruf = rawOccu ? `, ${escapeLatexText(rawOccu)}` : '';
-  const religion = rawReli ? `, ${escapeLatexText(rawReli)}` : '';
-  const wohnort = rawResi
-    ? `, ${loc === 'en' ? 'res.' : 'wh.'} ${escapeLatexText(rawResi)}`
-    : '';
-  const notizen = rawNote ? ` \\newline \\footnotesize{Anm.: ${escapeLatexText(rawNote)}}` : '';
-
-  // Parents & Multi-marriage handling
-  const { father, mother } = resolveFatherMother(p, personMap);
-  const fatherName = father ? escapeLatexText(getFullName(father, '')) : '';
-  const motherName = mother ? escapeLatexText(getFullName(mother, '')) : '';
-  const parentNames = [fatherName, motherName].filter(Boolean);
-  const eltern =
-    parentNames.length > 0
-      ? `${loc === 'en' ? 'Parents' : 'Eltern'}: ${parentNames.join(' u. ')}`
-      : '';
-
-  // Ermitteln, ob bei den Eltern eine Mehrfachehe vorliegt und aus welcher Ehe das Kind stammt
-  let parentsMarriageOrder = 0;
-  let hasMultipleMarriagesOnParents = false;
-
-  if (father && mother) {
-    const fSpouses = father.spouses || [];
-    const mSpouses = mother.spouses || [];
-
-    if (fSpouses.length > 1 || mSpouses.length > 1) {
-      hasMultipleMarriagesOnParents = true;
-      const fIdx = fSpouses.findIndex(s => s.id === mother.id);
-      if (fIdx >= 0) {
-        parentsMarriageOrder = fIdx + 1;
-      } else {
-        const mIdx = mSpouses.findIndex(s => s.id === father.id);
-        if (mIdx >= 0) {
-          parentsMarriageOrder = mIdx + 1;
-        }
-      }
-    }
-  } else if (father && !mother) {
-    const fSpouses = father.spouses || [];
-    if (fSpouses.length > 1) {
-      hasMultipleMarriagesOnParents = true;
-    }
-  } else if (mother && !father) {
-    const mSpouses = mother.spouses || [];
-    if (mSpouses.length > 1) {
-      hasMultipleMarriagesOnParents = true;
-    }
-  }
-
-  const elternEheNr = parentsMarriageOrder > 0 ? String(parentsMarriageOrder) : '';
-  const ausEhe =
-    parentsMarriageOrder > 0
-      ? (loc === 'en'
-          ? `from ${parentsMarriageOrder}${getOrdinalSuffix(parentsMarriageOrder)} marriage`
-          : `aus ${parentsMarriageOrder}. Ehe`)
-      : '';
-
-  let elternGenau = eltern;
-  if (parentNames.length > 0 && parentsMarriageOrder > 0) {
-    elternGenau =
-      loc === 'en'
-        ? `Parents (${ausEhe}): ${parentNames.join(' \\& ')}`
-        : `Eltern (${ausEhe}): ${parentNames.join(' u. ')}`;
-  }
-
-  const totalMarriages = (p.spouses || []).length;
-  const anyDivorce = (p.spouses || []).some(s => s.is_divorced || s.divorce_date);
-  const firstDivorce = (p.spouses || []).find(s => s.is_divorced || s.divorce_date);
-  const divorceDateStr = escapeLatexText(firstDivorce?.divorce_date || '');
-  const scheidungStr = anyDivorce
-    ? (divorceDateStr
-        ? `⚮ ${loc === 'en' ? 'div.' : 'gesch.'} ${divorceDateStr}`
-        : (loc === 'en' ? '⚮ divorced' : '⚮ geschieden'))
-    : '';
-
-  const isImplex = Boolean(item.isImplex);
-  const implexNotice = escapeLatexText(item.implexNotice || (isImplex ? 'Implex' : ''));
-
-  const kinderAnzahl = item.childrenCount;
-  const kinderStr =
-    kinderAnzahl > 0
-      ? `${kinderAnzahl} ${
-          kinderAnzahl === 1
-            ? (loc === 'en' ? 'child' : 'Kind')
-            : (loc === 'en' ? 'children' : 'Kinder')
-        }`
-      : '';
-
-  // First partner Henry code for use in entry mask
-  const firstSpouseId = (p.spouses || [])[0]?.id;
-  const firstPartnerHenryId = escapeLatexText(
-    firstSpouseId && henryMap?.get(firstSpouseId)?.code ? henryMap.get(firstSpouseId)!.code : ''
-  );
-
-  // Spouses rendered using spouseMask
-  const spousesRendered = (p.spouses || [])
-    .map((sp, idx) =>
-      renderSpouseItemLatex(sp, idx + 1, personMap, tpl.spouseMask, loc, henryMap)
-    )
-    .join('');
-
-  // Context for conditional evaluations
-  const evalCtx: Record<string, any> = {
-    partner_henry_id: firstPartnerHenryId,
-    henry_id: item.henryCode || '',
-    kekule_id: item.kekuleId ?? '',
-    ordnungs_id: item.orderCode || item.henryCode || item.kekuleId || '',
-    nachname: surname,
-    vorname: givenName,
-    vollname: fullName,
-    sohn_tochter: sohnTochter,
-    geschlecht: sexStr,
-    sex: p.sex || '',
-    generation: item.generationNumber,
-    rolle: roleLabel,
-    xref: p.id,
-    lebensdaten,
-    geburtsdatum: bDate,
-    geburtsjahr: bYear,
-    geburtsort: bPlace,
-    taufdatum: chrDate,
-    taufort: chrPlace,
-    sterbedatum: dDate,
-    sterbejahr: dYear,
-    sterbeort: dPlace,
-    scheidung: scheidungStr,
-    scheidungsdatum: divorceDateStr,
-    ist_geschieden: anyDivorce,
-    geschieden: anyDivorce,
-    ehen_gesamt: totalMarriages,
-    ehe_anzahl: totalMarriages,
-    implex: isImplex,
-    ist_implex: isImplex,
-    eintrag: isImplex ? 'implex' : 'normal',
-    eltern,
-    eltern_genau: elternGenau,
-    aus_ehe: ausEhe,
-    eltern_ehe_nr: elternEheNr,
-    eltern_mehrfachehe: hasMultipleMarriagesOnParents,
-    ist_mehrfachehe_eltern: hasMultipleMarriagesOnParents,
-    vater: fatherName,
-    mutter: motherName,
-    kinder_anzahl: kinderAnzahl,
-    beruf: rawOccu || '',
-    religion: rawReli || '',
-    wohnort: rawResi || '',
-    notizen: rawNote || '',
-  };
-
-  // Evaluate conditionals ({if ...}...{else}...{endif})
-  const evaluatedMask = evaluateConditionals(tpl.entryMask, evalCtx);
-
-  let result = evaluatedMask
-    .replace(/\{partner_henry_id\}/g, firstPartnerHenryId)
-    .replace(/\{henry_id\}/g, henryId)
-    .replace(/\{kekule_id\}/g, kekuleId)
-    .replace(/\{ordnungs_id\}/g, orderCode)
-    .replace(/\{nachname\}/g, surname)
-    .replace(/\{vorname\}/g, givenName)
-    .replace(/\{vollname\}/g, fullName)
-    .replace(/\{sohn_tochter\}/g, sohnTochter)
-    .replace(/\{geschlecht\}/g, sexStr)
-    .replace(/\{generation\}/g, genLabel)
-    .replace(/\{rolle\}/g, roleLabel)
-    .replace(/\{xref\}/g, xref)
-    .replace(/\{lebensdaten\}/g, lebensdaten)
-    .replace(/\{geburtsdatum\}/g, bDate || '–')
-    .replace(/\{geburtsjahr\}/g, bYear || '–')
-    .replace(/\{geburtsort\}/g, bPlace)
-    .replace(/\{taufdatum\}/g, chrDate)
-    .replace(/\{taufort\}/g, chrPlace)
-    .replace(/\{sterbedatum\}/g, dDate || '–')
-    .replace(/\{sterbejahr\}/g, dYear || '–')
-    .replace(/\{sterbeort\}/g, dPlace)
-    .replace(/\{scheidung\}/g, scheidungStr)
-    .replace(/\{scheidungsdatum\}/g, divorceDateStr)
-    .replace(/\{ist_geschieden\}/g, anyDivorce ? (loc === 'en' ? 'Yes' : 'Ja') : (loc === 'en' ? 'No' : 'Nein'))
-    .replace(/\{ehen_gesamt\}/g, String(totalMarriages))
-    .replace(/\{ehepartner\}/g, spousesRendered)
-    .replace(/\{eltern_genau\}/g, elternGenau)
-    .replace(/\{aus_ehe\}/g, ausEhe)
-    .replace(/\{eltern_ehe_nr\}/g, elternEheNr)
-    .replace(/\{eltern\}/g, eltern)
-    .replace(/\{vater\}/g, fatherName)
-    .replace(/\{mutter\}/g, motherName)
-    .replace(/\{kinder_anzahl\}/g, kinderStr)
-    .replace(/\{beruf\}/g, beruf)
-    .replace(/\{religion\}/g, religion)
-    .replace(/\{wohnort\}/g, wohnort)
-    .replace(/\{notizen\}/g, notizen)
-    .replace(/\{implex\}/g, implexNotice)
-    .replace(/\{ist_implex\}/g, isImplex ? (loc === 'en' ? 'Yes' : 'Ja') : (loc === 'en' ? 'No' : 'Nein'));
-
-  // Clean up empty brackets when {henry_id} or {kekule_id} is not present in custom mode
-  result = result
-    .replace(/\[\s*\]\s*/g, '')
-    .replace(/\\textbf\{\s*\}\s*/g, '')
-    .replace(/\(\s*\)\s*/g, '')
-    .replace(/\s+—\s*$/g, '')
-    .trim();
-
-  if (
-    options.mode === 'custom' &&
-    options.direction === 'ancestors' &&
-    item.indentLevel > 0 &&
-    roleLabel &&
-    !tpl.entryMask.includes('{rolle}')
-  ) {
-    const kekuleBadge = kekuleId && !tpl.entryMask.includes('{kekule_id}') ? ` [${kekuleId}]` : '';
-    result = `\\textbf{${roleLabel}${kekuleBadge}:} ${result}`;
-  }
-
-  return result;
-}
-
-/**
- * Converts a rendered LaTeX entry string into clean HTML for the visual preview sheet.
- */
-function convertLatexEntryToPreviewHtml(latexStr: string): string {
-  let html = latexStr
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
-
-  // Unescape LaTeX escaped symbols for preview display
-  html = html
-    .replace(/\\&amp;/g, '&amp;')
-    .replace(/\\%/g, '%')
-    .replace(/\\\$/g, '$')
-    .replace(/\\#/g, '#')
-    .replace(/\\_/g, '_')
-    .replace(/\\\{/g, '{')
-    .replace(/\\\}/g, '}');
-
-  // Math symbols
-  html = html
-    .replace(/\$\\infty\$/g, '⚭')
-    .replace(/\\infty\\?\s*/g, '⚭ ')
-    .replace(/\$\\dagger\$/g, '†')
-    .replace(/\\dagger\\?\s*/g, '† ')
-    .replace(/\$\\approx\$/g, '≈')
-    .replace(/\\rightarrow\\?\s*/g, '→ ');
-
-  // Formatting commands (iteratively resolve nested single-level braces)
-  for (let pass = 0; pass < 3; pass++) {
-    html = html
-      .replace(/\\textbf\{([^{}]*)\}/g, '<strong>$1</strong>')
-      .replace(/\\textit\{([^{}]*)\}/g, '<em>$1</em>')
-      .replace(/\\textsc\{([^{}]*)\}/g, '<span style="font-variant: small-caps;">$1</span>')
-      .replace(/\\underline\{([^{}]*)\}/g, '<u>$1</u>')
-      .replace(/\\footnotesize\{([^{}]*)\}/g, '<span style="font-size: 0.85em; color: #475569;">$1</span>')
-      .replace(/\\small\{([^{}]*)\}/g, '<span style="font-size: 0.92em;">$1</span>')
-      .replace(/\\large\{([^{}]*)\}/g, '<span style="font-size: 1.12em;">$1</span>');
-  }
-
-  html = html
-    .replace(/\\newline\s*/g, '<br/>')
-    .replace(/\\quad\s*/g, '&emsp;');
-
-  return html;
-}
-
-/**
- * Generates the central preamble and format options block for the overarching master document.
- * Strictly adheres to the reference Stammfolgen layout: scrbook, 2.5/3cm margins,
- * \genIndentBase = 0.35cm, dynamic vertical sep distances (\genSepDeeper, \genSepSame, \genSepShallower, \genSepMarriage),
- * and the macros \genealogieEintrag[4] and \genealogieEhe[3].
- */
-function generateMasterPreamble(
-  options: LatexExportOptions,
-  docTitle?: string,
-  docSubtitle?: string
-): string {
-  const tpl = options.template;
-  const docClass = tpl.documentClass || 'scrbook';
-  const paper = tpl.paperSize || 'a4paper';
-  const fontSize = tpl.fontSize || '11pt';
-  const localeLang = getLocaleDefinition(options.locale).latexBabel;
-
-  const lines: string[] = [];
-  lines.push(`% ============================================================================`);
-  lines.push(`% Übergeordnete Klammer-Datei (Master): Formatierungsoptionen & Gesamtstruktur`);
-  lines.push(`% Generiert mit Stammbaum - Druckformat Export (LaTeX)`);
-  lines.push(`% Vorlage: ${tpl.name}`);
-  lines.push(`% ============================================================================`);
-  lines.push(`\\documentclass[${fontSize},${paper},${localeLang}]{${docClass}}`);
-  lines.push(`\\usepackage[utf8]{inputenc}`);
-  lines.push(`\\usepackage[T1]{fontenc}`);
-  lines.push(`\\usepackage{lmodern}`);
-  lines.push(`\\usepackage{babel}`);
-  lines.push(`\\usepackage{geometry}`);
-  lines.push(`\\geometry{left=2.5cm,right=2.5cm,top=3cm,bottom=3cm}`);
-  lines.push(`\\usepackage{graphicx}`);
-  lines.push(`\\usepackage{hyperref}`);
-  lines.push(`\\usepackage{makecell}`);
-  lines.push(`\\usepackage{newunicodechar}`);
-  lines.push(``);
-  lines.push(`% --- Genealogische Zeichen (*, †, ≈, ⚭, ⚮) Deklaration für LaTeX ---`);
-  lines.push(`\\DeclareUnicodeCharacter{2020}{\\ensuremath{\\dagger}}% †`);
-  lines.push(`\\DeclareUnicodeCharacter{2248}{\\ensuremath{\\approx}}% ≈`);
-  lines.push(`\\DeclareUnicodeCharacter{26AD}{\\ensuremath{\\infty}}% ⚭ (Ehe / Heirat)`);
-  lines.push(`\\DeclareUnicodeCharacter{26AE}{\\ensuremath{\\circ\\vert\\circ}}% ⚮ (Scheidung)`);
-  lines.push(``);
-  lines.push(`% =============================================================`);
-  lines.push(`% ZENTRALE FORMATIERUNGS-EINSTELLUNGEN FÜR DIE STAMMFOLGEN`);
-  lines.push(`% =============================================================`);
-  lines.push(`\\newlength{\\genIndentBase}`);
-  lines.push(`\\setlength{\\genIndentBase}{0.35cm}    % Grund-Einzug pro Generationsebene`);
-  lines.push(``);
-  lines.push(`% --- Vertikale Abstände zwischen den Einträgen ---`);
-  lines.push(`\\newlength{\\genSepDeeper}`);
-  lines.push(`\\setlength{\\genSepDeeper}{0.30em}     % Abstand, wenn Generation erhöht wird (zu Kindern)`);
-  lines.push(``);
-  lines.push(`\\newlength{\\genSepSame}`);
-  lines.push(`\\setlength{\\genSepSame}{0.20em}       % Abstand, wenn Generation gleich bleibt (zu Geschwistern)`);
-  lines.push(``);
-  lines.push(`\\newlength{\\genSepShallower}`);
-  lines.push(`\\setlength{\\genSepShallower}{0.55em}  % Abstand bei Rücksprung zu früherer Generation`);
-  lines.push(``);
-  lines.push(`\\newlength{\\genSepMarriage}`);
-  lines.push(`\\setlength{\\genSepMarriage}{0.15em}   % Abstand nach/zwischen Eheeinträgen`);
-  lines.push(``);
-  lines.push(`% Makro für Personeneinträge: #1=Generation, #2=Henry-Code, #3=Name, #4=Daten & Details`);
-  lines.push(`\\newcommand{\\genealogieEintrag}[4]{%`);
-  lines.push(`\t\\begingroup`);
-  lines.push(`\t\\edef\\currentIndent{\\the\\dimexpr #1\\genIndentBase\\relax}%`);
-  lines.push(`\t\\edef\\currentHang{\\the\\dimexpr #1\\genIndentBase + 1.1cm\\relax}%`);
-  lines.push(`\t\\noindent\\hangindent=\\currentHang\\hangafter=1\\hspace*{\\currentIndent}%`);
-  lines.push(`\t#2 \\textbf{#3}#4\\par%`);
-  lines.push(`\t\\endgroup`);
-  lines.push(`}`);
-  lines.push(``);
-  lines.push(`% Makro für Eheeinträge: #1=Generation, #2=Ehenummer, #3=Partner & Details`);
-  lines.push(`\\newcommand{\\genealogieEhe}[3]{%`);
-  lines.push(`\t\\begingroup`);
-  lines.push(`\t\\edef\\currentIndent{\\the\\dimexpr #1\\genIndentBase + 0.3cm\\relax}%`);
-  lines.push(`\t\\edef\\currentHang{\\the\\dimexpr #1\\genIndentBase + 1.0cm\\relax}%`);
-  lines.push(`\t\\noindent\\hangindent=\\currentHang\\hangafter=1\\hspace*{\\currentIndent}%`);
-  lines.push(`\t(#2) #3\\par%`);
-  lines.push(`\t\\endgroup`);
-  lines.push(`}`);
-  lines.push(``);
-  lines.push(`% Kompatibilität für ältere Vorlagenaufrufe`);
-  lines.push(`\\newcommand{\\stammbaumeintrag}[2]{\\genealogieEintrag{#1}{}{}{#2}}`);
-  lines.push(``);
-  lines.push(`\\begin{document}`);
-
-  if (tpl.includeHeaderInfo && docTitle?.trim()) {
-    lines.push(`\\section*{${escapeLatexText(docTitle)}}`);
-    if (docSubtitle?.trim()) {
-      lines.push(`\\textbf{${escapeLatexText(docSubtitle)}}\\\\[6pt]`);
-    }
-    lines.push(`\\hrule\\vspace{8pt}`);
-    lines.push(``);
-  }
-
-  return lines.join('\n');
-}
-
-/**
- * Builds the standalone content for a specific file (proband main tree or branch),
- * utilizing \genealogieEintrag and \genealogieEhe with dynamic vertical spacing
- * and clean variable evaluation.
- */
-function buildLatexContentAndPreview(
-  items: InternalExportItem[],
-  personMap: Map<string, ExportPersonInput>,
-  options: LatexExportOptions,
-  docTitle?: string,
-  docSubtitle?: string,
-  henryMap?: Map<string, { code: string; generation: number }>
-): { entryCommands: string[]; previewHtml: string } {
-  const tpl = options.template;
-  const entryCommands: string[] = [];
-  const previewRowsHtml: string[] = [];
-  let prevIndent = -1;
-
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    let sepClass = '';
-
-    // Vertikaler Abstand je nach Generationssprung
-    if (prevIndent >= 0) {
-      if (item.indentLevel > prevIndent) {
-        entryCommands.push('\\vspace{\\genSepDeeper}');
-        sepClass = ' sep-deeper';
-      } else if (item.indentLevel === prevIndent) {
-        entryCommands.push('\\vspace{\\genSepSame}');
-        sepClass = ' sep-same';
-      } else {
-        entryCommands.push('\\vspace{\\genSepShallower}');
-        sepClass = ' sep-shallower';
-      }
-    }
-    prevIndent = item.indentLevel;
-
-    if (item.isUnknownPlaceholder) {
-      const escapedUnknown = escapeLatexText(item.unknownText || '');
-      entryCommands.push(`\\genealogieEintrag{${item.indentLevel}}{}{}{\\textit{${escapedUnknown}}}`);
-      previewRowsHtml.push(
-        `<div class="latex-preview-entry is-unknown-entry${sepClass}" style="--indent-step: ${item.indentLevel};">
-          <span class="latex-preview-level-marker">Gen. ${item.generationNumber}</span>
-          <div class="latex-preview-entry-body"><em>${escapedUnknown}</em></div>
-        </div>`
-      );
-      continue;
-    }
-
-    const p = item.person!;
-    const surname = escapeLatexText((p.surname || '').trim() || 'N.N.');
-    const givenName = escapeLatexText((p.given_name || '').trim() || 'N.N.');
-
-    const maskContainsName =
-      tpl.entryMask.includes('{nachname}') || tpl.entryMask.includes('{vollname}');
-    const maskContainsSpouse = tpl.entryMask.includes('{ehepartner}');
-
-    if (maskContainsName) {
-      // Benutzerdefiniertes Masken-Layout mit individuellem Namensaufbau
-      const entryLatex = renderPersonEntryLatex(item, personMap, options, henryMap);
-      entryCommands.push(`\\genealogieEintrag{${item.indentLevel}}{}{}{${entryLatex}}`);
-
-      const rowHtml = convertLatexEntryToPreviewHtml(entryLatex);
-      const implexClass = item.isImplex ? ' is-implex-entry' : '';
-      previewRowsHtml.push(
-        `<div class="latex-preview-entry${implexClass}${sepClass}" style="--indent-step: ${item.indentLevel};">
-          <span class="latex-preview-level-marker">Gen. ${item.generationNumber}</span>
-          <div class="latex-preview-entry-body">${rowHtml}</div>
-        </div>`
-      );
-    } else {
-      // Standard Referenz-Format: #1=Gen, #2=Code, #3=Name (fett), #4=Details
-      let code = '';
-      if (item.henryCode) {
-        code = `[${escapeLatexText(item.henryCode)}] `;
-      } else if (item.kekuleId !== undefined && item.kekuleId !== null) {
-        code = `(${item.kekuleId}) `;
-      } else if (item.orderCode) {
-        code = `[${escapeLatexText(item.orderCode)}] `;
-      }
-
-      const name = `${surname}, ${givenName}`;
-      const detailsLatex = renderPersonEntryLatex(item, personMap, options, henryMap);
-      let detailsStr = '';
-      if (detailsLatex) {
-        detailsStr = detailsLatex.startsWith(',') || detailsLatex.startsWith('.')
-          ? detailsLatex
-          : ` ${detailsLatex}`;
-      }
-
-      entryCommands.push(`\\genealogieEintrag{${item.indentLevel}}{${code}}{${name}}{${detailsStr}}`);
-
-      const previewCode = code;
-      const previewName = `<strong>${name}</strong>`;
-      const previewDetails = convertLatexEntryToPreviewHtml(detailsStr);
-      const implexClass = item.isImplex ? ' is-implex-entry' : '';
-
-      previewRowsHtml.push(
-        `<div class="latex-preview-entry${implexClass}${sepClass}" style="--indent-step: ${item.indentLevel};">
-          <span class="latex-preview-level-marker">Gen. ${item.generationNumber}</span>
-          <div class="latex-preview-entry-body">${previewCode}${previewName}${previewDetails}</div>
-        </div>`
-      );
-
-      // Separate Eheeinträge mit \genealogieEhe, falls nicht in entryMask eingebettet
-      if (!maskContainsSpouse && p.spouses && p.spouses.length > 0) {
-        p.spouses.forEach((sp, spIdx) => {
-          const spOrder = spIdx + 1;
-          const spLatex = renderSpouseItemLatex(
-            sp,
-            spOrder,
-            personMap,
-            tpl.spouseMask,
-            options.locale,
-            henryMap
-          );
-          entryCommands.push(`\\vspace{\\genSepMarriage}`);
-          entryCommands.push(`\\genealogieEhe{${item.indentLevel}}{${spOrder}}{${spLatex}}`);
-
-          const spPreview = convertLatexEntryToPreviewHtml(spLatex);
-          previewRowsHtml.push(
-            `<div class="latex-preview-marriage" style="--indent-step: ${item.indentLevel};">
-              <span class="ehe-nr">(${spOrder})</span> <span class="ehe-details">${spPreview}</span>
-            </div>`
-          );
+): Map<string, GlobalStammahnEntry> {
+  const lookup = new Map<string, GlobalStammahnEntry>();
+  const personMap = new Map(domainPersons.map(p => [p.id, p]));
+
+  for (const ra of rootAncestors) {
+    const doc = createSyntheticDoc(ra.person_id, lineagePolicy);
+    const resolved = resolveGenealogyTree(doc, domainPersons, locale, ra.person_id, doc);
+    const rootPerson = personMap.get(ra.person_id);
+    const raName = [rootPerson?.given_name || ra.given_name, rootPerson?.surname || ra.surname]
+      .filter(Boolean)
+      .join(' ')
+      .trim() || ra.person_id;
+
+    for (const [pid, meta] of resolved.resolvedMeta.entries()) {
+      if (!lookup.has(pid)) {
+        const finalCode = adjustStartCode(meta.henryCode, ra.starting_code || '1');
+        lookup.set(pid, {
+          henryCode: finalCode,
+          rootAncestorId: ra.person_id,
+          rootAncestorName: raName,
+          labelKey: `pers:${sanitizeLatexLabel(finalCode)}`,
         });
       }
     }
   }
+  return lookup;
+}
 
-  const previewHtml = `
-    <div class="latex-sheet-page">
-      ${
-        tpl.includeHeaderInfo && docTitle?.trim()
-          ? `<div class="latex-sheet-header">
-              <h1>${escapeLatexText(docTitle).replace(/\\&/g, '&').replace(/\\_/g, '_')}</h1>
-              ${docSubtitle?.trim() ? `<p class="latex-sheet-subtitle">${escapeLatexText(docSubtitle).replace(/\\&/g, '&').replace(/\\_/g, '_')}</p>` : ''}
-              <hr/>
-            </div>`
-          : ''
+interface ResolvedExportNode {
+  person: Person;
+  henryCode: string; // Empty when non-Stammahn
+  kekuleCode: string;
+  orderCode: string; // henryCode or kekuleCode
+  zweigCode: string; // Internal tree path for sorting
+  generation: number;
+  parentId: string | null;
+  childrenIds: string[];
+  labelKey: string;
+  implexNoticeLatex: string;
+  implexNoticeHtml: string;
+  bridgeNoticeLatex: string;
+  bridgeNoticeHtml: string;
+  isBridgeStop?: boolean;
+  roleLabel?: string;
+}
+
+interface UnifiedTreeBuild {
+  nodesById: Map<string, ResolvedExportNode>;
+  orderedRootId: string;
+  unknownBranchesStopped: number;
+  bridgeRefsCount: number;
+  isStammahnExport: boolean;
+  designSubtreeRootIds: Set<string>;
+}
+
+function collectDesignTreeNodes(
+  bundle: DesignTreeBundle,
+  domainPersons: Person[],
+  locale: SupportedLocale
+): {
+  resolved: ResolvedLineageResult;
+  subtreeAnchorIds: Set<string>;
+  extraMeta: Map<string, { henryCode: string; generation: number; childrenIds: string[]; parentId: string | null }>;
+} {
+  const masterResolved = resolveGenealogyTree(
+    bundle.rootDocument,
+    domainPersons,
+    locale,
+    bundle.rootDocument.rootPersonId,
+    bundle.rootDocument
+  );
+  const subtreeAnchorIds = new Set<string>();
+  const extraMeta = new Map<
+    string,
+    { henryCode: string; generation: number; childrenIds: string[]; parentId: string | null }
+  >();
+
+  for (const [pid, meta] of masterResolved.resolvedMeta.entries()) {
+    extraMeta.set(pid, {
+      henryCode: meta.henryCode,
+      generation: meta.generation,
+      childrenIds: [...meta.childrenIds],
+      parentId: meta.resolvedParentId,
+    });
+  }
+
+  const visitedDocs = new Set<string>([bundle.rootDocument.id]);
+  const mountQueue = Object.values(bundle.rootDocument.subtreeMounts || {});
+
+  while (mountQueue.length > 0) {
+    const mount = mountQueue.shift()!;
+    subtreeAnchorIds.add(mount.anchorPersonId);
+    const subDoc = bundle.subDocuments[mount.subDocumentId];
+    if (!subDoc || visitedDocs.has(subDoc.id)) continue;
+    visitedDocs.add(subDoc.id);
+
+    const subResolved = resolveGenealogyTree(
+      subDoc,
+      domainPersons,
+      locale,
+      bundle.rootDocument.rootPersonId,
+      bundle.rootDocument
+    );
+    for (const [pid, meta] of subResolved.resolvedMeta.entries()) {
+      const existing = extraMeta.get(pid);
+      if (!existing) {
+        extraMeta.set(pid, {
+          henryCode: meta.henryCode,
+          generation: meta.generation,
+          childrenIds: [...meta.childrenIds],
+          parentId: meta.resolvedParentId,
+        });
+      } else {
+        for (const cid of meta.childrenIds) {
+          if (!existing.childrenIds.includes(cid)) existing.childrenIds.push(cid);
+        }
       }
-      <div class="latex-sheet-content">
-        ${previewRowsHtml.join('\n')}
+    }
+    for (const nestedMount of Object.values(subDoc.subtreeMounts || {})) {
+      mountQueue.push(nestedMount);
+    }
+  }
+
+  return { resolved: masterResolved, subtreeAnchorIds, extraMeta };
+}
+
+function buildUnifiedExportTree(
+  domainPersons: Person[],
+  options: LatexExportOptions,
+  globalStammahnLookup: Map<string, GlobalStammahnEntry>
+): UnifiedTreeBuild {
+  const personMap = new Map(domainPersons.map(p => [p.id, p]));
+  const nodesById = new Map<string, ResolvedExportNode>();
+  let unknownBranchesStopped = 0;
+  let bridgeRefsCount = 0;
+
+  const isStammahnExport =
+    options.sourceMode === 'design_document' || options.sourceMode === 'root_ancestor';
+
+  // Ancestor mode (Kekule)
+  if (options.sourceMode === 'custom_person' && options.direction === 'ancestors') {
+    const startPerson = personMap.get(options.rootPersonId);
+    if (!startPerson) {
+      return {
+        nodesById,
+        orderedRootId: options.rootPersonId,
+        unknownBranchesStopped: 0,
+        bridgeRefsCount: 0,
+        isStammahnExport: false,
+        designSubtreeRootIds: new Set(),
+      };
+    }
+
+    const queue: Array<{ personId: string; kekule: number; gen: number; role: string }> = [
+      { personId: startPerson.id, kekule: 1, gen: 1, role: 'Proband' },
+    ];
+    const visited = new Set<string>();
+
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      if (cur.gen > options.maxGenerations) continue;
+      const p = personMap.get(cur.personId);
+      if (!p) continue;
+
+      const nodeKey = `${p.id}#k${cur.kekule}`;
+      const isImplex = visited.has(p.id);
+      visited.add(p.id);
+
+      const bridge = globalStammahnLookup.get(p.id);
+      if (bridge) bridgeRefsCount++;
+
+      const kekStr = String(cur.kekule);
+      const labelKey = bridge ? bridge.labelKey : `pers:k${kekStr}_${sanitizeLatexLabel(p.id)}`;
+
+      nodesById.set(nodeKey, {
+        person: p,
+        henryCode: bridge?.henryCode || '',
+        kekuleCode: kekStr,
+        orderCode: kekStr,
+        zweigCode: kekStr,
+        generation: cur.gen,
+        parentId: null,
+        childrenIds: [],
+        labelKey,
+        implexNoticeLatex: isImplex
+          ? `[Implex: bereits unter Kekulé ${kekStr}]`
+          : '',
+        implexNoticeHtml: isImplex ? `[Implex]` : '',
+        bridgeNoticeLatex: bridge
+          ? `\\textrightarrow~Hauptstamm ${escapeLatexText(bridge.rootAncestorName)}: [${escapeLatexText(bridge.henryCode)}], S.~\\pageref{${bridge.labelKey}}`
+          : '',
+        bridgeNoticeHtml: bridge
+          ? `→ Hauptstamm ${escapeHtmlText(bridge.rootAncestorName)}: [${escapeHtmlText(bridge.henryCode)}]`
+          : '',
+        roleLabel: cur.role,
+      });
+
+      if (!isImplex && cur.gen < options.maxGenerations) {
+        const parents = (p.parent_ids || []).map(id => personMap.get(id)).filter(Boolean) as Person[];
+        const father = parents.find(x => x.sex === 'M') || (p.father_id ? personMap.get(p.father_id) : undefined);
+        const mother = parents.find(x => x.sex === 'F') || (p.mother_id ? personMap.get(p.mother_id) : undefined);
+        if (!father) unknownBranchesStopped++;
+        if (!mother) unknownBranchesStopped++;
+        if (father) {
+          queue.push({
+            personId: father.id,
+            kekule: cur.kekule * 2,
+            gen: cur.gen + 1,
+            role: options.locale === 'en' ? 'Father' : 'Vater',
+          });
+        }
+        if (mother) {
+          queue.push({
+            personId: mother.id,
+            kekule: cur.kekule * 2 + 1,
+            gen: cur.gen + 1,
+            role: options.locale === 'en' ? 'Mother' : 'Mutter',
+          });
+        }
+      }
+    }
+
+    return {
+      nodesById,
+      orderedRootId: `${startPerson.id}#k1`,
+      unknownBranchesStopped,
+      bridgeRefsCount,
+      isStammahnExport: false,
+      designSubtreeRootIds: new Set(),
+    };
+  }
+
+  // Descendants mode (Design Studio, Root Ancestor, or Custom Person Side-Lineage)
+  let resolved: ResolvedLineageResult;
+  const designSubtreeRootIds = new Set<string>();
+  let combinedMeta: Map<
+    string,
+    { henryCode: string; generation: number; childrenIds: string[]; parentId: string | null }
+  >;
+
+  if (options.sourceMode === 'design_document' && options.designBundle) {
+    const collected = collectDesignTreeNodes(options.designBundle, domainPersons, options.locale);
+    resolved = collected.resolved;
+    combinedMeta = collected.extraMeta;
+    for (const aid of collected.subtreeAnchorIds) designSubtreeRootIds.add(aid);
+  } else {
+    const doc = createSyntheticDoc(options.rootPersonId, options.lineagePolicy);
+    resolved = resolveGenealogyTree(doc, domainPersons, options.locale, options.rootPersonId, doc);
+    combinedMeta = new Map();
+    for (const [pid, meta] of resolved.resolvedMeta.entries()) {
+      combinedMeta.set(pid, {
+        henryCode: meta.henryCode,
+        generation: meta.generation,
+        childrenIds: [...meta.childrenIds],
+        parentId: meta.resolvedParentId,
+      });
+    }
+  }
+
+  const rootId = resolved.rootPersonId;
+
+  // Traverse in genealogical order up to maxGenerations
+  const visit = (personId: string, parentId: string | null, zweigPath: string) => {
+    const meta = combinedMeta.get(personId);
+    const resMeta = resolved.resolvedMeta.get(personId);
+    const person = personMap.get(personId);
+    if (!meta || !person) return;
+    if (meta.generation > options.maxGenerations) return;
+
+    const realHenry = isStammahnExport
+      ? adjustStartCode(meta.henryCode, options.startCode)
+      : '';
+    const bridge = !isStammahnExport ? globalStammahnLookup.get(personId) : undefined;
+    if (bridge) bridgeRefsCount++;
+
+    const labelKey = isStammahnExport
+      ? `pers:${sanitizeLatexLabel(realHenry || personId)}`
+      : bridge
+        ? bridge.labelKey
+        : `pers:${sanitizeLatexLabel(personId)}`;
+
+    // Implex notice from Design Studio / resolver
+    const implexBadges = resMeta?.implexBadges || [];
+    const activeImplex = implexBadges.find(b => !b.isBranchAttachedHere);
+    const implexNoticeLatex = activeImplex
+      ? `[Implex: Weiterführung unter [${escapeLatexText(activeImplex.partnerCode)}] ${escapeLatexText(activeImplex.partnerName)}, S.~\\pageref{pers:${sanitizeLatexLabel(activeImplex.partnerCode)}}]`
+      : '';
+    const implexNoticeHtml = activeImplex
+      ? `[Implex: → [${escapeHtmlText(activeImplex.partnerCode)}] ${escapeHtmlText(activeImplex.partnerName)}]`
+      : '';
+
+    const bridgeNoticeLatex = bridge
+      ? `\\textrightarrow~Hauptstamm ${escapeLatexText(bridge.rootAncestorName)}: [${escapeLatexText(bridge.henryCode)}], S.~\\pageref{${bridge.labelKey}}`
+      : '';
+    const bridgeNoticeHtml = bridge
+      ? `→ Hauptstamm ${escapeHtmlText(bridge.rootAncestorName)}: [${escapeHtmlText(bridge.henryCode)}]`
+      : '';
+
+    // In custom_person mode, if this person is already covered in the Stammahn tree (and isn't the root),
+    // we bridge-reference them and do not duplicate their entire Stammahn subtree.
+    const isBridgeStop = Boolean(bridge && personId !== rootId);
+    const validChildren = isBridgeStop
+      ? []
+      : meta.childrenIds.filter(cid => {
+          const cm = combinedMeta.get(cid);
+          return cm && cm.generation <= options.maxGenerations;
+        });
+
+    nodesById.set(personId, {
+      person,
+      henryCode: realHenry,
+      kekuleCode: '',
+      orderCode: realHenry,
+      zweigCode: zweigPath,
+      generation: meta.generation,
+      parentId,
+      childrenIds: validChildren,
+      labelKey,
+      implexNoticeLatex,
+      implexNoticeHtml,
+      bridgeNoticeLatex,
+      bridgeNoticeHtml,
+      isBridgeStop,
+    });
+
+    validChildren.forEach((cid, idx) => {
+      visit(cid, personId, `${zweigPath}.${idx + 1}`);
+    });
+  };
+
+  visit(rootId, null, '1');
+
+  return {
+    nodesById,
+    orderedRootId: rootId,
+    unknownBranchesStopped,
+    bridgeRefsCount,
+    isStammahnExport,
+    designSubtreeRootIds,
+  };
+}
+
+function buildPersonEvalContext(
+  node: ResolvedExportNode,
+  nodesById: Map<string, ResolvedExportNode>,
+  options: LatexExportOptions,
+  globalStammahnLookup: Map<string, GlobalStammahnEntry>,
+  branchContinuationTarget: DetectedBranchInfo | undefined,
+  spouseMaskAst: AstNode[],
+  allPersonMap: Map<string, Person>,
+  emitIndex: boolean
+): {
+  rawVars: Record<string, string>;
+  latexVars: Record<string, string>;
+  previewVars: Record<string, string>;
+  renderedSpousesLatex: string[];
+  renderedSpousesHtml: string[];
+  indexCommandsLatex: string;
+} {
+  const p = node.person;
+  const surname = (p.surname || '').trim();
+  const givenName = (p.given_name || '').trim();
+  const fullName = [givenName, surname].filter(Boolean).join(' ') || 'N.N.';
+
+  const birthDate = (p.birth_date || '').trim();
+  const birthPlace = (p.birth_place || '').trim();
+  const deathDate = (p.death_date || '').trim();
+  const deathPlace = (p.death_place || '').trim();
+  const birthYear = extractYear(birthDate);
+  const deathYear = extractYear(deathDate);
+  const lifeDates = formatLifeDatesText(birthDate, birthPlace, deathDate, deathPlace, options.locale);
+
+  const bap = readGedcomTagValue(p, 'BAPM');
+  const chr = readGedcomTagValue(p, 'CHR');
+  const bapDate = bap.date || chr.date;
+  const bapPlace = bap.place || chr.place;
+  const baptismBlock =
+    bapDate || bapPlace ? `~ ${[bapDate, bapPlace ? `in ${bapPlace}` : ''].filter(Boolean).join(' ')}` : '';
+
+  const bur = readGedcomTagValue(p, 'BURI');
+  const burialBlock =
+    bur.date || bur.place ? `▭ ${[bur.date, bur.place ? `in ${bur.place}` : ''].filter(Boolean).join(' ')}` : '';
+
+  const occu = readPersonOccupation(p);
+  const reli = readGedcomTagValue(p, 'RELI').text;
+  const resi = readGedcomTagValue(p, 'RESI');
+  const residence = [resi.place, resi.text].filter(Boolean).join(', ');
+  const notes = readPersonNotes(p);
+
+  const genLabel = `Gen. ${node.generation}`;
+  const genRoman = toRoman(node.generation);
+  const genBadge = options.template.showGenerationBadge ? `[${genLabel}]` : '';
+  const sonDaughter =
+    p.sex === 'M'
+      ? options.locale === 'en'
+        ? 'Son'
+        : 'Sohn'
+      : p.sex === 'F'
+        ? options.locale === 'en'
+          ? 'Daughter'
+          : 'Tochter'
+        : '';
+
+  // Combined stamm_verweis: either branch continuation or bridge ref
+  let stammVerweisLatex = '';
+  let stammVerweisHtml = '';
+  if (branchContinuationTarget) {
+    const secRef = `stamm:${branchContinuationTarget.safeFileCode}`;
+    const labelText =
+      options.locale === 'en'
+        ? `Branch continues in section “Branch [${escapeLatexText(branchContinuationTarget.code)}]”, p.~\\pageref{${secRef}}`
+        : `Stamm wird fortgeführt in Abschnitt „Stamm [${escapeLatexText(branchContinuationTarget.code)}]“, S.~\\pageref{${secRef}}`;
+    stammVerweisLatex = `\\textrightarrow~${labelText}`;
+    stammVerweisHtml = `<span class="preview-branch-link" data-target-branch="${escapeHtmlText(branchContinuationTarget.fileName)}">→ Stamm [${escapeHtmlText(branchContinuationTarget.code)}] (${escapeHtmlText(branchContinuationTarget.fileName)})</span>`;
+  } else if (node.bridgeNoticeLatex) {
+    stammVerweisLatex = node.bridgeNoticeLatex;
+    stammVerweisHtml = node.bridgeNoticeHtml;
+  }
+
+  // Render spouses via spouseMaskAst
+  const renderedSpousesLatex: string[] = [];
+  const renderedSpousesHtml: string[] = [];
+  const spouseIndexPlaces = new Set<string>();
+  const spouseIndexNames = new Set<string>();
+
+  const spouses = p.spouses || [];
+  spouses.forEach((sp, idx) => {
+    const spPerson = allPersonMap.get(sp.id);
+    const spSurname = (spPerson?.surname || '').trim();
+    const spGiven = (spPerson?.given_name || '').trim();
+    const spName = [spGiven, spSurname].filter(Boolean).join(' ') || 'N.N.';
+    const spLife = formatLifeDatesText(
+      spPerson?.birth_date,
+      spPerson?.birth_place,
+      spPerson?.death_date,
+      spPerson?.death_place,
+      options.locale
+    );
+    const spOccu = spPerson ? readPersonOccupation(spPerson) : '';
+    const mDate = (sp.date || '').trim();
+    const mPlace = (sp.place || '').trim();
+    const hochzeit =
+      mDate || mPlace ? `⚭ ${[mDate, mPlace ? `in ${mPlace}` : ''].filter(Boolean).join(' ')}` : '';
+    const dDate = (sp.divorce_date || '').trim();
+    const dPlace = '';
+    const scheidung = dDate ? `⚮ ${dDate}` : sp.is_divorced ? '⚮' : '';
+
+    if (spSurname) spouseIndexNames.add(`${spSurname}, ${spGiven || 'N.N.'}`);
+    if (mPlace) spouseIndexPlaces.add(mPlace);
+    if (spPerson?.birth_place) spouseIndexPlaces.add(spPerson.birth_place);
+    if (spPerson?.death_place) spouseIndexPlaces.add(spPerson.death_place);
+
+    // Bridge or internal ref for spouse
+    const spInTree = nodesById.get(sp.id);
+    const spBridge = globalStammahnLookup.get(sp.id);
+    let partnerVerweisLatex = '';
+    let partnerVerweisHtml = '';
+    if (spBridge && !options.sourceMode.startsWith('root') && options.sourceMode !== 'design_document') {
+      partnerVerweisLatex = `[\\textrightarrow\\ Stamm ${escapeLatexText(spBridge.rootAncestorName)}: ${escapeLatexText(spBridge.henryCode)}, S.~\\pageref{${spBridge.labelKey}}]`;
+      partnerVerweisHtml = `[→ ${escapeHtmlText(spBridge.henryCode)}]`;
+    } else if (spInTree && spInTree.henryCode) {
+      partnerVerweisLatex = `[\\textrightarrow\\ [${escapeLatexText(spInTree.henryCode)}], S.~\\pageref{${spInTree.labelKey}}]`;
+      partnerVerweisHtml = `[→ ${escapeHtmlText(spInTree.henryCode)}]`;
+    }
+
+    const spRaw: Record<string, string> = {
+      ehe_nummer: spouses.length > 1 ? `${idx + 1}.` : '',
+      partner_name: spName,
+      partner_vorname: spGiven,
+      partner_nachname: spSurname,
+      partner_lebensdaten: spLife,
+      partner_geburtsdatum: spPerson?.birth_date || '',
+      partner_geburtsort: spPerson?.birth_place || '',
+      partner_sterbedatum: spPerson?.death_date || '',
+      partner_sterbeort: spPerson?.death_place || '',
+      partner_beruf: spOccu,
+      hochzeit,
+      hochzeitsdatum: mDate,
+      hochzeitsort: mPlace,
+      scheidung,
+      scheidungsdatum: dDate,
+      scheidungsort: dPlace,
+      partner_verweis: partnerVerweisLatex ? '1' : '',
+    };
+    const spLatex: Record<string, string> = {};
+    const spHtml: Record<string, string> = {};
+    for (const [k, v] of Object.entries(spRaw)) {
+      spLatex[k] = escapeLatexText(v);
+      spHtml[k] = escapeHtmlText(v);
+    }
+    spLatex.partner_verweis = partnerVerweisLatex;
+    spHtml.partner_verweis = partnerVerweisHtml;
+
+    const evalSp = evaluateMaskAst(spouseMaskAst, {
+      rawVars: spRaw,
+      latexVars: spLatex,
+      previewVars: spHtml,
+    });
+    const cleaned = cleanupRenderedMaskOutput(evalSp.latex, evalSp.html);
+    if (cleaned.latex) {
+      renderedSpousesLatex.push(cleaned.latex);
+      renderedSpousesHtml.push(cleaned.html);
+    }
+  });
+
+  const rawVars: Record<string, string> = {
+    henry_id: node.henryCode,
+    kekule_id: node.kekuleCode,
+    ordnungs_id: node.orderCode,
+    zweig_id: node.zweigCode,
+    nachname: surname,
+    vorname: givenName,
+    vollname: fullName,
+    sohn_tochter: sonDaughter,
+    geschlecht: p.sex || '',
+    generation: genLabel,
+    generation_roemisch: genRoman,
+    generation_badge: genBadge,
+    rolle: node.roleLabel || '',
+    xref: p.id,
+    implex: node.implexNoticeLatex ? '1' : '',
+    stamm_verweis: stammVerweisLatex ? '1' : '',
+    lebensdaten: lifeDates,
+    geburtsdatum: birthDate,
+    geburtsjahr: birthYear,
+    geburtsort: birthPlace,
+    taufdatum: bapDate,
+    taufort: bapPlace,
+    taufe: baptismBlock,
+    sterbedatum: deathDate,
+    sterbejahr: deathYear,
+    sterbeort: deathPlace,
+    beerdigungsdatum: bur.date,
+    beerdigungsort: bur.place,
+    beerdigung: burialBlock,
+    hochzeit: spouses[0]?.date ? `⚭ ${spouses[0].date}` : '',
+    hochzeitsdatum: spouses[0]?.date || '',
+    hochzeitsort: spouses[0]?.place || '',
+    scheidung: spouses[0]?.divorce_date ? `⚮ ${spouses[0].divorce_date}` : '',
+    scheidungsdatum: spouses[0]?.divorce_date || '',
+    scheidungsort: '',
+    ehepartner: renderedSpousesLatex.join('; '),
+    beruf: occu,
+    religion: reli,
+    wohnort: residence,
+    notizen: notes,
+    kinder_anzahl: String(node.childrenIds.length),
+    ist_stamm_anker: branchContinuationTarget ? '1' : '',
+    hat_kinder: node.childrenIds.length > 0 ? '1' : '',
+  };
+
+  const latexVars: Record<string, string> = {};
+  const previewVars: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rawVars)) {
+    latexVars[k] = escapeLatexText(v);
+    previewVars[k] = escapeHtmlText(v);
+  }
+  // Rich LaTeX/HTML tokens that should not be double-escaped
+  latexVars.implex = node.implexNoticeLatex;
+  previewVars.implex = escapeHtmlText(node.implexNoticeHtml);
+  latexVars.stamm_verweis = stammVerweisLatex;
+  previewVars.stamm_verweis = stammVerweisHtml;
+  latexVars.ehepartner = renderedSpousesLatex.join('; ');
+  previewVars.ehepartner = renderedSpousesHtml.join('; ');
+
+  // Index commands (\index[personen]{...} & \index[orte]{...})
+  let indexCommandsLatex = '';
+  if (emitIndex) {
+    const idxCmds: string[] = [];
+    if (surname) {
+      idxCmds.push(`\\index[personen]{${escapeLatexText(`${surname}, ${givenName || 'N.N.'}`)}}`);
+    }
+    for (const spN of spouseIndexNames) {
+      idxCmds.push(`\\index[personen]{${escapeLatexText(spN)}}`);
+    }
+    const places = new Set<string>([birthPlace, bapPlace, deathPlace, bur.place, residence, ...spouseIndexPlaces]);
+    for (const pl of places) {
+      const cleanPl = pl.trim();
+      if (cleanPl) {
+        idxCmds.push(`\\index[orte]{${escapeLatexText(cleanPl)}}`);
+      }
+    }
+    indexCommandsLatex = idxCmds.join('');
+  }
+
+  return {
+    rawVars,
+    latexVars,
+    previewVars,
+    renderedSpousesLatex,
+    renderedSpousesHtml,
+    indexCommandsLatex,
+  };
+}
+
+function generateFormatFile(
+  textsSubdir: string,
+  options: LatexExportOptions
+): GeneratedLatexFile {
+  const tpl = options.template;
+  const locDef = getLocaleDefinition(options.locale);
+  const isBook = tpl.documentClass === 'scrbook';
+
+  const lines: string[] = [
+    `% ============================================================================`,
+    `% LineageGraph Globale Buch-Formatierung (Buchformat.tex — GESCHÜTZT)`,
+    `% Zentrale Einstellungen für Satzspiegel, Pakete, Makros & Intro-Umgebung.`,
+    `% Kann bei Bedarf über die Checkbox im Export-Dialog neu geschrieben werden.`,
+    `% ============================================================================`,
+    `\\usepackage[utf8]{inputenc}`,
+    `\\usepackage[T1]{fontenc}`,
+    `\\usepackage{lmodern}`,
+    `\\usepackage[${locDef.latexBabel || 'ngerman'}]{babel}`,
+    `\\usepackage[left=${tpl.marginMm}mm,right=${tpl.marginMm}mm,top=${tpl.marginMm}mm,bottom=${tpl.marginMm}mm${isBook ? ',bindingoffset=8mm' : ''}]{geometry}`,
+    `\\usepackage{microtype}`,
+    `\\usepackage{graphicx}`,
+    `\\graphicspath{{Bilder/}{${textsSubdir}/Bilder/}}`,
+    `\\usepackage{textcomp}`,
+    `\\usepackage{longtable,booktabs,array}`,
+    `\\usepackage[hidelinks]{hyperref}`,
+  ];
+
+  if (tpl.documentClass === 'scrbook' || tpl.documentClass === 'scrartcl') {
+    lines.push(
+      `\\usepackage[automark]{scrlayer-scrpage}`,
+      `\\pagestyle{scrheadings}`,
+      `\\clearpairofpagestyles`,
+      `\\ohead{\\headmark}`,
+      `\\ofoot{\\pagemark}`
+    );
+  }
+
+  if (tpl.enableIndexGeneration) {
+    lines.push(
+      `\\usepackage{imakeidx}`,
+      `\\makeindex[name=personen,title={Personenregister},columns=2,intoc]`,
+      `\\makeindex[name=orte,title={Ortsregister},columns=2,intoc]`
+    );
+  }
+
+  lines.push(
+    ``,
+    `% --- Typografie & Einrückungsmaße aus der LineageGraph-Vorlage ---`,
+    `\\newlength{\\genIndentBase}`,
+    `\\setlength{\\genIndentBase}{${tpl.indentStepEm}em}`,
+    `\\newlength{\\genEntrySep}`,
+    `\\setlength{\\genEntrySep}{${tpl.entrySpacingEm}em}`,
+    `\\newlength{\\genSepDeeper}`,
+    `\\setlength{\\genSepDeeper}{\\genEntrySep}`,
+    `\\newlength{\\genSepSame}`,
+    `\\setlength{\\genSepSame}{0.7\\genEntrySep}`,
+    `\\newlength{\\genSepShallower}`,
+    `\\setlength{\\genSepShallower}{1.5\\genEntrySep}`,
+    `\\newlength{\\genSepMarriage}`,
+    `\\setlength{\\genSepMarriage}{0.3\\genEntrySep}`,
+    `\\newcount\\lgPrevGen`,
+    `\\lgPrevGen=-1`,
+    `\\newcommand{\\genEheSym}{\\ensuremath{\\infty}}`,
+    ``,
+    `% --- Bedingter Seitenumbruch für Intro-Dateien ---`,
+    `% Misst automatisch, ob zwischen \\begin{stammEinleitung}...\\end{stammEinleitung}`,
+    `% sichtbarer Inhalt (Text, Bilder, mehrseitige Kapitel) steht.`,
+    `% Nur wenn Inhalt vorhanden ist, folgt ein \\clearpage vor der Stammfolge.`,
+    `\\newcount\\lgIntroStartPage`,
+    `\\newdimen\\lgIntroStartTotal`,
+    `\\newenvironment{stammEinleitung}{%`,
+    `  \\par`,
+    `  \\global\\lgPrevGen=-1\\relax`,
+    `  \\lgIntroStartPage=\\value{page}%`,
+    `  \\lgIntroStartTotal=\\pagetotal`,
+    `}{%`,
+    `  \\par`,
+    `  \\ifnum\\value{page}>\\lgIntroStartPage`,
+    `    \\clearpage`,
+    `  \\else`,
+    `    \\ifdim\\dimexpr\\pagetotal-\\lgIntroStartTotal\\relax>2pt`,
+    `      \\clearpage`,
+    `    \\fi`,
+    `  \\fi`,
+    `}`,
+    ``,
+    `% --- Strukturiertes 5-Argumente Personenmakro (minipage-frei mit \\hangindent) ---`,
+    `% #1 = Einrückungsstufe (0, 1, 2, ...) | #2 = Label-Key | #3 = Code-Slot | #4 = Name-Slot | #5 = Details-Slot`,
+    `\\newcommand{\\genealogieEintrag}[5]{%`,
+    `  \\par`,
+    `  \\ifnum\\lgPrevGen<0`,
+    `    \\vspace{\\genSepSame}%`,
+    `  \\else`,
+    `    \\ifnum#1>\\lgPrevGen`,
+    `      \\vspace{\\genSepDeeper}%`,
+    `    \\else`,
+    `      \\ifnum#1<\\lgPrevGen`,
+    `        \\vspace{\\genSepShallower}%`,
+    `      \\else`,
+    `        \\vspace{\\genSepSame}%`,
+    `      \\fi`,
+    `    \\fi`,
+    `  \\fi`,
+    `  \\global\\lgPrevGen=#1\\relax`,
+    `  \\begingroup`,
+    `  \\edef\\currentIndent{\\the\\dimexpr #1\\genIndentBase\\relax}%`,
+    `  \\edef\\currentHang{\\the\\dimexpr #1\\genIndentBase + 1.5em\\relax}%`,
+    `  \\noindent\\hangindent=\\currentHang\\hangafter=1\\hspace*{\\currentIndent}%`,
+    `  \\phantomsection\\label{#2}%`,
+    `  \\if\\relax\\detokenize{#3}\\relax\\else\\textbf{#3}\\space\\fi%`,
+    `  \\if\\relax\\detokenize{#4}\\relax\\else\\textbf{#4}\\space\\fi%`,
+    `  #5\\par%`,
+    `  \\endgroup`,
+    `}`,
+    ``,
+    `% --- Strukturiertes 3-Argumente Ehemakro (minipage-frei mit \\hangindent) ---`,
+    `% #1 = Einrückungsstufe | #2 = Ehesymbol/Nummer | #3 = Ehepartner-Details`,
+    `\\newcommand{\\genealogieEhe}[3]{%`,
+    `  \\par\\nopagebreak\\vspace{\\genSepMarriage}%`,
+    `  \\begingroup`,
+    `  \\edef\\currentIndent{\\the\\dimexpr #1\\genIndentBase + 1.5em\\relax}%`,
+    `  \\edef\\currentHang{\\the\\dimexpr #1\\genIndentBase + 2.8em\\relax}%`,
+    `  \\noindent\\hangindent=\\currentHang\\hangafter=1\\hspace*{\\currentIndent}%`,
+    `  \\textbf{#2}\\space #3\\par%`,
+    `  \\endgroup`,
+    `}`,
+    ``
+  );
+
+  const texContent = lines.join('\n');
+  const previewHtml = `
+    <div class="master-doc-preview">
+      <h3>🎨 Globale Formatierung: <code>Buchformat.tex</code></h3>
+      <p class="preview-meta-note">🛡️ Zentrale Formatierungsdatei (Standard-Buchsatz mit <code>microtype</code>, <code>scrlayer-scrpage</code>, <code>graphicx</code> und <code>stammEinleitung</code>).</p>
+      <div class="preview-info-grid">
+        <div><strong>Seitenränder:</strong> ${tpl.marginMm} mm ${isBook ? '(+ 8 mm Bindekorrektur)' : ''}</div>
+        <div><strong>Einrückung / Abstand:</strong> ${tpl.indentStepEm} em / ${tpl.entrySpacingEm} em</div>
+        <div><strong>Bildpfade:</strong> <code>Bilder/</code>, <code>${escapeHtmlText(textsSubdir)}/Bilder/</code></div>
+        <div><strong>Register (imakeidx):</strong> ${tpl.enableIndexGeneration ? 'Personen & Orte aktiv' : 'Deaktiviert'}</div>
       </div>
+      <pre class="preview-code-snippet">${escapeHtmlText(lines.slice(0, 36).join('\n'))}\n...</pre>
     </div>
   `;
 
-  return { entryCommands, previewHtml };
+  return {
+    fileName: 'Buchformat.tex',
+    label: 'Format (Buchformat.tex)',
+    role: 'format',
+    isMasterFile: false,
+    isMainFile: false,
+    entryCount: 0,
+    maxGeneration: 0,
+    texContent,
+    previewHtml,
+  };
 }
 
-/**
- * Wraps content entries into an individual subdocument file.
- * The format and layout declarations are centralized in the master document,
- * so subdocuments only contain clean content entries.
- */
-function wrapIndividualFileContent(
-  entryCommands: string[],
-  fileName?: string
-): string {
-  const lines: string[] = [];
-  if (fileName) {
-    lines.push(`% Inhaltsdatei: ${fileName}`);
-    lines.push(`% Formatierungs- und Layoutdeklarationen befinden sich im Gesamtdokument.`);
-    lines.push(``);
+function generateMasterFile(
+  baseFileName: string,
+  structureFileName: string,
+  textsSubdir: string,
+  options: LatexExportOptions,
+  rootName: string
+): GeneratedLatexFile {
+  const tpl = options.template;
+  const isBook = tpl.documentClass === 'scrbook';
+  const title = options.customDocumentTitle.trim() || `Familienchronik ${rootName}`;
+  const subtitle = options.customDocumentSubtitle.trim() || 'Genealogisches Familienbuch';
+  const masterName = `${baseFileName}_gesamt.tex`;
+
+  const docOpts = isBook
+    ? `${tpl.fontSize},${tpl.paperSize},twoside=true,open=right`
+    : `${tpl.fontSize},${tpl.paperSize}`;
+
+  const lines: string[] = [
+    `% ============================================================================`,
+    `% LineageGraph Master-Dokument (Schicht 1 — GESCHÜTZT vor Überschreiben)`,
+    `% Beschreibt nur den Buchrahmen, Titel, globale Formatierung & Kapitel-Abfolge.`,
+    `% Eigene Kapitel im Ordner '${textsSubdir}/' mit \\input{${textsSubdir}/...} einbinden.`,
+    `% ============================================================================`,
+    `\\documentclass[${docOpts}]{${tpl.documentClass}}`,
+    ``,
+    `\\input{Buchformat}`,
+    ``,
+    `\\title{${escapeLatexText(title)}}`,
+    ...(isBook || tpl.documentClass === 'scrartcl'
+      ? [`\\subtitle{${escapeLatexText(subtitle)}}`]
+      : []),
+    `\\author{}`,
+    `\\date{\\today}`,
+    ``,
+    `\\begin{document}`,
+  ];
+
+  if (isBook) {
+    lines.push(
+      `\\frontmatter`,
+      ...(tpl.includeHeaderInfo ? [`\\maketitle`, `\\tableofcontents`] : []),
+      `% --- Eigene Vorspann-Kapitel (römische Seitenzahlen):`,
+      `% \\input{${textsSubdir}/Vorwort}`,
+      ``,
+      `\\mainmatter`,
+      `% --- Eigene Hauptkapitel vor der Stammfolge:`,
+      `% \\input{${textsSubdir}/Geschichte}`,
+      ``,
+      `% --- Automatisch orchestrierte Stammfolge (lädt Texte/*_intro.tex -> Stammbaum/*):`,
+      `\\input{${structureFileName.replace(/\.tex$/, '')}}`,
+      ``,
+      `% --- Eigene Kapitel nach der Stammfolge:`,
+      `% \\input{${textsSubdir}/Anhang}`
+    );
+    if (tpl.enableIndexGeneration) {
+      lines.push(
+        ``,
+        `\\backmatter`,
+        `\\printindex[personen]`,
+        `\\printindex[orte]`
+      );
+    }
+  } else {
+    lines.push(
+      ...(tpl.includeHeaderInfo ? [`\\maketitle`, `\\tableofcontents`, `\\newpage`] : []),
+      `% --- Eigene Kapitel vor der Stammfolge:`,
+      `% \\input{${textsSubdir}/Vorwort}`,
+      ``,
+      `\\input{${structureFileName.replace(/\.tex$/, '')}}`,
+      ``,
+      `% --- Eigene Kapitel nach der Stammfolge:`,
+      `% \\input{${textsSubdir}/Anhang}`
+    );
+    if (tpl.enableIndexGeneration) {
+      lines.push(``, `\\clearpage`, `\\printindex[personen]`, `\\printindex[orte]`);
+    }
   }
-  lines.push(...entryCommands);
-  return lines.join('\n');
+
+  lines.push(``, `\\end{document}`, ``);
+
+  const texContent = lines.join('\n');
+  const previewHtml = `
+    <div class="master-doc-preview">
+      <h3>📘 Master-Dokument: <code>${escapeHtmlText(masterName)}</code></h3>
+      <p class="preview-meta-note">🛡️ Schlankes Rahmen-Dokument im Stammverzeichnis (wird beim Synchronisieren geschützt). Formatierung liegt in <code>Buchformat.tex</code>.</p>
+      <div class="preview-info-grid">
+        <div><strong>Dokumentklasse:</strong> <code>${escapeHtmlText(tpl.documentClass)}</code> (${escapeHtmlText(tpl.paperSize)}, ${escapeHtmlText(tpl.fontSize)})</div>
+        <div><strong>Buchsatz:</strong> ${isBook ? 'twoside, frontmatter/mainmatter/backmatter' : 'einseitig'}</div>
+        <div><strong>Stammfolge-Einbindung:</strong> <code>\\input{${escapeHtmlText(structureFileName.replace(/\.tex$/, ''))}}</code></div>
+        <div><strong>Register:</strong> ${tpl.enableIndexGeneration ? 'Personen & Orte aktiv' : 'Deaktiviert'}</div>
+      </div>
+      <pre class="preview-code-snippet">${escapeHtmlText(texContent)}</pre>
+    </div>
+  `;
+
+  return {
+    fileName: masterName,
+    label: `Master (${masterName})`,
+    role: 'master',
+    isMasterFile: true,
+    isMainFile: false,
+    entryCount: 0,
+    maxGeneration: 0,
+    texContent,
+    previewHtml,
+  };
 }
 
-/**
- * Generates the complete LaTeX export result:
- * 1. Übergeordnete Klammer-Datei (<baseSurname>_gesamt.tex) mit ausgelagerten Formatierungsoptionen
- * 2. Hauptdatei (<baseSurname>.tex)
- * 3. Ggf. Stamm-Dateien (<baseSurname>-<HenryID>.tex)
- */
+function generateIntroWrapperFile(
+  introFileName: string,
+  dataFileName: string,
+  headingCmd: string,
+  headingTitle: string,
+  labelKey: string,
+  tabLabel: string
+): GeneratedLatexFile {
+  const lines: string[] = [
+    `% ============================================================================`,
+    `% Geschützte Intro- & Kapitel-Datei (${introFileName})`,
+    `% Sie können zwischen \\begin{stammEinleitung} und \\end{stammEinleitung} beliebig`,
+    `% viel eigenen Text und Bilder (\\includegraphics{...}) ergänzen.`,
+    `% Bei vorhandenem Text setzt LaTeX automatisch einen Seitenumbruch vor den Daten.`,
+    `% ============================================================================`,
+    `${headingCmd}{${escapeLatexText(headingTitle)}}`,
+    `\\label{${labelKey}}`,
+    ``,
+    `\\begin{stammEinleitung}`,
+    `% Optionaler Einleitungstext zu diesem Abschnitt`,
+    `\\end{stammEinleitung}`,
+    ``,
+    `\\input{${dataFileName.replace(/\.tex$/, '')}}`,
+    ``,
+  ];
+
+  const texContent = lines.join('\n');
+  const previewHtml = `
+    <div class="master-doc-preview">
+      <h3>✍️ Intro-Hülle: <code>${escapeHtmlText(introFileName)}</code></h3>
+      <p class="preview-meta-note">🛡️ Geschützt: Wird nur angelegt, falls noch nicht vorhanden. Eigener Text in <code>stammEinleitung</code> erzwingt automatisch einen Seitenumbruch vor <code>${escapeHtmlText(dataFileName)}</code>.</p>
+      <pre class="preview-code-snippet">${escapeHtmlText(texContent)}</pre>
+    </div>
+  `;
+
+  return {
+    fileName: introFileName,
+    label: tabLabel,
+    role: 'intro',
+    isMasterFile: false,
+    isMainFile: false,
+    entryCount: 0,
+    maxGeneration: 0,
+    texContent,
+    previewHtml,
+  };
+}
+
+function generateStructureFile(
+  baseFileName: string,
+  treeSubdir: string,
+  textsSubdir: string,
+  mainDataFileName: string,
+  activeBranches: DetectedBranchInfo[],
+  options: LatexExportOptions,
+  rootNode: ResolvedExportNode | undefined,
+  mainEntryCount: number
+): GeneratedLatexFile {
+  const structureFileName = `${treeSubdir}/${baseFileName}_stammfolge.tex`;
+  const lines: string[] = [
+    `% ============================================================================`,
+    `% LineageGraph Auto-Gliederung (Schicht 2 — AUTO-UPDATE)`,
+    `% Lädt automatisch alle geschützten Intro-Dateien aus '${textsSubdir}/' in`,
+    `% genealogischer Reihenfolge. Neue Stämme werden automatisch eingehängt.`,
+    `% Optional können Sie zwischen Stämmen freie Dateien '*_nach.tex' ablegen.`,
+    `% ============================================================================`,
+    ``,
+  ];
+
+  const htmlParts: string[] = [
+    `<div class="structure-preview">`,
+    `<h3>📑 Auto-Gliederung & Stamm-Übersicht (<code>${escapeHtmlText(structureFileName)}</code>)</h3>`,
+  ];
+
+  if (options.template.enableBranchOverviewTable && activeBranches.length > 0) {
+    lines.push(
+      `\\section*{Stamm-Übersicht}`,
+      `\\begin{longtable}{@{}l>{\\raggedright\\arraybackslash}p{3.8cm}>{\\raggedright\\arraybackslash}p{3.4cm}rr@{}}`,
+      `\\toprule`,
+      `\\textbf{Stamm} & \\textbf{Stammmutter / Stammvater} & \\textbf{Lebensdaten} & \\textbf{Personen} & \\textbf{Seite} \\\\`,
+      `\\midrule`,
+      `\\endhead`,
+      `\\bottomrule`,
+      `\\endfoot`
+    );
+
+    htmlParts.push(
+      `<table class="preview-overview-table"><thead><tr><th>Stamm</th><th>Stamm-Oberhaupt</th><th>Lebensdaten</th><th>Personen</th><th>Datei / Seite</th></tr></thead><tbody>`
+    );
+
+    for (const b of activeBranches) {
+      const life = [b.birthDate ? `* ${b.birthDate}` : '', b.deathDate ? `† ${b.deathDate}` : '']
+        .filter(Boolean)
+        .join(', ');
+      lines.push(
+        `{[}${escapeLatexText(b.code)}{]} & ${escapeLatexText(b.name)} & ${escapeLatexText(life || '—')} & ${b.descendantCount} & S.~\\pageref{stamm:${b.safeFileCode}} \\\\`
+      );
+      htmlParts.push(
+        `<tr><td><strong>[${escapeHtmlText(b.code)}]</strong></td><td>${escapeHtmlText(b.name)}</td><td>${escapeHtmlText(life || '—')}</td><td>${b.descendantCount}</td><td><code>${escapeHtmlText(b.fileName)}</code></td></tr>`
+      );
+    }
+
+    lines.push(`\\end{longtable}`, ``);
+    htmlParts.push(`</tbody></table>`);
+  }
+
+  const rootLabel = rootNode
+    ? [rootNode.person.given_name, rootNode.person.surname].filter(Boolean).join(' ')
+    : baseFileName;
+  const mainIntroNoExt = `${textsSubdir}/${baseFileName}_intro`;
+  const mainAfterHook = `${textsSubdir}/${baseFileName}_nach.tex`;
+
+  lines.push(
+    `% --- Hauptstamm / Vorlauf ---`,
+    `\\input{${mainIntroNoExt}}`,
+    `\\InputIfFileExists{${mainAfterHook}}{}{}`,
+    ``
+  );
+
+  htmlParts.push(
+    `<div class="preview-structure-item"><strong>Hauptstamm / Vorlauf:</strong> ${escapeHtmlText(rootLabel)} (${mainEntryCount} Einträge) → <code>${escapeHtmlText(mainIntroNoExt)}.tex</code> → <code>${escapeHtmlText(mainDataFileName)}</code></div>`
+  );
+
+  for (const b of activeBranches) {
+    const introNoExt = `${textsSubdir}/${baseFileName}-${b.safeFileCode}_intro`;
+    const afterHook = `${textsSubdir}/${baseFileName}-${b.safeFileCode}_nach.tex`;
+    const kindLabel = b.isAutoDeferred ? 'Zweig' : 'Stamm';
+    lines.push(
+      `% --- ${kindLabel} [${b.code}]: ${escapeLatexText(b.name)} ---`,
+      `\\input{${introNoExt}}`,
+      `\\InputIfFileExists{${afterHook}}{}{}`,
+      ``
+    );
+    htmlParts.push(
+      `<div class="preview-structure-item"><strong>${kindLabel} [${escapeHtmlText(b.code)}]:</strong> ${escapeHtmlText(b.name)} (${b.descendantCount} Einträge) → <code>${escapeHtmlText(introNoExt)}.tex</code> → <code>${escapeHtmlText(b.fileName)}</code></div>`
+    );
+  }
+
+  htmlParts.push(`</div>`);
+
+  return {
+    fileName: structureFileName,
+    label: `Gliederung (${baseFileName}_stammfolge.tex)`,
+    role: 'structure',
+    isMasterFile: false,
+    isMainFile: false,
+    entryCount: activeBranches.length + 1,
+    maxGeneration: 0,
+    texContent: lines.join('\n'),
+    previewHtml: htmlParts.join('\n'),
+  };
+}
+
+function renderBranchDataFile(
+  fileName: string,
+  label: string,
+  isMainFile: boolean,
+  branchInfo: DetectedBranchInfo | undefined,
+  startPersonId: string,
+  nodesById: Map<string, ResolvedExportNode>,
+  splitRootSet: Set<string>,
+  branchByPersonId: Map<string, DetectedBranchInfo>,
+  options: LatexExportOptions,
+  globalStammahnLookup: Map<string, GlobalStammahnEntry>,
+  allPersonMap: Map<string, Person>
+): GeneratedLatexFile {
+  const codeAst = parseMaskAst(options.template.codeMask);
+  const nameAst = parseMaskAst(options.template.nameMask);
+  const entryAst = parseMaskAst(options.template.entryMask);
+  const spouseAst = parseMaskAst(options.template.spouseMask);
+  const emitInlineSpouses = options.template.entryMask.includes('{ehepartner}');
+
+  const texLines: string[] = [
+    `% ============================================================================`,
+    `% LineageGraph Reine Daten-Datei (Schicht 3 — AUTO-UPDATE)`,
+    `% Datei: ${fileName}`,
+    `% ============================================================================`,
+    ``,
+  ];
+  const htmlEntries: string[] = [];
+
+  let entryCount = 0;
+  let maxGen = 0;
+
+  const renderNode = (personId: string, indentLevel: number, isBranchStart: boolean) => {
+    const node = nodesById.get(personId);
+    if (!node) return;
+
+    entryCount++;
+    if (node.generation > maxGen) maxGen = node.generation;
+
+    // If this node is a split-branch root (and NOT the root of THIS current file),
+    // we render them as a child with a continuation pointer and STOP descending here!
+    const isSplitHere = !isBranchStart && splitRootSet.has(personId);
+    const continuationTarget = isSplitHere ? branchByPersonId.get(personId) : undefined;
+
+    const ctx = buildPersonEvalContext(
+      node,
+      nodesById,
+      options,
+      globalStammahnLookup,
+      continuationTarget,
+      spouseAst,
+      allPersonMap,
+      options.template.enableIndexGeneration
+    );
+
+    const codeEval = cleanupRenderedMaskOutput(
+      ...(() => {
+        const r = evaluateMaskAst(codeAst, ctx);
+        return [r.latex, r.html] as const;
+      })()
+    );
+    const nameEval = cleanupRenderedMaskOutput(
+      ...(() => {
+        const r = evaluateMaskAst(nameAst, ctx);
+        return [r.latex, r.html] as const;
+      })()
+    );
+    const entryEval = cleanupRenderedMaskOutput(
+      ...(() => {
+        const r = evaluateMaskAst(entryAst, ctx);
+        return [r.latex, r.html] as const;
+      })()
+    );
+
+    const nameWithIndex = `${nameEval.latex}${ctx.indexCommandsLatex}`;
+
+    texLines.push(
+      `\\genealogieEintrag{${indentLevel}}{${node.labelKey}}{${codeEval.latex}}{${nameWithIndex}}{${entryEval.latex}}`
+    );
+
+    if (!emitInlineSpouses && ctx.renderedSpousesLatex.length > 0) {
+      ctx.renderedSpousesLatex.forEach((spTex, sIdx) => {
+        const marriageSym = ctx.renderedSpousesLatex.length > 1 ? `\\genEheSym~${sIdx + 1}.` : `\\genEheSym`;
+        texLines.push(`\\genealogieEhe{${indentLevel}}{${marriageSym}}{${spTex}}`);
+      });
+    }
+
+    // Visual HTML preview entry
+    const spousesHtmlBlock =
+      !emitInlineSpouses && ctx.renderedSpousesHtml.length > 0
+        ? ctx.renderedSpousesHtml
+            .map((spH, sIdx) => {
+              const sym = ctx.renderedSpousesHtml.length > 1 ? `⚭ ${sIdx + 1}.` : `⚭`;
+              return `<div class="preview-spouse-row"><span class="preview-marriage-sym">${sym}</span> ${spH}</div>`;
+            })
+            .join('')
+        : '';
+
+    htmlEntries.push(`
+      <div class="preview-entry" style="--entry-indent: ${indentLevel};" data-gen="${node.generation}">
+        <div class="preview-entry-main">
+          ${codeEval.html ? `<span class="preview-code">${codeEval.html}</span>` : ''}
+          ${nameEval.html ? `<span class="preview-name">${nameEval.html}</span>` : ''}
+          <span class="preview-details">${entryEval.html}</span>
+        </div>
+        ${spousesHtmlBlock}
+      </div>
+    `);
+
+    if (!isSplitHere) {
+      for (const cid of node.childrenIds) {
+        renderNode(cid, indentLevel + 1, false);
+      }
+    }
+  };
+
+  if (options.sourceMode === 'custom_person' && options.direction === 'ancestors') {
+    // Render sorted Kekule list
+    const sortedNodes = Array.from(nodesById.values()).sort(
+      (a, b) => Number(a.kekuleCode) - Number(b.kekuleCode)
+    );
+    for (const node of sortedNodes) {
+      entryCount++;
+      if (node.generation > maxGen) maxGen = node.generation;
+      const ctx = buildPersonEvalContext(
+        node,
+        nodesById,
+        options,
+        globalStammahnLookup,
+        undefined,
+        spouseAst,
+        allPersonMap,
+        options.template.enableIndexGeneration
+      );
+      const codeRes = evaluateMaskAst(codeAst, ctx);
+      const nameRes = evaluateMaskAst(nameAst, ctx);
+      const entryRes = evaluateMaskAst(entryAst, ctx);
+      const cClean = cleanupRenderedMaskOutput(codeRes.latex, codeRes.html);
+      const nClean = cleanupRenderedMaskOutput(nameRes.latex, nameRes.html);
+      const eClean = cleanupRenderedMaskOutput(entryRes.latex, entryRes.html);
+      const indent = Math.max(0, node.generation - 1);
+
+      texLines.push(
+        `\\genealogieEintrag{${indent}}{${node.labelKey}}{${cClean.latex}}{${nClean.latex}${ctx.indexCommandsLatex}}{${eClean.latex}}`
+      );
+      htmlEntries.push(`
+        <div class="preview-entry" style="--entry-indent: ${indent};" data-gen="${node.generation}">
+          <div class="preview-entry-main">
+            ${cClean.html ? `<span class="preview-code">${cClean.html}</span>` : ''}
+            ${nClean.html ? `<span class="preview-name">${nClean.html}</span>` : ''}
+            <span class="preview-details">${eClean.html}</span>
+          </div>
+        </div>
+      `);
+    }
+  } else {
+    renderNode(startPersonId, 0, true);
+  }
+
+  return {
+    fileName,
+    label,
+    role: 'data',
+    isMasterFile: false,
+    isMainFile,
+    branchCode: branchInfo?.code,
+    branchPersonName: branchInfo?.name,
+    entryCount,
+    maxGeneration: maxGen,
+    texContent: texLines.join('\n') + '\n',
+    previewHtml: `<div class="preview-entries-list">${htmlEntries.join('\n')}</div>`,
+  };
+}
+
 export function generateLatexExport(
   persons: ExportPersonInput[],
   options: LatexExportOptions
 ): LatexExportResult {
-  const personMap = new Map<string, ExportPersonInput>();
-  for (const p of persons) {
-    personMap.set(p.id, p);
-  }
+  const domainPersons = toDomainPersons(persons);
+  const allPersonMap = new Map(domainPersons.map(p => [p.id, p]));
 
-  const childrenByParent = new Map<string, string[]>();
-  for (const p of persons) {
-    for (const pid of p.parent_ids || []) {
-      let list = childrenByParent.get(pid);
-      if (!list) {
-        list = [];
-        childrenByParent.set(pid, list);
-      }
-      if (!list.includes(p.id)) {
-        list.push(p.id);
-      }
-    }
-  }
-
-  const rootPerson = personMap.get(options.rootPersonId);
-  if (!rootPerson) {
-    return {
-      baseSurname: 'Export',
-      masterFileName: 'Export_gesamt.tex',
-      files: [],
-      totalEntries: 0,
-      maxGenerationReached: 0,
-      unknownBranchesStopped: 0,
-      detectedGenerations: [],
-      detectedBranchesAtSelectedGen: [],
-    };
-  }
-
-  const baseSurname = sanitizeExportBaseName(
-    rootPerson.surname || rootPerson.given_name || rootPerson.id,
-    'Stammbaum'
+  const globalStammahnLookup = buildGlobalStammahnHenryLookup(
+    domainPersons,
+    options.rootAncestors || [],
+    options.lineagePolicy,
+    options.locale
   );
-  const masterFileName = `${baseSurname}_gesamt.tex`;
 
-  // Determine effective title and subtitle (subtitle is omitted if empty)
-  const defaultTitle =
-    options.mode === 'proband'
-      ? (options.locale === 'en'
-          ? `Descendants of ${getFullName(rootPerson)} [${options.startCode || '1'}]`
-          : `Stammliste ${getFullName(rootPerson)} [${options.startCode || '1'}]`)
-      : (options.direction === 'descendants'
-          ? (options.locale === 'en'
-              ? `Descendants of ${getFullName(rootPerson)}`
-              : `Nachkommenliste ${getFullName(rootPerson)}`)
-          : (options.locale === 'en'
-              ? `Ancestors of ${getFullName(rootPerson)}`
-              : `Ahnenliste ${getFullName(rootPerson)}`));
+  const tree = buildUnifiedExportTree(domainPersons, options, globalStammahnLookup);
+  const rootNode = tree.nodesById.get(tree.orderedRootId);
+  const rootSurname = rootNode?.person.surname || rootNode?.person.given_name || 'Chronik';
+  const baseFileName = sanitizeLatexFileSlug(options.baseFileName || `Chronik_${rootSurname}`);
+  const treeSubdir = sanitizeLatexFileSlug(options.treeSubdir || 'Stammbaum');
+  const textsSubdir = sanitizeLatexFileSlug(options.textsSubdir || 'Texte');
+  const structureFileName = `${treeSubdir}/${baseFileName}_stammfolge.tex`;
+  const mainDataFileName = `${treeSubdir}/${baseFileName}.tex`;
 
-  const effectiveTitle = options.customDocumentTitle.trim() || defaultTitle;
-  const effectiveSubtitle = options.customDocumentSubtitle.trim(); // Empty string if user left it blank
+  // Compute generation summary & all available branch candidates (any person with children, gen >= 2)
+  const genStats = new Map<number, { count: number; withChildren: number }>();
+  const allAvailableBranches: DetectedBranchInfo[] = [];
 
-  // ==========================================================================
-  // MODUS 1: DEFINIERTER PROBAND (Henry-Code + optionale Stämme)
-  // ==========================================================================
-  if (options.mode === 'proband') {
-    const cleanStartCode = (options.startCode || '1').trim() || '1';
+  for (const node of tree.nodesById.values()) {
+    const st = genStats.get(node.generation) || { count: 0, withChildren: 0 };
+    st.count++;
+    if (node.childrenIds.length > 0) st.withChildren++;
+    genStats.set(node.generation, st);
 
-    // 1. Biological descendants
-    const treeMembers = new Set<string>([rootPerson.id]);
-    const memberQ: string[] = [rootPerson.id];
-    while (memberQ.length > 0) {
-      const currId = memberQ.shift()!;
-      for (const cid of childrenByParent.get(currId) || []) {
-        if (cid !== currId && !treeMembers.has(cid)) {
-          treeMembers.add(cid);
-          memberQ.push(cid);
-        }
-      }
-    }
-
-    // 2. Henry codes & parent-child map with Implex detection
-    const henryMap = new Map<string, { code: string; generation: number }>();
-    const treeChildrenMap = new Map<string, string[]>();
-    const implexNoticeMap = new Map<string, string>();
-    const visited = new Set<string>();
-    const bfsQueue: { id: string; code: string; generation: number }[] = [
-      { id: rootPerson.id, code: cleanStartCode, generation: 1 },
-    ];
-
-    while (bfsQueue.length > 0) {
-      const { id: currId, code, generation } = bfsQueue.shift()!;
-      if (visited.has(currId)) continue;
-      visited.add(currId);
-      henryMap.set(currId, { code, generation });
-
-      const candidates = childrenByParent.get(currId) || [];
-      const continuing: string[] = [];
-
-      for (const cid of candidates) {
-        if (cid === currId) continue;
-        const cPerson = personMap.get(cid);
-        if (!cPerson) continue;
-        const { father, mother } = resolveFatherMother(cPerson, personMap);
-        const fatherInTree = father ? treeMembers.has(father.id) : false;
-        const motherInTree = mother ? treeMembers.has(mother.id) : false;
-
-        let shouldContinue = false;
-        if (fatherInTree) {
-          shouldContinue = father!.id === currId;
-          if (motherInTree && mother!.id === currId && father!.id !== currId) {
-            implexNoticeMap.set(
-              currId,
-              options.locale === 'en'
-                ? `Implex: child continues under father ${getFullName(father)}`
-                : `Implex: Kinder weitergeführt bei Vater ${getFullName(father)}`
-            );
-          }
-        } else if (motherInTree) {
-          shouldContinue = mother!.id === currId;
-        } else {
-          shouldContinue = true;
-        }
-
-        if (shouldContinue && !visited.has(cid) && !continuing.includes(cid)) {
-          continuing.push(cid);
-        }
-      }
-
-      // Chronological sort by birth date
-      continuing.sort((aId, bId) => {
-        const kA = parseBirthSortKey(personMap.get(aId)?.birth_date);
-        const kB = parseBirthSortKey(personMap.get(bId)?.birth_date);
-        for (let i = 0; i < 3; i++) {
-          if (kA[i] !== kB[i]) return kA[i] - kB[i];
-        }
-        return aId.localeCompare(bId);
-      });
-
-      treeChildrenMap.set(currId, continuing);
-
-      for (let i = 0; i < continuing.length; i++) {
-        bfsQueue.push({
-          id: continuing[i],
-          code: generateNextHenryCode(code, i + 1),
-          generation: generation + 1,
-        });
-      }
-    }
-
-    // Subtree count
-    const descendantCountMap = new Map<string, number>();
-    function countDescendants(nodeId: string): number {
-      const kids = treeChildrenMap.get(nodeId) || [];
-      let count = 0;
-      for (const kid of kids) {
-        count += 1 + countDescendants(kid);
-      }
-      descendantCountMap.set(nodeId, count);
-      return count;
-    }
-    countDescendants(rootPerson.id);
-
-    // Generations summary
-    const genBuckets = new Map<number, string[]>();
-    let maxGenOverall = 1;
-    henryMap.forEach((info, pid) => {
-      if (info.generation > maxGenOverall) maxGenOverall = info.generation;
-      if (!genBuckets.has(info.generation)) genBuckets.set(info.generation, []);
-      genBuckets.get(info.generation)!.push(pid);
-    });
-
-    const detectedGenerations: GenerationSummary[] = [];
-    for (let g = 1; g <= maxGenOverall; g++) {
-      const pIds = genBuckets.get(g) || [];
-      const withKids = pIds.filter(id => (treeChildrenMap.get(id)?.length || 0) > 0).length;
-      detectedGenerations.push({
-        generation: g,
-        count: pIds.length,
-        branchesWithChildrenCount: withKids,
-      });
-    }
-
-    const targetSplitGen = Math.max(2, options.branchSplitGeneration || 2);
-    const branchCandidatesIds = (genBuckets.get(targetSplitGen) || []).slice();
-    branchCandidatesIds.sort((a, b) => {
-      const cA = henryMap.get(a)?.code || '';
-      const cB = henryMap.get(b)?.code || '';
-      return compareHenryCodes(cA, cB);
-    });
-
-    const detectedBranchesAtSelectedGen: DetectedBranchInfo[] = branchCandidatesIds.map(pid => {
-      const p = personMap.get(pid)!;
-      const h = henryMap.get(pid)!;
-      return {
-        personId: pid,
-        henryCode: h.code,
-        name: getFullName(p, 'N.N.'),
-        surname: p.surname || baseSurname,
-        givenName: p.given_name || 'N.N.',
-        birthDate: p.birth_date || '',
-        deathDate: p.death_date || '',
-        generation: h.generation,
-        descendantCount: descendantCountMap.get(pid) || 0,
-        fileName: `${baseSurname}-${h.code}.tex`,
+    if (node.generation >= 2 && node.childrenIds.length > 0) {
+      // Count descendants in subtree
+      let descCount = 0;
+      const countSub = (pid: string) => {
+        const n = tree.nodesById.get(pid);
+        if (!n) return;
+        descCount++;
+        for (const c of n.childrenIds) countSub(c);
       };
-    });
+      countSub(node.person.id);
 
-    const activeSplitBranchIds = new Set<string>();
-    if (options.enableBranchSplit && detectedBranchesAtSelectedGen.length > 0) {
-      if (options.selectedBranchIds && options.selectedBranchIds.length > 0) {
-        options.selectedBranchIds.forEach(id => activeSplitBranchIds.add(id));
-      } else {
-        detectedBranchesAtSelectedGen.forEach(b => activeSplitBranchIds.add(b.personId));
-      }
-    }
-
-    // Traverse main tree
-    const mainItems: InternalExportItem[] = [];
-    let mainMaxGen = 1;
-
-    function traverseProbandMain(currId: string, indentLevel: number) {
-      const p = personMap.get(currId);
-      const h = henryMap.get(currId);
-      if (!p || !h) return;
-      if (h.generation > mainMaxGen) mainMaxGen = h.generation;
-
-      const kids = treeChildrenMap.get(currId) || [];
-      const isSplitRoot = activeSplitBranchIds.has(currId);
-      const hasImplex = implexNoticeMap.has(currId) || (p.spouses || []).some(s => henryMap.has(s.id));
-
-      mainItems.push({
-        indentLevel,
-        generationNumber: h.generation,
-        isUnknownPlaceholder: false,
-        person: p,
-        henryCode: h.code,
-        orderCode: h.code,
-        roleLabel:
-          h.generation === 1
-            ? (options.locale === 'en' ? 'Proband' : 'Proband / Stammahn')
-            : undefined,
-        childrenCount: kids.length,
-        isImplex: hasImplex,
-        implexNotice: implexNoticeMap.get(currId),
+      const code = node.henryCode || node.zweigCode;
+      const safeFileCode = sanitizeLatexLabel(code);
+      allAvailableBranches.push({
+        personId: node.person.id,
+        code,
+        safeFileCode,
+        name: [node.person.given_name, node.person.surname].filter(Boolean).join(' ') || 'N.N.',
+        surname: node.person.surname || '',
+        givenName: node.person.given_name || '',
+        birthDate: node.person.birth_date || '',
+        deathDate: node.person.death_date || '',
+        generation: node.generation,
+        descendantCount: descCount,
+        fileName: `${treeSubdir}/${baseFileName}-${safeFileCode}.tex`,
+        isDesignSubtree: tree.designSubtreeRootIds.has(node.person.id),
       });
-
-      if (isSplitRoot) {
-        // Stop here in main file; branch goes into its own file `<baseSurname>-<HenryCode>.tex`
-        // NOTE: The note "Stamm wird geführt in Datei..." has been removed as requested!
-        return;
-      }
-
-      for (const cid of kids) {
-        traverseProbandMain(cid, indentLevel + 1);
-      }
     }
-
-    traverseProbandMain(rootPerson.id, 0);
-
-    const mainFileContentObj = buildLatexContentAndPreview(
-      mainItems,
-      personMap,
-      options,
-      effectiveTitle,
-      effectiveSubtitle,
-      henryMap
-    );
-
-    const mainFileName = `${baseSurname}.tex`;
-    const mainTexWrapped = wrapIndividualFileContent(
-      mainFileContentObj.entryCommands,
-      mainFileName
-    );
-
-    // Generate separate branch files if enabled
-    const branchFiles: GeneratedLatexFile[] = [];
-    const branchItemsByFile = new Map<string, InternalExportItem[]>();
-
-    if (options.enableBranchSplit) {
-      for (const bInfo of detectedBranchesAtSelectedGen) {
-        if (!activeSplitBranchIds.has(bInfo.personId)) continue;
-
-        const branchItems: InternalExportItem[] = [];
-        let branchMaxGen = bInfo.generation;
-
-        function traverseBranch(currId: string, indentLevel: number) {
-          const p = personMap.get(currId);
-          const h = henryMap.get(currId);
-          if (!p || !h) return;
-          if (h.generation > branchMaxGen) branchMaxGen = h.generation;
-          const kids = treeChildrenMap.get(currId) || [];
-          const hasImplex = implexNoticeMap.has(currId) || (p.spouses || []).some(s => henryMap.has(s.id));
-
-          branchItems.push({
-            indentLevel,
-            generationNumber: h.generation,
-            isUnknownPlaceholder: false,
-            person: p,
-            henryCode: h.code,
-            orderCode: h.code,
-            roleLabel:
-              currId === bInfo.personId
-                ? (options.locale === 'en' ? `Branch Root` : `Stammherr / Stammmutter`)
-                : undefined,
-            childrenCount: kids.length,
-            isImplex: hasImplex,
-            implexNotice: implexNoticeMap.get(currId),
-          });
-
-          for (const cid of kids) {
-            traverseBranch(cid, indentLevel + 1);
-          }
-        }
-
-        traverseBranch(bInfo.personId, 0);
-        branchItemsByFile.set(bInfo.fileName, branchItems);
-
-        const bTitle =
-          options.locale === 'en'
-            ? `Branch [${bInfo.henryCode}] — ${bInfo.name}`
-            : `Stamm [${bInfo.henryCode}] — ${bInfo.name}`;
-        const bSubtitle = effectiveSubtitle
-          ? `${effectiveSubtitle} (Gen. ${bInfo.generation})`
-          : '';
-
-        const bContentObj = buildLatexContentAndPreview(
-          branchItems,
-          personMap,
-          options,
-          bTitle,
-          bSubtitle,
-          henryMap
-        );
-
-        const bTexWrapped = wrapIndividualFileContent(
-          bContentObj.entryCommands,
-          bInfo.fileName
-        );
-
-        branchFiles.push({
-          fileName: bInfo.fileName,
-          label: `[${bInfo.henryCode}] ${bInfo.name}`,
-          isMasterFile: false,
-          isMainFile: false,
-          branchHenryCode: bInfo.henryCode,
-          branchPersonName: bInfo.name,
-          entryCount: branchItems.length,
-          maxGeneration: branchMaxGen,
-          texContent: bTexWrapped,
-          previewHtml: bContentObj.previewHtml,
-        });
-      }
-    }
-
-    // Subdokumente (Stamm-Dateien) strikt nach Henry-ID sortieren
-    branchFiles.sort((a, b) => compareHenryCodes(a.branchHenryCode || '', b.branchHenryCode || ''));
-
-    // Build the Übergeordnete Klammer-Datei (Master File)
-    const masterPreamble = generateMasterPreamble(options, effectiveTitle, effectiveSubtitle);
-    const masterLines: string[] = [];
-    masterLines.push(masterPreamble);
-    masterLines.push(`% --- Einbindung der Hauptinhaltsdatei ---`);
-    masterLines.push(`\\input{${baseSurname}}`);
-    if (branchFiles.length > 0) {
-      masterLines.push(``);
-      masterLines.push(`% --- Einbindung der ausgelagerten Stamm-Dateien (sortiert nach Henry-ID) ---`);
-      for (const bf of branchFiles) {
-        const cleanStem = bf.fileName.replace(/\.tex$/i, '');
-        masterLines.push(`\\input{${cleanStem}}`);
-      }
-    }
-    masterLines.push(``);
-    masterLines.push(`\\end{document}`);
-
-    // Combined visual preview for the master file
-    const masterCombinedItems = [...mainItems];
-    for (const bf of branchFiles) {
-      const bItems = branchItemsByFile.get(bf.fileName) || [];
-      masterCombinedItems.push(...bItems);
-    }
-    const masterCombinedPreview = buildLatexContentAndPreview(
-      masterCombinedItems,
-      personMap,
-      options,
-      effectiveTitle,
-      effectiveSubtitle,
-      henryMap
-    ).previewHtml;
-
-    const masterFileObj: GeneratedLatexFile = {
-      fileName: masterFileName,
-      label:
-        options.locale === 'en'
-          ? `Master File (${masterFileName})`
-          : `Klammer-Datei (${masterFileName})`,
-      isMasterFile: true,
-      isMainFile: false,
-      entryCount: henryMap.size,
-      maxGeneration: maxGenOverall,
-      texContent: masterLines.join('\n'),
-      previewHtml: masterCombinedPreview,
-    };
-
-    const mainFileObj: GeneratedLatexFile = {
-      fileName: mainFileName,
-      label:
-        options.locale === 'en'
-          ? `Main File (${mainFileName})`
-          : `Hauptdatei (${mainFileName})`,
-      isMasterFile: false,
-      isMainFile: true,
-      entryCount: mainItems.length,
-      maxGeneration: mainMaxGen,
-      texContent: mainTexWrapped,
-      previewHtml: mainFileContentObj.previewHtml,
-    };
-
-    const files = [masterFileObj, mainFileObj, ...branchFiles];
-
-    return {
-      baseSurname,
-      masterFileName,
-      files,
-      totalEntries: henryMap.size,
-      maxGenerationReached: maxGenOverall,
-      unknownBranchesStopped: 0,
-      detectedGenerations,
-      detectedBranchesAtSelectedGen,
-    };
   }
 
-  // ==========================================================================
-  // MODUS 2: BELIEBIGER EINTRAG (Nachkommen oder Vorfahren)
-  // ==========================================================================
-  const maxGenLimit = Math.max(1, Math.min(30, options.maxGenerations || 5));
+  allAvailableBranches.sort((a, b) => compareHenryCodes(a.code, b.code));
 
-  if (options.direction === 'descendants') {
-    // Nachkommen ohne eigenen Henry-Code, chronologisch sortiert, eingerückt je Generationsstufe
-    const items: InternalExportItem[] = [];
-    const visited = new Set<string>();
-    let maxGenReached = 1;
+  const detectedGenerations: GenerationSummary[] = Array.from(genStats.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([generation, s]) => ({
+      generation,
+      count: s.count,
+      branchesWithChildrenCount: s.withChildren,
+    }));
 
-    function traverseCustomDescendants(
-      currId: string,
-      indentLevel: number,
-      genNumber: number,
-      orderPath: string
-    ) {
-      if (visited.has(currId)) return;
-      visited.add(currId);
-
-      const p = personMap.get(currId);
-      if (!p) return;
-      if (genNumber > maxGenReached) maxGenReached = genNumber;
-
-      const rawKids = (childrenByParent.get(currId) || []).filter(
-        cid => cid !== currId && personMap.has(cid)
-      );
-      rawKids.sort((aId, bId) => {
-        const kA = parseBirthSortKey(personMap.get(aId)?.birth_date);
-        const kB = parseBirthSortKey(personMap.get(bId)?.birth_date);
-        for (let i = 0; i < 3; i++) {
-          if (kA[i] !== kB[i]) return kA[i] - kB[i];
-        }
-        return aId.localeCompare(bId);
-      });
-
-      items.push({
-        indentLevel,
-        generationNumber: genNumber,
-        isUnknownPlaceholder: false,
-        person: p,
-        henryCode: '', // Explicit: no Henry code in arbitrary mode
-        orderCode: orderPath,
-        roleLabel:
-          genNumber === 1
-            ? (options.locale === 'en' ? 'Starting Entry' : 'Ausgangsperson')
-            : undefined,
-        childrenCount: rawKids.length,
-      });
-
-      if (genNumber >= maxGenLimit) {
-        return;
-      }
-
-      rawKids.forEach((cid, idx) => {
-        const nextOrder = orderPath ? `${orderPath}.${idx + 1}` : String(idx + 1);
-        traverseCustomDescendants(cid, indentLevel + 1, genNumber + 1, nextOrder);
-      });
-    }
-
-    traverseCustomDescendants(rootPerson.id, 0, 1, '1');
-
-    const contentObj = buildLatexContentAndPreview(
-      items,
-      personMap,
-      options,
-      effectiveTitle,
-      effectiveSubtitle
-    );
-
-    const mainTexWrapped = wrapIndividualFileContent(
-      contentObj.entryCommands,
-      `${baseSurname}.tex`
-    );
-
-    // Master Klammer-Datei
-    const masterPreamble = generateMasterPreamble(options, effectiveTitle, effectiveSubtitle);
-    const masterTex = `${masterPreamble}\n% --- Einbindung der Inhaltsdatei ---\n\\input{${baseSurname}}\n\n\\end{document}`;
-
-    const masterFileObj: GeneratedLatexFile = {
-      fileName: masterFileName,
-      label:
-        options.locale === 'en'
-          ? `Master File (${masterFileName})`
-          : `Klammer-Datei (${masterFileName})`,
-      isMasterFile: true,
-      isMainFile: false,
-      entryCount: items.length,
-      maxGeneration: maxGenReached,
-      texContent: masterTex,
-      previewHtml: contentObj.previewHtml,
-    };
-
-    const mainFileObj: GeneratedLatexFile = {
-      fileName: `${baseSurname}.tex`,
-      label: `${baseSurname}.tex`,
-      isMasterFile: false,
-      isMainFile: true,
-      entryCount: items.length,
-      maxGeneration: maxGenReached,
-      texContent: mainTexWrapped,
-      previewHtml: contentObj.previewHtml,
-    };
-
-    return {
-      baseSurname,
-      masterFileName,
-      files: [masterFileObj, mainFileObj],
-      totalEntries: items.length,
-      maxGenerationReached: maxGenReached,
-      unknownBranchesStopped: 0,
-      detectedGenerations: [],
-      detectedBranchesAtSelectedGen: [],
-    };
-  } else {
-    // Vorfahren (Ahnenliste mit Zweigabbruch bei Unbekannt)
-    const items: InternalExportItem[] = [];
-    let maxGenReached = 1;
-    let unknownBranchesStopped = 0;
-
-    if (options.ancestorSortPattern === 'generation_kekule') {
-      interface AncQueueNode {
-        person: ExportPersonInput | null;
-        isMother: boolean;
-        genOffset: number;
-        kekuleId: number;
-      }
-      const queue: AncQueueNode[] = [
-        { person: rootPerson, isMother: rootPerson.sex === 'F', genOffset: 0, kekuleId: 1 },
-      ];
-
-      while (queue.length > 0) {
-        const curr = queue.shift()!;
-        const genNum = curr.genOffset + 1;
-        if (genNum > maxGenReached) maxGenReached = genNum;
-
-        if (!curr.person) {
-          unknownBranchesStopped++;
-          items.push({
-            indentLevel: curr.genOffset,
-            generationNumber: genNum,
-            isUnknownPlaceholder: true,
-            unknownText: resolveUnknownParentText(curr.isMother, curr.genOffset, options),
-            kekuleId: curr.kekuleId,
-            childrenCount: 0,
-          });
-          continue;
-        }
-
-        const p = curr.person;
-        const isFem = p.sex === 'F';
-        items.push({
-          indentLevel: curr.genOffset,
-          generationNumber: genNum,
-          isUnknownPlaceholder: false,
-          person: p,
-          henryCode: '',
-          kekuleId: curr.kekuleId,
-          orderCode: String(curr.kekuleId),
-          roleLabel: getAncestorRoleLabel(curr.genOffset, isFem, options.locale),
-          childrenCount: (childrenByParent.get(p.id) || []).length,
-        });
-
-        if (genNum < maxGenLimit) {
-          const { father, mother } = resolveFatherMother(p, personMap);
-          queue.push({
-            person: father || null,
-            isMother: false,
-            genOffset: curr.genOffset + 1,
-            kekuleId: curr.kekuleId * 2,
-          });
-          queue.push({
-            person: mother || null,
-            isMother: true,
-            genOffset: curr.genOffset + 1,
-            kekuleId: curr.kekuleId * 2 + 1,
-          });
-        }
+  // Determine active split branches
+  const splitRootSet = new Set<string>();
+  if (options.enableBranchSplit) {
+    if (options.selectedBranchIds.length > 0) {
+      for (const id of options.selectedBranchIds) {
+        if (tree.nodesById.has(id)) splitRootSet.add(id);
       }
     } else {
-      const visitedAnc = new Set<string>();
-
-      function traverseAncestorsRecursive(
-        person: ExportPersonInput | undefined,
-        isMother: boolean,
-        genOffset: number,
-        kekuleId: number
-      ) {
-        const genNum = genOffset + 1;
-        if (genNum > maxGenReached) maxGenReached = genNum;
-
-        if (!person) {
-          unknownBranchesStopped++;
-          items.push({
-            indentLevel: genOffset,
-            generationNumber: genNum,
-            isUnknownPlaceholder: true,
-            unknownText: resolveUnknownParentText(isMother, genOffset, options),
-            kekuleId,
-            childrenCount: 0,
-          });
-          return;
+      for (const b of allAvailableBranches) {
+        if (b.isDesignSubtree || b.generation === options.branchSplitGeneration) {
+          splitRootSet.add(b.personId);
         }
-
-        const isFem = person.sex === 'F';
-        items.push({
-          indentLevel: genOffset,
-          generationNumber: genNum,
-          isUnknownPlaceholder: false,
-          person,
-          henryCode: '',
-          kekuleId,
-          orderCode: String(kekuleId),
-          roleLabel: getAncestorRoleLabel(genOffset, isFem, options.locale),
-          childrenCount: (childrenByParent.get(person.id) || []).length,
-        });
-
-        if (genNum >= maxGenLimit) {
-          return;
-        }
-
-        if (visitedAnc.has(person.id)) {
-          return;
-        }
-        visitedAnc.add(person.id);
-
-        const { father, mother } = resolveFatherMother(person, personMap);
-        if (options.ancestorSortPattern === 'matrilineal_recursive') {
-          traverseAncestorsRecursive(mother, true, genOffset + 1, kekuleId * 2 + 1);
-          traverseAncestorsRecursive(father, false, genOffset + 1, kekuleId * 2);
-        } else {
-          // Default: Kekulé patrilinear (Vater vor Mutter)
-          traverseAncestorsRecursive(father, false, genOffset + 1, kekuleId * 2);
-          traverseAncestorsRecursive(mother, true, genOffset + 1, kekuleId * 2 + 1);
-        }
-
-        visitedAnc.delete(person.id);
       }
-
-      traverseAncestorsRecursive(rootPerson, rootPerson.sex === 'F', 0, 1);
     }
-
-    const contentObj = buildLatexContentAndPreview(
-      items,
-      personMap,
-      options,
-      effectiveTitle,
-      effectiveSubtitle
-    );
-
-    const mainTexWrapped = wrapIndividualFileContent(
-      contentObj.entryCommands,
-      `${baseSurname}.tex`
-    );
-
-    const masterPreamble = generateMasterPreamble(options, effectiveTitle, effectiveSubtitle);
-    const masterTex = `${masterPreamble}\n% --- Einbindung der Inhaltsdatei ---\n\\input{${baseSurname}}\n\n\\end{document}`;
-
-    const masterFileObj: GeneratedLatexFile = {
-      fileName: masterFileName,
-      label:
-        options.locale === 'en'
-          ? `Master File (${masterFileName})`
-          : `Klammer-Datei (${masterFileName})`,
-      isMasterFile: true,
-      isMainFile: false,
-      entryCount: items.length,
-      maxGeneration: maxGenReached,
-      texContent: masterTex,
-      previewHtml: contentObj.previewHtml,
-    };
-
-    const mainFileObj: GeneratedLatexFile = {
-      fileName: `${baseSurname}.tex`,
-      label: `${baseSurname}.tex`,
-      isMasterFile: false,
-      isMainFile: true,
-      entryCount: items.length,
-      maxGeneration: maxGenReached,
-      texContent: mainTexWrapped,
-      previewHtml: contentObj.previewHtml,
-    };
-
-    return {
-      baseSurname,
-      masterFileName,
-      files: [masterFileObj, mainFileObj],
-      totalEntries: items.length,
-      maxGenerationReached: maxGenReached,
-      unknownBranchesStopped,
-      detectedGenerations: [],
-      detectedBranchesAtSelectedGen: [],
-    };
   }
+
+  // Reihenfolge-Wahrung: Geschwister ohne eigenen Sub-Baum (z.B. 15 zwischen 14 und 16),
+  // die nach einem ausgelagerten Geschwister-Stamm unter demselben Elternteil folgen,
+  // werden ebenfalls in exakter genealogischer Reihenfolge zwischen den Kapiteln eingeordnet.
+  const deferredSiblingSet = new Set<string>();
+  if (options.enableBranchSplit && splitRootSet.size > 0) {
+    for (const parentNode of tree.nodesById.values()) {
+      let seenSplitSibling = false;
+      for (const cid of parentNode.childrenIds) {
+        if (splitRootSet.has(cid)) {
+          seenSplitSibling = true;
+        } else if (seenSplitSibling) {
+          deferredSiblingSet.add(cid);
+        }
+      }
+    }
+  }
+
+  const effectiveSplitRootSet = new Set<string>([...splitRootSet, ...deferredSiblingSet]);
+  const branchInfoMap = new Map(allAvailableBranches.map(b => [b.personId, b]));
+  for (const defId of deferredSiblingSet) {
+    if (!branchInfoMap.has(defId)) {
+      const node = tree.nodesById.get(defId);
+      if (node) {
+        const code = node.henryCode || node.zweigCode;
+        const safeFileCode = sanitizeLatexLabel(code);
+        branchInfoMap.set(defId, {
+          personId: node.person.id,
+          code,
+          safeFileCode,
+          name: [node.person.given_name, node.person.surname].filter(Boolean).join(' ') || 'N.N.',
+          surname: node.person.surname || '',
+          givenName: node.person.given_name || '',
+          birthDate: node.person.birth_date || '',
+          deathDate: node.person.death_date || '',
+          generation: node.generation,
+          descendantCount: 1,
+          fileName: `${treeSubdir}/${baseFileName}-${safeFileCode}.tex`,
+          isDesignSubtree: false,
+          isAutoDeferred: true,
+        });
+      }
+    } else {
+      const existing = branchInfoMap.get(defId)!;
+      branchInfoMap.set(defId, { ...existing, isAutoDeferred: true });
+    }
+  }
+
+  const activeSplitBranches = Array.from(effectiveSplitRootSet)
+    .map(id => branchInfoMap.get(id))
+    .filter((b): b is DetectedBranchInfo => Boolean(b))
+    .sort((a, b) => compareHenryCodes(a.code, b.code));
+  const branchByPersonId = new Map(activeSplitBranches.map(b => [b.personId, b]));
+
+  const files: GeneratedLatexFile[] = [];
+  const rootFullName = rootNode
+    ? [rootNode.person.given_name, rootNode.person.surname].filter(Boolean).join(' ')
+    : baseFileName;
+
+  // Layer 1: Master & Globale Formatierung (im Stammverzeichnis)
+  const masterFile = generateMasterFile(
+    baseFileName,
+    structureFileName,
+    textsSubdir,
+    options,
+    rootFullName
+  );
+  const formatFile = generateFormatFile(textsSubdir, options);
+  files.push(masterFile);
+  files.push(formatFile);
+
+  // Layer 3a: Main / Precursor data file (in treeSubdir)
+  const mainDataFile = renderBranchDataFile(
+    mainDataFileName,
+    activeSplitBranches.length > 0 ? `Vorlauf (${baseFileName}.tex)` : `Stammfolge (${baseFileName}.tex)`,
+    true,
+    undefined,
+    tree.orderedRootId,
+    tree.nodesById,
+    effectiveSplitRootSet,
+    branchByPersonId,
+    options,
+    globalStammahnLookup,
+    allPersonMap
+  );
+
+  // Layer 2: Structure file (in treeSubdir)
+  const structureFile = generateStructureFile(
+    baseFileName,
+    treeSubdir,
+    textsSubdir,
+    mainDataFileName,
+    activeSplitBranches,
+    options,
+    rootNode,
+    mainDataFile.entryCount
+  );
+  files.push(structureFile);
+  files.push(mainDataFile);
+
+  // Geschützte Intro-Hülle für Hauptstamm (in textsSubdir)
+  const isBook = options.template.documentClass === 'scrbook';
+  files.push(
+    generateIntroWrapperFile(
+      `${textsSubdir}/${baseFileName}_intro.tex`,
+      mainDataFileName,
+      isBook ? '\\chapter' : '\\section',
+      `Hauptstamm: ${rootFullName}`,
+      'stamm:hauptstamm',
+      `Intro (Hauptstamm)`
+    )
+  );
+
+  // Layer 3b: Split Branch data files & ihre Intro-Hüllen
+  for (const b of activeSplitBranches) {
+    const labelPrefix = b.isAutoDeferred ? 'Zweig' : 'Stamm';
+    const branchFile = renderBranchDataFile(
+      b.fileName,
+      `${labelPrefix} [${b.code}] (${b.name})`,
+      false,
+      b,
+      b.personId,
+      tree.nodesById,
+      effectiveSplitRootSet,
+      branchByPersonId,
+      options,
+      globalStammahnLookup,
+      allPersonMap
+    );
+    files.push(branchFile);
+
+    const life = [b.birthDate ? `* ${b.birthDate}` : '', b.deathDate ? `† ${b.deathDate}` : '']
+      .filter(Boolean)
+      .join(', ');
+    const titleSuffix = life ? ` (${life})` : '';
+    const branchHeading = b.isAutoDeferred
+      ? isBook
+        ? '\\section'
+        : '\\subsection'
+      : isBook
+        ? '\\chapter'
+        : '\\section';
+    files.push(
+      generateIntroWrapperFile(
+        `${textsSubdir}/${baseFileName}-${b.safeFileCode}_intro.tex`,
+        b.fileName,
+        branchHeading,
+        `${labelPrefix} [${b.code}] — ${b.name}${titleSuffix}`,
+        `stamm:${b.safeFileCode}`,
+        `Intro [${b.code}]`
+      )
+    );
+  }
+
+  const maxGenerationReached = Math.max(
+    0,
+    ...Array.from(tree.nodesById.values()).map(n => n.generation)
+  );
+
+  return {
+    baseFileName,
+    treeSubdir,
+    textsSubdir,
+    masterFileName: masterFile.fileName,
+    structureFileName: structureFile.fileName,
+    files,
+    totalEntries: tree.nodesById.size,
+    maxGenerationReached,
+    unknownBranchesStopped: tree.unknownBranchesStopped,
+    bridgeRefsCount: tree.bridgeRefsCount,
+    detectedGenerations,
+    allAvailableBranches,
+    activeSplitBranches,
+  };
 }
 
-/**
- * Erzeugt eine schlanke, reine Formatierungs-Vorschau mit generischen Beispieldaten
- * (ohne jeglichen Bezug zu realen Personendaten oder Familienkontext).
- * Zeigt über 3 Generationen typografische Einzüge, Namens- und Lebensdaten,
- * einfache und mehrfache Ehen, Scheidung sowie Kindstatus.
- */
+export const LATEX_SAMPLE_PERSONS: ExportPersonInput[] = [
+  {
+    id: 'I_SAMPLE_1',
+    given_name: 'Johann Henrich',
+    surname: 'Froning',
+    sex: 'M',
+    birth_date: '12.04.1820',
+    birth_place: 'Coesfeld',
+    death_date: '03.11.1891',
+    death_place: 'Münster',
+    spouses: [
+      {
+        id: 'I_SAMPLE_SP1',
+        date: '18.05.1845',
+        place: 'Coesfeld',
+        divorce_date: null,
+        is_divorced: false,
+      },
+    ],
+    parent_ids: [],
+    gedcom_extra: {
+      OCCU: 'Ackersmann',
+      RELI: 'kath.',
+      RESI: { PLAC: 'Coesfeld-Stevede' },
+      NOTE: 'Erbte den Hof im Jahr 1848.',
+    },
+  },
+  {
+    id: 'I_SAMPLE_SP1',
+    given_name: 'Anna Maria',
+    surname: 'Meyer',
+    sex: 'F',
+    birth_date: '02.08.1824',
+    birth_place: 'Billerbeck',
+    death_date: '19.01.1889',
+    death_place: 'Coesfeld',
+    spouses: [],
+    parent_ids: [],
+    gedcom_extra: {},
+  },
+  {
+    id: 'I_SAMPLE_2',
+    given_name: 'Bernard Heinrich',
+    surname: 'Froning',
+    sex: 'M',
+    birth_date: '15.03.1846',
+    birth_place: 'Coesfeld',
+    death_date: '22.09.1912',
+    death_place: 'Dülmen',
+    spouses: [],
+    parent_ids: ['I_SAMPLE_1', 'I_SAMPLE_SP1'],
+    gedcom_extra: {
+      OCCU: 'Schmiedemeister',
+      RELI: 'kath.',
+      RESI: { PLAC: 'Dülmen' },
+    },
+  },
+];
+
 export function generateSampleLatexPreview(
   template: LatexTemplateConfig,
-  locale: SupportedLocale
-): { previewHtml: string; texContent: string; entryCount: number } {
-  const isEn = locale === 'en';
-
-  const samplePersons: ExportPersonInput[] = [
-    // Generation 1: Proband
-    {
-      id: 'sample-p1',
-      given_name: isEn ? 'John' : 'Max',
-      surname: isEn ? 'Sample' : 'Mustermann',
-      sex: 'm',
-      birth_date: '15.03.1890',
-      birth_place: isEn ? 'Sampletown' : 'Musterstadt',
-      death_date: '10.04.1965',
-      death_place: isEn ? 'Example City' : 'Beispielort',
-      gedcom_extra: {
-        CHR: { DATE: '22.03.1890', PLAC: isEn ? 'Sampletown' : 'Musterstadt' },
-        OCCU: { _val: isEn ? 'Architect' : 'Musterberuf' },
-        RELI: { _val: isEn ? 'Anglican' : 'ev.' },
-        RESI: { PLAC: isEn ? 'Sampletown' : 'Musterstadt' },
-        NOTE: {
-          _val: isEn
-            ? 'Sample footnote demonstrating formatting and notes'
-            : 'Beispielhafte Fußnote zur Demonstration von Masken und Formatierung',
-        },
-      },
-      parent_ids: [],
-      spouses: [
-        {
-          id: 'sample-sp1',
-          date: '24.08.1915',
-          place: isEn ? 'Sampletown' : 'Musterstadt',
-          divorce_date: null,
-          is_divorced: false,
-        },
-      ],
-    },
-    // Partner von Generation 1
-    {
-      id: 'sample-sp1',
-      given_name: isEn ? 'Jane' : 'Erika',
-      surname: isEn ? 'Sample (née Smith)' : 'Musterfrau',
-      sex: 'f',
-      birth_date: '12.06.1893',
-      birth_place: isEn ? 'Sampletown' : 'Musterstadt',
-      death_date: '05.02.1970',
-      death_place: isEn ? 'Example City' : 'Beispielort',
-      gedcom_extra: {},
-      parent_ids: [],
-      spouses: [],
-    },
-
-    // Generation 2: Sohn mit Partner
-    {
-      id: 'sample-p2',
-      given_name: 'Alexander',
-      surname: isEn ? 'Sample' : 'Mustermann',
-      sex: 'm',
-      birth_date: '14.05.1918',
-      birth_place: isEn ? 'Sampletown' : 'Musterstadt',
-      death_date: '22.11.1984',
-      death_place: isEn ? 'Sampletown' : 'Musterstadt',
-      gedcom_extra: {
-        CHR: { DATE: '20.05.1918', PLAC: isEn ? 'Sampletown' : 'Musterstadt' },
-        OCCU: { _val: isEn ? 'Civil Engineer' : 'Ingenieur' },
-        RELI: { _val: 'ev.' },
-        RESI: { PLAC: isEn ? 'Sampletown' : 'Musterstadt' },
-      },
-      parent_ids: ['sample-p1', 'sample-sp1'],
-      spouses: [
-        {
-          id: 'sample-sp2',
-          date: '12.06.1942',
-          place: isEn ? 'Example City' : 'Beispielort',
-          divorce_date: null,
-          is_divorced: false,
-        },
-      ],
-    },
-    // Partner von Kind 1
-    {
-      id: 'sample-sp2',
-      given_name: 'Sophie',
-      surname: isEn ? 'Miller' : 'Beispiel',
-      sex: 'f',
-      birth_date: '18.09.1920',
-      birth_place: isEn ? 'Example City' : 'Beispielort',
-      death_date: '30.07.1995',
-      death_place: isEn ? 'Example City' : 'Beispielort',
-      gedcom_extra: {},
-      parent_ids: [],
-      spouses: [],
-    },
-
-    // Generation 2: Tochter mit Mehrfachehe und Scheidung
-    {
-      id: 'sample-p3',
-      given_name: 'Clara',
-      surname: isEn ? 'Sample' : 'Mustermann',
-      sex: 'f',
-      birth_date: '08.09.1922',
-      birth_place: isEn ? 'Sampletown' : 'Musterstadt',
-      death_date: '17.01.2005',
-      death_place: isEn ? 'Sampletown' : 'Musterstadt',
-      gedcom_extra: {},
-      parent_ids: ['sample-p1', 'sample-sp1'],
-      spouses: [
-        {
-          id: 'sample-sp3a',
-          date: '10.05.1946',
-          place: isEn ? 'Sampletown' : 'Musterstadt',
-          divorce_date: '15.08.1952',
-          is_divorced: true,
-        },
-        {
-          id: 'sample-sp3b',
-          date: '03.04.1955',
-          place: isEn ? 'Example City' : 'Beispielort',
-          divorce_date: null,
-          is_divorced: false,
-        },
-      ],
-    },
-    // Partner 1 von Kind 2 (geschieden)
-    {
-      id: 'sample-sp3a',
-      given_name: 'Martin',
-      surname: isEn ? 'Walker' : 'Probe',
-      sex: 'm',
-      birth_date: '19.01.1920',
-      birth_place: isEn ? 'Sampletown' : 'Musterstadt',
-      death_date: null,
-      death_place: null,
-      gedcom_extra: {},
-      parent_ids: [],
-      spouses: [],
-    },
-    // Partner 2 von Kind 2
-    {
-      id: 'sample-sp3b',
-      given_name: isEn ? 'William' : 'Wilhelm',
-      surname: isEn ? 'Taylor' : 'Testmann',
-      sex: 'm',
-      birth_date: '28.07.1919',
-      birth_place: isEn ? 'Example City' : 'Beispielort',
-      death_date: '14.12.1988',
-      death_place: isEn ? 'Example City' : 'Beispielort',
-      gedcom_extra: {},
-      parent_ids: [],
-      spouses: [],
-    },
-
-    // Generation 3: Enkelkind
-    {
-      id: 'sample-p4',
-      given_name: 'Felix',
-      surname: isEn ? 'Sample' : 'Mustermann',
-      sex: 'm',
-      birth_date: '03.02.1945',
-      birth_place: isEn ? 'Example City' : 'Beispielort',
-      death_date: null,
-      death_place: null,
-      gedcom_extra: {},
-      parent_ids: ['sample-p2', 'sample-sp2'],
-      spouses: [],
-    },
-  ];
-
-  const docTitle = isEn
-    ? 'Formatting & Layout Preview (Sample Data)'
-    : 'Formatierungs- & Layout-Vorschau (Beispieldaten)';
-  const docSubtitle = isEn
-    ? 'Generic sample records for testing indentation, text masks, and variables'
-    : 'Generische Beispieldaten zur Prüfung von Einzügen, Textmasken und Variablen';
-
-  const exportResult = generateLatexExport(samplePersons, {
-    mode: 'proband',
-    rootPersonId: 'sample-p1',
+  locale: SupportedLocale = 'de'
+): { texContent: string; previewHtml: string } {
+  const res = generateLatexExport(LATEX_SAMPLE_PERSONS, {
+    sourceMode: 'root_ancestor',
+    rootPersonId: 'I_SAMPLE_1',
     startCode: '1',
+    lineagePolicy: 'patrilinear',
+    rootAncestors: [
+      {
+        person_id: 'I_SAMPLE_1',
+        starting_code: '1',
+        given_name: 'Johann Henrich',
+        surname: 'Froning',
+      },
+    ],
     direction: 'descendants',
-    maxGenerations: 4,
+    maxGenerations: 5,
     ancestorSortPattern: 'kekule_patrilineal',
     unknownParentPreset: 'classic',
-    customUnknownFatherText: '',
-    customUnknownMotherText: '',
+    customUnknownFatherText: 'N.N.',
+    customUnknownMotherText: 'N.N.',
     enableBranchSplit: false,
-    branchSplitGeneration: 2,
+    branchSplitGeneration: 3,
     selectedBranchIds: [],
-    includeBranchInputsInMain: true,
-    customDocumentTitle: docTitle,
-    customDocumentSubtitle: docSubtitle,
+    baseFileName: 'Muster_Chronik',
+    customDocumentTitle: 'Muster-Chronik',
+    customDocumentSubtitle: 'Vorschau',
     template,
     locale,
   });
 
-  const previewHtml = exportResult.files[0]?.previewHtml || '';
-  const texContent = exportResult.files[0]?.texContent || '';
-
+  const mainFile = res.files.find(f => f.isMainFile) || res.files[0];
   return {
-    previewHtml,
-    texContent,
-    entryCount: 4,
+    texContent: mainFile?.texContent || '',
+    previewHtml: mainFile?.previewHtml || '',
   };
 }

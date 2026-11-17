@@ -1,30 +1,57 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { save } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { useI18n } from 'vue-i18n';
 import ExportLanguageSelect, { type ExportLocaleSelection } from '../common/ExportLanguageSelect.vue';
-import { FALLBACK_LOCALE, formatDateByLocale, resolveLocale } from '../../locales/registry';
+import { FALLBACK_LOCALE, resolveLocale } from '../../locales/registry';
 import type { ExportPersonInput } from '../../utils/htmlExport';
-import LatexConfigModal from './LatexConfigModal.vue';
 import {
+  bundleDtoToModel,
+  type DesignDocumentSummaryDto,
+  type DesignTreeBundleDto,
+} from '../../composables/useDesignStudioStore';
+import type { DesignTreeBundle, LineagePolicy } from '../../domain/design/sceneTypes';
+import {
+  DEFAULT_LATEX_TEMPLATES,
   generateLatexExport,
-  BUILTIN_LATEX_TEMPLATES,
-  type LatexExportMode,
-  type LatexExportDirection,
+  normalizeLatexTemplateConfig,
+  sanitizeLatexFileSlug,
   type AncestorSortPattern,
-  type UnknownParentPreset,
-  type LatexTemplateConfig,
+  type LatexExportDirection,
   type LatexExportResult,
-  type GeneratedLatexFile,
+  type LatexSourceMode,
+  type LatexTemplateConfig,
   type LatexTemplateEntry,
 } from '../../utils/latexExport';
+import LatexConfigModal from './LatexConfigModal.vue';
 
 interface RootAncestorConfig {
   person_id: string;
   starting_code: string;
   given_name: string | null;
   surname: string | null;
+}
+
+interface LatexBookFileStatusDto {
+  file_name: string;
+  role: string;
+  exists: boolean;
+  action: 'create' | 'update' | 'protect' | string;
+}
+
+interface LatexDirectoryInspectionDto {
+  dir_path: string;
+  dir_exists: boolean;
+  is_writable: boolean;
+  files: LatexBookFileStatusDto[];
+  existing_intro_files: string[];
+  error: string | null;
+}
+
+interface LatexDirectorySyncResultDto {
+  written_files: string[];
+  skipped_protected_files: string[];
 }
 
 const props = defineProps<{
@@ -36,1703 +63,1611 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: 'update:selectedExportRootId', id: string): void;
-  (e: 'update:exportStartCode', code: string): void;
+  (e: 'update:selectedExportRootId', value: string): void;
+  (e: 'update:exportStartCode', value: string): void;
   (e: 'select-proband', personId: string): void;
 }>();
 
 const { t, locale } = useI18n();
 
-const isLeftPanelCollapsed = ref<boolean>(false);
-const saveStatusMsg = ref<string>('');
-const saveErrorMsg = ref<string>('');
-const personSearchQuery = ref<string>('');
-
-const latexMode = ref<LatexExportMode>('proband');
-const latexDirection = ref<LatexExportDirection>('descendants');
-const latexMaxGenerations = ref<number>(5);
-const latexAncestorSortPattern = ref<AncestorSortPattern>('kekule_patrilineal');
-const latexUnknownPreset = ref<UnknownParentPreset>('classic');
-const latexCustomUnknownFather = ref<string>('Vater: N.N. (nicht bekannt — Zweig endet hier)');
-const latexCustomUnknownMother = ref<string>('Mutter: N.N. (nicht bekannt — Zweig endet hier)');
-
-// Stämme-Aufteilung (bei Probanden-Export)
-const latexEnableBranchSplit = ref<boolean>(false);
-const latexBranchSplitGen = ref<number>(2);
-const latexSelectedBranchIds = ref<string[]>([]);
-const latexIncludeBranchInputs = ref<boolean>(true);
-const latexCustomDocTitle = ref<string>('');
-const latexCustomDocSubtitle = ref<string>('');
-
-// Gespeicherte & eingebaute Vorlagen
-const savedLatexTemplates = ref<LatexTemplateEntry[]>([]);
-const selectedLatexTemplateId = ref<string>(BUILTIN_LATEX_TEMPLATES[0].id);
-const latexTemplateSaveName = ref<string>(BUILTIN_LATEX_TEMPLATES[0].name);
-const latexActiveTemplate = ref<LatexTemplateConfig>({
-  ...BUILTIN_LATEX_TEMPLATES[0],
-});
-
-const latexPreviewMode = ref<'visual' | 'source'>('visual');
-const latexActiveFileIdx = ref<number>(0);
-const isSavingLatex = ref<boolean>(false);
-const showLatexConfigModal = ref<boolean>(false);
+const isLeftPanelCollapsed = ref(false);
+const saveStatusMsg = ref('');
+const saveErrorMsg = ref('');
 const exportLangOverride = ref<ExportLocaleSelection>('auto');
 
-const effectiveExportLocale = computed(() =>
-  exportLangOverride.value === 'auto'
-    ? (resolveLocale(locale.value) ?? FALLBACK_LOCALE)
-    : exportLangOverride.value
+const effectiveExportLocale = computed(
+  () =>
+    exportLangOverride.value === 'auto'
+      ? resolveLocale(locale.value) ?? FALLBACK_LOCALE
+      : exportLangOverride.value
 );
 
-const LOCAL_STORAGE_LATEX_TEMPLATES_KEY = 'stammbaum_latex_templates_v1';
+// Source & Genealogy State
+const sourceMode = ref<LatexSourceMode>('root_ancestor');
+const lineagePolicy = ref<LineagePolicy>('patrilinear');
+const latexDirection = ref<LatexExportDirection>('descendants');
+const latexMaxGenerations = ref<number>(12);
+const ancestorSortPattern = ref<AncestorSortPattern>('kekule_patrilineal');
+const customPersonSearch = ref('');
 
-function formatLayoutDate(isoStr: string): string {
-  if (!isoStr) return '';
-  try {
-    const d = new Date(isoStr);
-    return formatDateByLocale(d, locale.value, {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-  } catch {
-    return isoStr;
-  }
-}
+// Design Studio Bundle State
+const savedDesignLayouts = ref<DesignDocumentSummaryDto[]>([]);
+const isLoadingDesignLayouts = ref(false);
+const selectedDesignLayoutId = ref('');
+const selectedDesignBundle = ref<DesignTreeBundle | null>(null);
 
-const isSelectedRootInDefinedList = computed<boolean>(() => {
-  return props.rootAncestors.some(r => r.person_id === props.selectedExportRootId);
+// Branch Splitting & Book Project State
+const enableBranchSplit = ref(true);
+const branchSplitGeneration = ref(3);
+const selectedBranchIds = ref<string[]>([]);
+const branchFilterQuery = ref('');
+const baseFileName = ref('');
+const treeSubdir = ref('Stammbaum');
+const textsSubdir = ref('Texte');
+const customDocumentTitle = ref('');
+const customDocumentSubtitle = ref('');
+
+// Target Book Directory Sync State
+const BOOK_DIR_STORAGE_KEY = 'lg_latex_book_target_dir';
+const bookTargetDir = ref<string>(localStorage.getItem(BOOK_DIR_STORAGE_KEY) || '');
+const directoryInspection = ref<LatexDirectoryInspectionDto | null>(null);
+const isInspectingDir = ref(false);
+const isSyncingDir = ref(false);
+const forceOverwriteFormat = ref(false);
+const forceOverwriteMaster = ref(false);
+
+// Templates & Config Modal
+const savedLatexTemplates = ref<LatexTemplateEntry[]>([]);
+const selectedLatexTemplateId = ref<string>(DEFAULT_LATEX_TEMPLATES[0].id);
+const activeLatexTemplate = ref<LatexTemplateConfig>(
+  normalizeLatexTemplateConfig(structuredClone(DEFAULT_LATEX_TEMPLATES[0]))
+);
+const showLatexConfigModal = ref(false);
+
+// Preview State
+const activeLatexFileIndex = ref(0);
+const latexViewMode = ref<'visual' | 'source'>('visual');
+const latexCopySuccess = ref(false);
+
+const sortedPersons = computed(() =>
+  [...props.persons].sort((a, b) => {
+    const sa = (a.surname || '').toLowerCase();
+    const sb = (b.surname || '').toLowerCase();
+    if (sa !== sb) return sa.localeCompare(sb);
+    return (a.given_name || '').toLowerCase().localeCompare((b.given_name || '').toLowerCase());
+  })
+);
+
+const filteredCustomPersons = computed(() => {
+  const q = customPersonSearch.value.trim().toLowerCase();
+  if (!q) return sortedPersons.value.slice(0, 60);
+  return sortedPersons.value
+    .filter(p => {
+      const full = `${p.given_name || ''} ${p.surname || ''} ${p.birth_date || ''}`.toLowerCase();
+      return full.includes(q);
+    })
+    .slice(0, 60);
 });
 
-const filteredPersonsList = computed<ExportPersonInput[]>(() => {
-  const q = personSearchQuery.value.trim().toLowerCase();
-  const cleanQ = q.replace(/[\[\]]/g, '').trim();
+function formatPersonLabel(p: ExportPersonInput): string {
+  const name = [p.given_name, p.surname].filter(Boolean).join(' ') || 'N.N.';
+  const dates = [p.birth_date ? `*${p.birth_date}` : '', p.death_date ? `†${p.death_date}` : '']
+    .filter(Boolean)
+    .join(' ');
+  return dates ? `${name} (${dates})` : name;
+}
 
-  let list = props.persons;
-  if (q) {
-    list = props.persons.filter(p => {
-      const gn = (p.given_name || '').toLowerCase();
-      const sn = (p.surname || '').toLowerCase();
-      const full = `${gn} ${sn}`.trim();
-      const rev = `${sn}, ${gn}`.trim();
-      const idMatch = p.id.toLowerCase().includes(q) || (cleanQ && p.id.toLowerCase().includes(cleanQ));
-      const bMatch = (p.birth_date || '').toLowerCase().includes(q);
-      return gn.includes(q) || sn.includes(q) || full.includes(q) || rev.includes(q) || idMatch || bMatch;
-    });
+// Effective root person ID depending on sourceMode
+const effectiveRootPersonId = computed(() => {
+  if (sourceMode.value === 'design_document' && selectedDesignBundle.value) {
+    return selectedDesignBundle.value.rootDocument.rootPersonId;
   }
-  return list.slice(0, 80);
+  if (sourceMode.value === 'root_ancestor') {
+    if (props.rootAncestors.some(r => r.person_id === props.selectedExportRootId)) {
+      return props.selectedExportRootId;
+    }
+    return props.rootAncestors[0]?.person_id || props.selectedExportRootId || props.persons[0]?.id || '';
+  }
+  return props.selectedExportRootId || props.persons[0]?.id || '';
 });
 
-function selectRootPerson(personId: string, startCode?: string) {
-  emit('update:selectedExportRootId', personId);
-  const configured = props.rootAncestors.find(r => r.person_id === personId);
-  if (startCode !== undefined) {
-    emit('update:exportStartCode', startCode);
-  } else if (configured) {
-    emit('update:exportStartCode', configured.starting_code || '1');
-  } else if (!props.exportStartCode.trim()) {
-    emit('update:exportStartCode', '1');
+const effectiveStartCode = computed(() => {
+  if (sourceMode.value === 'root_ancestor') {
+    const found = props.rootAncestors.find(r => r.person_id === effectiveRootPersonId.value);
+    return found?.starting_code || props.exportStartCode || '1';
   }
-  saveStatusMsg.value = '';
-  saveErrorMsg.value = '';
-}
-
-function onDefinedRootDropdownChange(personId: string) {
-  if (!personId) return;
-  const configured = props.rootAncestors.find(r => r.person_id === personId);
-  selectRootPerson(personId, configured?.starting_code);
-  emit('select-proband', personId);
-}
-
-async function fetchLatexTemplates() {
-  try {
-    const dbList = await invoke<LatexTemplateEntry[]>('get_latex_templates');
-    if (Array.isArray(dbList)) {
-      savedLatexTemplates.value = dbList;
-      try {
-        localStorage.setItem(LOCAL_STORAGE_LATEX_TEMPLATES_KEY, JSON.stringify(dbList));
-      } catch {}
-      return;
-    }
-  } catch {
-    try {
-      const raw = localStorage.getItem(LOCAL_STORAGE_LATEX_TEMPLATES_KEY);
-      if (raw) {
-        savedLatexTemplates.value = JSON.parse(raw) as LatexTemplateEntry[];
-      }
-    } catch {}
-  }
-}
-
-function selectLatexTemplateById(id: string) {
-  selectedLatexTemplateId.value = id;
-  const builtin = BUILTIN_LATEX_TEMPLATES.find(b => b.id === id);
-  if (builtin) {
-    latexActiveTemplate.value = { ...builtin };
-    latexTemplateSaveName.value = builtin.name;
-    return;
-  }
-  const saved = savedLatexTemplates.value.find(s => s.id === id);
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved.config_data) as LatexTemplateConfig;
-      latexActiveTemplate.value = {
-        ...BUILTIN_LATEX_TEMPLATES[0],
-        ...parsed,
-        id: saved.id,
-        name: saved.name,
-      };
-      latexTemplateSaveName.value = saved.name;
-    } catch (e) {
-      console.error('Failed to parse saved LaTeX template', e);
-    }
-  }
-}
-
-async function saveCurrentLatexTemplate(asNew = false) {
-  const name = latexTemplateSaveName.value.trim();
-  if (!name) return;
-  saveStatusMsg.value = '';
-  saveErrorMsg.value = '';
-
-  const isBuiltinSelected = BUILTIN_LATEX_TEMPLATES.some(b => b.id === selectedLatexTemplateId.value);
-  const overwriteId = !asNew && !isBuiltinSelected ? selectedLatexTemplateId.value : undefined;
-  const createdAt = new Date().toISOString();
-  const payloadConfig: LatexTemplateConfig = {
-    ...latexActiveTemplate.value,
-    name,
-  };
-  const configData = JSON.stringify(payloadConfig);
-
-  try {
-    const savedEntry = await invoke<LatexTemplateEntry>('save_latex_template', {
-      name,
-      createdAt,
-      configData,
-      overwriteId: overwriteId || null,
-    });
-    await fetchLatexTemplates();
-    selectedLatexTemplateId.value = savedEntry.id;
-    saveStatusMsg.value =
-      locale.value === 'en'
-        ? `Template "${savedEntry.name}" saved.`
-        : `Konfiguration „${savedEntry.name}“ gespeichert.`;
-  } catch (err: any) {
-    const fallbackId = overwriteId || `local-${Date.now()}`;
-    const entry: LatexTemplateEntry = {
-      id: fallbackId,
-      name,
-      created_at: createdAt,
-      config_data: configData,
-    };
-    const existingIdx = savedLatexTemplates.value.findIndex(x => x.id === fallbackId);
-    if (existingIdx >= 0) {
-      savedLatexTemplates.value[existingIdx] = entry;
-    } else {
-      savedLatexTemplates.value.unshift(entry);
-    }
-    try {
-      localStorage.setItem(
-        LOCAL_STORAGE_LATEX_TEMPLATES_KEY,
-        JSON.stringify(savedLatexTemplates.value)
-      );
-    } catch {}
-    selectedLatexTemplateId.value = fallbackId;
-    saveStatusMsg.value =
-      locale.value === 'en'
-        ? `Template "${name}" saved.`
-        : `Konfiguration „${name}“ gespeichert.`;
-  }
-}
-
-async function deleteSelectedLatexTemplate() {
-  const id = selectedLatexTemplateId.value;
-  if (!id || BUILTIN_LATEX_TEMPLATES.some(b => b.id === id)) return;
-  try {
-    await invoke('delete_latex_template', { id });
-  } catch {}
-  savedLatexTemplates.value = savedLatexTemplates.value.filter(s => s.id !== id);
-  try {
-    localStorage.setItem(
-      LOCAL_STORAGE_LATEX_TEMPLATES_KEY,
-      JSON.stringify(savedLatexTemplates.value)
-    );
-  } catch {}
-  selectLatexTemplateById(BUILTIN_LATEX_TEMPLATES[0].id);
-}
-
-const latexExportResult = computed<LatexExportResult | null>(() => {
-  if (!props.selectedExportRootId) return null;
-  return generateLatexExport(props.persons, {
-    mode: latexMode.value,
-    rootPersonId: props.selectedExportRootId,
-    startCode: props.exportStartCode || '1',
-    direction: latexDirection.value,
-    maxGenerations: latexMaxGenerations.value,
-    ancestorSortPattern: latexAncestorSortPattern.value,
-    unknownParentPreset: latexUnknownPreset.value,
-    customUnknownFatherText: latexCustomUnknownFather.value,
-    customUnknownMotherText: latexCustomUnknownMother.value,
-    enableBranchSplit: latexMode.value === 'proband' && latexEnableBranchSplit.value,
-    branchSplitGeneration: latexBranchSplitGen.value,
-    selectedBranchIds: latexSelectedBranchIds.value,
-    includeBranchInputsInMain: latexIncludeBranchInputs.value,
-    customDocumentTitle: latexCustomDocTitle.value,
-    customDocumentSubtitle: latexCustomDocSubtitle.value,
-    template: latexActiveTemplate.value,
-    locale: effectiveExportLocale.value,
-  });
+  return '1';
 });
 
+const effectivePolicy = computed<LineagePolicy>(() => {
+  if (sourceMode.value === 'design_document' && selectedDesignBundle.value) {
+    return selectedDesignBundle.value.rootDocument.lineagePolicy || 'patrilinear';
+  }
+  return lineagePolicy.value;
+});
+
+// Auto-suggest baseFileName when root changes and user hasn't typed a custom one
 watch(
-  () => latexExportResult.value?.detectedBranchesAtSelectedGen,
-  newBranches => {
-    if (!newBranches || newBranches.length === 0) {
-      latexSelectedBranchIds.value = [];
-      return;
-    }
-    const validSet = new Set(newBranches.map(b => b.personId));
-    const filtered = latexSelectedBranchIds.value.filter(id => validSet.has(id));
-    if (filtered.length === 0) {
-      latexSelectedBranchIds.value = newBranches.map(b => b.personId);
-    } else if (filtered.length !== latexSelectedBranchIds.value.length) {
-      latexSelectedBranchIds.value = filtered;
+  [effectiveRootPersonId, sourceMode],
+  () => {
+    const p = props.persons.find(x => x.id === effectiveRootPersonId.value);
+    const slug = sanitizeLatexFileSlug(p?.surname || p?.given_name || 'Chronik');
+    if (!baseFileName.value.trim() || baseFileName.value.startsWith('Chronik_')) {
+      baseFileName.value = `Chronik_${slug}`;
     }
   },
   { immediate: true }
 );
 
+function formatLineagePolicyLabel(policy: LineagePolicy | string): string {
+  if (policy === 'patrilinear') return t('export_latex_policy_short_patri');
+  if (policy === 'matrilinear') return t('export_latex_policy_short_matri');
+  if (policy === 'oldest_branch') return t('export_latex_policy_short_oldest');
+  return policy;
+}
+
+// Load Design Studio Documents
+async function fetchDesignDocuments() {
+  isLoadingDesignLayouts.value = true;
+  try {
+    const list = await invoke<DesignDocumentSummaryDto[]>('list_design_documents', {
+      rootPersonId: null,
+      documentKind: null,
+    });
+    savedDesignLayouts.value = list || [];
+
+    if (savedDesignLayouts.value.length === 0) {
+      selectedDesignLayoutId.value = '';
+      selectedDesignBundle.value = null;
+      return;
+    }
+
+    const stillExists =
+      Boolean(selectedDesignLayoutId.value) &&
+      savedDesignLayouts.value.some(d => d.id === selectedDesignLayoutId.value);
+
+    if (stillExists) {
+      if (
+        !selectedDesignBundle.value ||
+        selectedDesignBundle.value.rootDocument.id !== selectedDesignLayoutId.value
+      ) {
+        await loadDesignBundle(selectedDesignLayoutId.value);
+      }
+      return;
+    }
+
+    selectedDesignLayoutId.value = '';
+    selectedDesignBundle.value = null;
+
+    const preferred =
+      savedDesignLayouts.value.find(
+        d => d.root_person_id === props.activeProbandId && d.document_kind === 'master'
+      ) ||
+      savedDesignLayouts.value.find(d => d.document_kind === 'master') ||
+      savedDesignLayouts.value[0];
+    if (preferred) {
+      await loadDesignBundle(preferred.id);
+    }
+  } catch (err) {
+    console.warn('Could not load design documents:', err);
+    savedDesignLayouts.value = [];
+    selectedDesignLayoutId.value = '';
+    selectedDesignBundle.value = null;
+  } finally {
+    isLoadingDesignLayouts.value = false;
+  }
+}
+
+async function loadDesignBundle(docId: string) {
+  if (!docId) {
+    selectedDesignBundle.value = null;
+    return;
+  }
+  selectedDesignLayoutId.value = docId;
+  try {
+    const dto = await invoke<DesignTreeBundleDto>('load_design_tree_bundle', {
+      documentId: docId,
+    });
+    const model = bundleDtoToModel(dto);
+    selectedDesignBundle.value = model;
+    // Automatically adopt design subtrees as initial branch split anchors
+    const mountAnchors = Object.values(model.rootDocument.subtreeMounts || {}).map(
+      m => m.anchorPersonId
+    );
+    if (sourceMode.value === 'design_document' && mountAnchors.length > 0) {
+      selectedBranchIds.value = mountAnchors;
+      enableBranchSplit.value = true;
+    }
+  } catch (err) {
+    saveErrorMsg.value = `${t('export_latex_design_load_err')}: ${err}`;
+  }
+}
+
+watch(selectedDesignLayoutId, newId => {
+  if (newId && sourceMode.value === 'design_document') {
+    loadDesignBundle(newId);
+  }
+});
+
+watch(sourceMode, mode => {
+  if (mode === 'design_document') {
+    void fetchDesignDocuments();
+  }
+});
+
+watch(
+  [() => props.persons, () => props.rootAncestors, () => props.activeProbandId],
+  () => {
+    void fetchDesignDocuments();
+  }
+);
+
+// Load saved LaTeX templates
+async function loadLatexTemplates() {
+  try {
+    const list = await invoke<LatexTemplateEntry[]>('get_latex_templates');
+    savedLatexTemplates.value = list || [];
+  } catch (err) {
+    console.warn('Could not load LaTeX templates:', err);
+  }
+}
+
+function selectLatexTemplate(id: string) {
+  selectedLatexTemplateId.value = id;
+  const builtin = DEFAULT_LATEX_TEMPLATES.find(t => t.id === id);
+  if (builtin) {
+    activeLatexTemplate.value = normalizeLatexTemplateConfig(structuredClone(builtin));
+    return;
+  }
+  const saved = savedLatexTemplates.value.find(t => t.id === id);
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved.config_data) as Partial<LatexTemplateConfig>;
+      activeLatexTemplate.value = normalizeLatexTemplateConfig({
+        ...parsed,
+        id: saved.id,
+        name: saved.name,
+      });
+    } catch {
+      // Fallback
+    }
+  }
+}
+
+async function handleSaveLatexTemplate(asNew: boolean, name: string) {
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  const overwriteId =
+    !asNew && !selectedLatexTemplateId.value.startsWith('builtin_')
+      ? selectedLatexTemplateId.value
+      : null;
+  try {
+    const saved = await invoke<LatexTemplateEntry>('save_latex_template', {
+      name: trimmed,
+      createdAt: new Date().toISOString(),
+      configData: JSON.stringify(activeLatexTemplate.value),
+      overwriteId,
+    });
+    await loadLatexTemplates();
+    selectLatexTemplate(saved.id);
+    saveStatusMsg.value = t('export_latex_template_saved');
+  } catch (err) {
+    saveErrorMsg.value = String(err);
+  }
+}
+
+async function handleDeleteLatexTemplate() {
+  if (selectedLatexTemplateId.value.startsWith('builtin_')) return;
+  try {
+    await invoke('delete_latex_template', { id: selectedLatexTemplateId.value });
+    await loadLatexTemplates();
+    selectLatexTemplate(DEFAULT_LATEX_TEMPLATES[0].id);
+  } catch (err) {
+    saveErrorMsg.value = String(err);
+  }
+}
+
+// Compute LaTeX Export Result
+const latexExportResult = computed<LatexExportResult | null>(() => {
+  if (!effectiveRootPersonId.value || props.persons.length === 0) return null;
+  return generateLatexExport(props.persons, {
+    sourceMode: sourceMode.value,
+    rootPersonId: effectiveRootPersonId.value,
+    startCode: effectiveStartCode.value,
+    lineagePolicy: effectivePolicy.value,
+    designBundle: sourceMode.value === 'design_document' ? selectedDesignBundle.value : null,
+    rootAncestors: props.rootAncestors,
+    direction: sourceMode.value === 'custom_person' ? latexDirection.value : 'descendants',
+    maxGenerations: latexMaxGenerations.value,
+    ancestorSortPattern: ancestorSortPattern.value,
+    unknownParentPreset: 'classic',
+    customUnknownFatherText: 'N.N.',
+    customUnknownMotherText: 'N.N.',
+    enableBranchSplit:
+      enableBranchSplit.value &&
+      !(sourceMode.value === 'custom_person' && latexDirection.value === 'ancestors'),
+    branchSplitGeneration: branchSplitGeneration.value,
+    selectedBranchIds: selectedBranchIds.value,
+    baseFileName: baseFileName.value.trim() || 'Chronik',
+    treeSubdir: treeSubdir.value.trim() || 'Stammbaum',
+    textsSubdir: textsSubdir.value.trim() || 'Texte',
+    customDocumentTitle: customDocumentTitle.value,
+    customDocumentSubtitle: customDocumentSubtitle.value,
+    template: activeLatexTemplate.value,
+    locale: effectiveExportLocale.value,
+  });
+});
+
+// Active preview file
+const activeLatexFile = computed(() => {
+  const files = latexExportResult.value?.files || [];
+  if (files.length === 0) return null;
+  return files[activeLatexFileIndex.value] || files[0];
+});
+
 watch(
   () => latexExportResult.value?.files.length,
-  newLen => {
-    if (!newLen || latexActiveFileIdx.value >= newLen) {
-      latexActiveFileIdx.value = 0;
+  len => {
+    if (len && activeLatexFileIndex.value >= len) {
+      activeLatexFileIndex.value = 0;
     }
   }
 );
 
-const activeLatexFile = computed<GeneratedLatexFile | null>(() => {
-  const res = latexExportResult.value;
-  if (!res || res.files.length === 0) return null;
-  return res.files[latexActiveFileIdx.value] || res.files[0];
+const previewSheetStyle = computed(() => {
+  const tpl = activeLatexTemplate.value;
+  const fontPt = parseInt(tpl.fontSize || '11pt', 10) || 11;
+  return {
+    '--sheet-margin-mm': `${Math.max(12, Math.min(45, tpl.marginMm || 22))}px`,
+    '--sheet-font-pt': `${fontPt}pt`,
+    '--entry-indent-em': `${tpl.indentStepEm ?? 1.15}em`,
+    '--entry-spacing-em': `${tpl.entrySpacingEm ?? 0.45}em`,
+  };
 });
 
+// Branch splitting helpers
+const filteredAvailableBranches = computed(() => {
+  const all = latexExportResult.value?.allAvailableBranches || [];
+  const q = branchFilterQuery.value.trim().toLowerCase();
+  if (!q) return all;
+  return all.filter(
+    b =>
+      b.name.toLowerCase().includes(q) ||
+      b.code.toLowerCase().includes(q) ||
+      `gen. ${b.generation}`.includes(q)
+  );
+});
+
+function preselectBranchesByGeneration(gen: number) {
+  branchSplitGeneration.value = gen;
+  const all = latexExportResult.value?.allAvailableBranches || [];
+  selectedBranchIds.value = all.filter(b => b.generation === gen).map(b => b.personId);
+}
+
+function adoptDesignSubtreesAsBranches() {
+  if (!selectedDesignBundle.value) return;
+  const ids = Object.values(selectedDesignBundle.value.rootDocument.subtreeMounts || {}).map(
+    m => m.anchorPersonId
+  );
+  selectedBranchIds.value = ids;
+}
+
 function toggleBranchSelection(personId: string) {
-  const idx = latexSelectedBranchIds.value.indexOf(personId);
-  if (idx >= 0) {
-    if (latexSelectedBranchIds.value.length > 1) {
-      latexSelectedBranchIds.value.splice(idx, 1);
-    }
+  if (selectedBranchIds.value.includes(personId)) {
+    selectedBranchIds.value = selectedBranchIds.value.filter(id => id !== personId);
   } else {
-    latexSelectedBranchIds.value.push(personId);
+    selectedBranchIds.value = [...selectedBranchIds.value, personId];
   }
 }
 
-function selectAllBranchesAtGen() {
-  const branches = latexExportResult.value?.detectedBranchesAtSelectedGen || [];
-  latexSelectedBranchIds.value = branches.map(b => b.personId);
+// Inspect Target Book Directory
+async function inspectBookDirectory() {
+  const dir = bookTargetDir.value.trim();
+  const res = latexExportResult.value;
+  if (!dir || !res) {
+    directoryInspection.value = null;
+    return;
+  }
+  isInspectingDir.value = true;
+  try {
+    const expectedFiles = res.files.map(f => ({
+      file_name: f.fileName,
+      role: f.role,
+    }));
+    directoryInspection.value = await invoke<LatexDirectoryInspectionDto>(
+      'inspect_latex_book_directory',
+      {
+        dirPath: dir,
+        expectedFiles,
+      }
+    );
+  } catch (err) {
+    directoryInspection.value = null;
+    saveErrorMsg.value = String(err);
+  } finally {
+    isInspectingDir.value = false;
+  }
 }
 
-async function copyLatexSourceToClipboard() {
+watch([bookTargetDir, latexExportResult], () => {
+  if (bookTargetDir.value.trim()) {
+    inspectBookDirectory();
+  } else {
+    directoryInspection.value = null;
+  }
+});
+
+async function pickBookTargetDirectory() {
+  try {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: bookTargetDir.value || undefined,
+    });
+    if (typeof picked === 'string' && picked.trim()) {
+      bookTargetDir.value = picked.trim();
+      localStorage.setItem(BOOK_DIR_STORAGE_KEY, bookTargetDir.value);
+      saveErrorMsg.value = '';
+    }
+  } catch (err) {
+    saveErrorMsg.value = String(err);
+  }
+}
+
+async function syncToBookDirectory() {
+  const res = latexExportResult.value;
+  if (!res) return;
+  if (!bookTargetDir.value.trim()) {
+    await pickBookTargetDirectory();
+    if (!bookTargetDir.value.trim()) return;
+  }
+
+  isSyncingDir.value = true;
+  saveStatusMsg.value = '';
+  saveErrorMsg.value = '';
+
+  try {
+    const payload: Array<{ file_name: string; content: string; protect_if_exists: boolean }> =
+      res.files.map(f => ({
+        file_name: f.fileName,
+        content: f.texContent,
+        protect_if_exists: f.role === 'master' || f.role === 'format' || f.role === 'intro',
+      }));
+
+    const syncRes = await invoke<LatexDirectorySyncResultDto>('sync_latex_book_directory', {
+      dirPath: bookTargetDir.value.trim(),
+      files: payload,
+      forceOverwriteMaster: forceOverwriteMaster.value,
+      forceOverwriteFormat: forceOverwriteFormat.value,
+    });
+
+    forceOverwriteMaster.value = false;
+    forceOverwriteFormat.value = false;
+    await inspectBookDirectory();
+
+    saveStatusMsg.value = t('export_latex_sync_success', {
+      written: syncRes.written_files.length,
+      protected: syncRes.skipped_protected_files.length,
+    });
+  } catch (err) {
+    saveErrorMsg.value = `${t('export_latex_sync_err')}: ${err}`;
+  } finally {
+    isSyncingDir.value = false;
+  }
+}
+
+async function saveSingleOrBundleAs() {
+  const res = latexExportResult.value;
+  if (!res || res.files.length === 0) return;
+  saveStatusMsg.value = '';
+  saveErrorMsg.value = '';
+  try {
+    const pickedPath = await save({
+      defaultPath: res.masterFileName,
+      filters: [{ name: 'LaTeX', extensions: ['tex'] }],
+    });
+    if (!pickedPath) return;
+
+    await invoke('save_latex_export_bundle', {
+      baseFilePath: pickedPath,
+      files: res.files.map(f => ({
+        file_name: f.fileName,
+        content: f.texContent,
+      })),
+    });
+    saveStatusMsg.value = t('export_latex_save_bundle_success', { count: res.files.length });
+  } catch (err) {
+    saveErrorMsg.value = String(err);
+  }
+}
+
+async function copyActiveLatexSource() {
   if (!activeLatexFile.value) return;
   try {
     await navigator.clipboard.writeText(activeLatexFile.value.texContent);
-    saveStatusMsg.value = t('export_latex_copied_msg');
-  } catch (err: any) {
+    latexCopySuccess.value = true;
+    setTimeout(() => (latexCopySuccess.value = false), 1800);
+  } catch (err) {
     saveErrorMsg.value = String(err);
   }
 }
 
-function downloadBlob(blob: Blob, fileName: string) {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = fileName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-}
-
-async function saveSingleLatexFile(fileObj?: GeneratedLatexFile) {
-  const targetFile = fileObj || activeLatexFile.value;
-  if (!targetFile) return;
-  saveStatusMsg.value = '';
-  saveErrorMsg.value = '';
-  isSavingLatex.value = true;
-
-  try {
-    let filePath: string | null = null;
-    try {
-      const res = await save({
-        title: t('export_latex_panel_title'),
-        defaultPath: targetFile.fileName,
-        filters: [{ name: 'LaTeX Dokument (*.tex)', extensions: ['tex'] }],
-      });
-      if (typeof res === 'string') filePath = res;
-    } catch {
-      filePath = null;
-    }
-
-    if (filePath) {
-      await invoke('save_design_file', {
-        filePath,
-        content: targetFile.texContent,
-      });
-      saveStatusMsg.value =
-        locale.value === 'en'
-          ? `LaTeX file saved: ${filePath}`
-          : `LaTeX-Datei erfolgreich gespeichert: ${filePath}`;
-    } else {
-      const blob = new Blob([targetFile.texContent], { type: 'text/x-tex;charset=utf-8' });
-      downloadBlob(blob, targetFile.fileName);
-      saveStatusMsg.value =
-        locale.value === 'en'
-          ? `LaTeX file downloaded: ${targetFile.fileName}`
-          : `LaTeX-Datei heruntergeladen: ${targetFile.fileName}`;
-    }
-  } catch (err: any) {
-    saveErrorMsg.value = String(err);
-  } finally {
-    isSavingLatex.value = false;
+function handlePreviewClick(evt: MouseEvent) {
+  const target = evt.target as HTMLElement | null;
+  const linkEl = target?.closest('.preview-branch-link') as HTMLElement | null;
+  if (!linkEl) return;
+  const targetFile = linkEl.dataset.targetBranch;
+  if (!targetFile || !latexExportResult.value) return;
+  const idx = latexExportResult.value.files.findIndex(f => f.fileName === targetFile);
+  if (idx !== -1) {
+    activeLatexFileIndex.value = idx;
   }
 }
 
-async function saveAllLatexFilesBundle() {
-  const res = latexExportResult.value;
-  if (!res || res.files.length === 0) return;
-  if (res.files.length === 1) {
-    await saveSingleLatexFile(res.files[0]);
-    return;
+onMounted(async () => {
+  if (props.rootAncestors.length > 0) {
+    sourceMode.value = 'root_ancestor';
   }
-
-  saveStatusMsg.value = '';
-  saveErrorMsg.value = '';
-  isSavingLatex.value = true;
-
-  const mainFile = res.files[0];
-
-  try {
-    let chosenBaseFilePath: string | null = null;
-    try {
-      const dialogRes = await save({
-        title:
-          locale.value === 'en'
-            ? `Select target folder & base file (${res.files.length} .tex files will be created)`
-            : `Zielordner & Hauptdatei wählen (${res.files.length} .tex-Dateien werden angelegt)`,
-        defaultPath: mainFile.fileName,
-        filters: [{ name: 'LaTeX Hauptdatei + Stämme (*.tex)', extensions: ['tex'] }],
-      });
-      if (typeof dialogRes === 'string') chosenBaseFilePath = dialogRes;
-    } catch {
-      chosenBaseFilePath = null;
-    }
-
-    if (chosenBaseFilePath) {
-      const normPath = chosenBaseFilePath.replace(/\\/g, '/');
-      const baseFilePart = normPath.split('/').pop() || mainFile.fileName;
-      const customStem = baseFilePart.replace(/_gesamt\.tex$/i, '').replace(/\.tex$/i, '').trim() || res.baseSurname;
-
-      const bundlePayload = res.files.map(f => {
-        let effectiveName = f.fileName;
-        if (f.isMasterFile) {
-          effectiveName = `${customStem}_gesamt.tex`;
-        } else if (f.isMainFile) {
-          effectiveName = `${customStem}.tex`;
-        } else if (f.branchHenryCode) {
-          effectiveName = `${customStem}-${f.branchHenryCode}.tex`;
-        }
-        return {
-          file_name: effectiveName,
-          content: f.texContent,
-        };
-      });
-
-      const writtenPaths = await invoke<string[]>('save_latex_export_bundle', {
-        baseFilePath: chosenBaseFilePath,
-        files: bundlePayload,
-      });
-
-      saveStatusMsg.value =
-        locale.value === 'en'
-          ? `${writtenPaths.length} LaTeX files saved (${customStem}.tex + ${writtenPaths.length - 1} branch files).`
-          : `${writtenPaths.length} LaTeX-Dateien erfolgreich gespeichert (${customStem}.tex + ${writtenPaths.length - 1} Stamm-Dateien).`;
-    } else {
-      for (const f of res.files) {
-        const blob = new Blob([f.texContent], { type: 'text/x-tex;charset=utf-8' });
-        downloadBlob(blob, f.fileName);
-      }
-      saveStatusMsg.value =
-        locale.value === 'en'
-          ? `${res.files.length} LaTeX files downloaded.`
-          : `${res.files.length} LaTeX-Dateien heruntergeladen.`;
-    }
-  } catch (err: any) {
-    saveErrorMsg.value = String(err);
-  } finally {
-    isSavingLatex.value = false;
+  await Promise.all([fetchDesignDocuments(), loadLatexTemplates()]);
+  if (bookTargetDir.value.trim()) {
+    await inspectBookDirectory();
   }
-}
-
-onMounted(() => {
-  fetchLatexTemplates();
 });
 </script>
 
 <template>
-  <div class="export-workspace">
-    <!-- Linke Seitenleiste: Konfiguration, Modus, Stämme & LaTeX-Maske -->
-    <aside class="export-sidebar latex-sidebar" :class="{ collapsed: isLeftPanelCollapsed }">
-      <button
-        class="sidebar-collapse-toggle"
-        @click="isLeftPanelCollapsed = !isLeftPanelCollapsed"
-        :title="isLeftPanelCollapsed ? t('export_show_panel') : t('export_hide_panel')"
-      >
-        {{ isLeftPanelCollapsed ? '▶' : '◀' }}
-      </button>
+  <div class="latex-export-workspace">
+    <!-- Linke Steuerungs-Sidebar -->
+    <aside class="latex-sidebar" :class="{ collapsed: isLeftPanelCollapsed }">
+      <div class="sidebar-top-bar">
+        <span v-if="!isLeftPanelCollapsed" class="sidebar-title">📚 {{ t('export_latex_sidebar_title') }}</span>
+        <button
+          type="button"
+          class="btn-collapse-sidebar"
+          @click="isLeftPanelCollapsed = !isLeftPanelCollapsed"
+          :title="isLeftPanelCollapsed ? 'Sidebar öffnen' : 'Sidebar einklappen'"
+        >
+          {{ isLeftPanelCollapsed ? '▶' : '◀' }}
+        </button>
+      </div>
 
-      <div v-if="!isLeftPanelCollapsed" class="export-sidebar-inner">
-        <div class="export-panel-header">
-          <h2>📄 {{ t('export_latex_panel_title') }}</h2>
-          <p class="export-panel-subtitle">{{ t('export_latex_panel_subtitle') }}</p>
-        </div>
+      <div v-if="!isLeftPanelCollapsed" class="sidebar-scroll-content">
+        <!-- Karte 1: Datenquelle & Linienführung -->
+        <section class="export-card">
+          <h4 class="card-title">1. {{ t('export_latex_source_title') }}</h4>
 
-        <!-- 1. Ausgangspunkt & Modus: Definierter Proband vs. Beliebiger Eintrag -->
-        <div class="export-section">
-          <label class="export-section-label">🧭 {{ t('export_latex_mode_label') }}</label>
-          <div class="latex-mode-pills">
+          <div class="source-mode-tabs">
             <button
               type="button"
-              class="latex-mode-pill"
-              :class="{ active: latexMode === 'proband' }"
-              @click="latexMode = 'proband'"
+              class="source-tab-btn"
+              :class="{ active: sourceMode === 'design_document' }"
+              @click="sourceMode = 'design_document'"
             >
-              🌳 {{ t('export_latex_mode_proband') }}
+              🎨 {{ t('export_latex_src_design') }}
             </button>
             <button
               type="button"
-              class="latex-mode-pill"
-              :class="{ active: latexMode === 'custom' }"
-              @click="latexMode = 'custom'"
+              class="source-tab-btn"
+              :class="{ active: sourceMode === 'root_ancestor' }"
+              @click="sourceMode = 'root_ancestor'"
             >
-              👤 {{ t('export_latex_mode_custom') }}
+              👑 {{ t('export_latex_src_proband') }}
+            </button>
+            <button
+              type="button"
+              class="source-tab-btn"
+              :class="{ active: sourceMode === 'custom_person' }"
+              @click="sourceMode = 'custom_person'"
+            >
+              🌿 {{ t('export_latex_src_other') }}
             </button>
           </div>
 
-          <!-- Modus A: Definierter Proband -->
-          <div v-if="latexMode === 'proband'" class="latex-sub-box">
-            <label class="sub-field-label">{{ t('export_defined_roots_label') }}</label>
-            <select
-              class="export-dropdown"
-              :value="isSelectedRootInDefinedList ? selectedExportRootId : ''"
-              @change="onDefinedRootDropdownChange(($event.target as HTMLSelectElement).value)"
-            >
-              <option value="" :disabled="rootAncestors.length > 0">
-                {{ rootAncestors.length === 0 ? t('no_probands') : t('please_select') }}
-              </option>
-              <option
-                v-for="r in rootAncestors"
-                :key="'ltx-root-' + r.person_id"
-                :value="r.person_id"
-              >
-                [{{ r.starting_code }}] {{ r.surname || 'N.N.' }}, {{ r.given_name || 'N.N.' }} ({{ r.person_id }})
-              </option>
-            </select>
-
-            <div class="export-form-row" style="margin-top: 8px">
-              <label>{{ t('export_start_code_label') }}</label>
-              <input
-                type="text"
-                :value="exportStartCode"
-                @input="emit('update:exportStartCode', ($event.target as HTMLInputElement).value)"
-                class="export-input code-inp"
-                placeholder="1"
-              />
-            </div>
-            <span class="cfg-sub-hint">
-              {{ t('export_latex_proband_desc_hint') }}
-            </span>
-          </div>
-
-          <!-- Modus B: Beliebiger Eintrag (mit Richtung & Generationenanzahl) -->
-          <div v-else class="latex-sub-box">
-            <label class="sub-field-label">Ausgangsperson suchen & auswählen:</label>
-            <input
-              type="text"
-              v-model="personSearchQuery"
-              :placeholder="t('export_person_search_placeholder')"
-              class="export-input"
-            />
-            <div class="person-picker-list compact-picker">
-              <div
-                v-for="p in filteredPersonsList"
-                :key="'ltx-p-' + p.id"
-                class="person-picker-item"
-                :class="{ selected: selectedExportRootId === p.id }"
-                @click="selectRootPerson(p.id)"
-              >
-                <div class="picker-item-main">
-                  <strong>{{ p.surname || 'N.N.' }}, {{ p.given_name || 'N.N.' }}</strong>
-                  <span class="picker-item-id">{{ p.id }}</span>
-                </div>
-                <div class="picker-item-meta">
-                  <span v-if="p.birth_date">* {{ p.birth_date }}</span>
-                  <span v-if="p.death_date">† {{ p.death_date }}</span>
-                </div>
-              </div>
-            </div>
-
-            <!-- Richtung: Nachkommen oder Vorfahren -->
-            <label class="sub-field-label" style="margin-top: 10px">{{ t('export_latex_direction_label') }}</label>
-            <div class="latex-mode-pills">
-              <button
-                type="button"
-                class="latex-mode-pill"
-                :class="{ active: latexDirection === 'descendants' }"
-                @click="latexDirection = 'descendants'"
-              >
-                ⬇️ {{ t('export_latex_dir_descendants') }}
-              </button>
-              <button
-                type="button"
-                class="latex-mode-pill"
-                :class="{ active: latexDirection === 'ancestors' }"
-                @click="latexDirection = 'ancestors'"
-              >
-                ⬆️ {{ t('export_latex_dir_ancestors') }}
-              </button>
-            </div>
-
-            <!-- Anzahl der Generationen -->
-            <div class="export-form-row" style="margin-top: 8px">
-              <label>{{ t('export_latex_generations_label') }}:</label>
-              <div class="gen-number-control">
-                <input
-                  type="number"
-                  v-model.number="latexMaxGenerations"
-                  min="1"
-                  max="25"
-                  class="export-input num-inp"
-                />
-                <span class="gen-unit">Gen.</span>
-              </div>
-            </div>
-
-            <!-- Vorfahren-spezifische Optionen: Sortiermuster & "Nicht bekannt"-Formulierung -->
-            <template v-if="latexDirection === 'ancestors'">
-              <div class="export-form-row" style="margin-top: 8px">
-                <label>{{ t('export_latex_ancestor_sort_label') }}:</label>
-                <select v-model="latexAncestorSortPattern" class="export-dropdown">
-                  <option value="kekule_patrilineal">{{ t('export_latex_sort_kekule_pat') }}</option>
-                  <option value="matrilineal_recursive">{{ t('export_latex_sort_mat_rec') }}</option>
-                  <option value="generation_kekule">{{ t('export_latex_sort_gen_kekule') }}</option>
-                </select>
-              </div>
-
-              <div class="export-form-row" style="margin-top: 8px">
-                <label>{{ t('export_latex_unknown_label') }}:</label>
-                <select v-model="latexUnknownPreset" class="export-dropdown">
-                  <option value="classic">{{ t('export_latex_unknown_classic') }}</option>
-                  <option value="archival">{{ t('export_latex_unknown_archival') }}</option>
-                  <option value="short">{{ t('export_latex_unknown_short') }}</option>
-                  <option value="custom">{{ t('export_latex_unknown_custom') }}</option>
-                </select>
-              </div>
-
-              <div v-if="latexUnknownPreset === 'custom'" class="custom-unknown-inputs">
-                <div class="export-form-row">
-                  <label>{{ t('export_latex_unknown_father_label') }}</label>
-                  <input type="text" v-model="latexCustomUnknownFather" class="export-input" />
-                </div>
-                <div class="export-form-row">
-                  <label>{{ t('export_latex_unknown_mother_label') }}</label>
-                  <input type="text" v-model="latexCustomUnknownMother" class="export-input" />
-                </div>
-              </div>
-              <span class="cfg-sub-hint">
-                {{ t('export_latex_custom_anc_hint') }}
-              </span>
-            </template>
-            <template v-else>
-              <span class="cfg-sub-hint">
-                {{ t('export_latex_custom_desc_hint') }}
-              </span>
-            </template>
-          </div>
-        </div>
-
-        <!-- 2. Stämme-Erkennung & Mehrdateien-Export (nur im Probanden-Modus) -->
-        <div v-if="latexMode === 'proband' && latexExportResult" class="export-section">
-          <label class="export-section-label">🌿 {{ t('export_latex_branches_title') }}</label>
-          <label class="cfg-checkbox-label">
-            <input type="checkbox" v-model="latexEnableBranchSplit" />
-            <span class="cfg-label-text">{{ t('export_latex_branches_enable') }}</span>
-          </label>
-
-          <div v-if="latexEnableBranchSplit" class="branch-split-panel">
-            <div class="export-form-row">
-              <label>{{ t('export_latex_branches_gen_select') }}</label>
-              <select v-model.number="latexBranchSplitGen" class="export-dropdown">
-                <option
-                  v-for="gInfo in latexExportResult.detectedGenerations.filter(g => g.generation >= 2)"
-                  :key="'split-gen-' + gInfo.generation"
-                  :value="gInfo.generation"
-                >
-                  Generation {{ gInfo.generation }} ({{ gInfo.count }} Einträge, {{ gInfo.branchesWithChildrenCount }} mit Nachfahren)
+          <!-- Quelle A: Design Studio Arbeitsstand -->
+          <div v-if="sourceMode === 'design_document'" class="source-panel">
+            <div class="field-row">
+              <label class="field-lbl">{{ t('export_latex_design_doc_lbl') }}</label>
+              <select v-model="selectedDesignLayoutId" class="export-select">
+                <option value="" disabled>{{ t('export_latex_design_doc_placeholder') }}</option>
+                <option v-for="doc in savedDesignLayouts" :key="doc.id" :value="doc.id">
+                  {{ doc.name }} ({{ doc.document_kind === 'master' ? t('export_latex_doc_kind_master') : t('export_latex_doc_kind_subtree') }})
                 </option>
               </select>
             </div>
+            <div v-if="selectedDesignBundle" class="info-pill-row">
+              <span class="info-pill">{{ t('export_latex_chip_policy') }}: <strong>{{ formatLineagePolicyLabel(selectedDesignBundle.rootDocument.lineagePolicy) }}</strong></span>
+              <span class="info-pill">{{ t('export_latex_chip_subtrees') }}: <strong>{{ Object.keys(selectedDesignBundle.rootDocument.subtreeMounts || {}).length }}</strong></span>
+            </div>
+            <p v-else-if="!isLoadingDesignLayouts" class="hint-text">
+              {{ t('export_latex_design_empty_hint') }}
+            </p>
+          </div>
 
-            <div class="detected-branches-header">
-              <span>{{ t('export_latex_detected_branches', { count: latexExportResult.detectedBranchesAtSelectedGen.length }) }}</span>
-              <button type="button" class="btn-mini-link" @click="selectAllBranchesAtGen">{{ t('export_latex_select_all') }}</button>
+          <!-- Quelle B: Definierter Stammahn -->
+          <div v-else-if="sourceMode === 'root_ancestor'" class="source-panel">
+            <div class="field-row">
+              <label class="field-lbl">{{ t('export_latex_proband_lbl') }}</label>
+              <select
+                :value="effectiveRootPersonId"
+                @change="e => emit('update:selectedExportRootId', (e.target as HTMLSelectElement).value)"
+                class="export-select"
+              >
+                <option v-for="ra in rootAncestors" :key="ra.person_id" :value="ra.person_id">
+                  [{{ ra.starting_code }}] {{ [ra.given_name, ra.surname].filter(Boolean).join(' ') }}
+                </option>
+              </select>
+            </div>
+            <div class="field-row">
+              <label class="field-lbl">{{ t('export_latex_policy_lbl') }}</label>
+              <select v-model="lineagePolicy" class="export-select">
+                <option value="patrilinear">{{ t('export_latex_policy_patri') }}</option>
+                <option value="matrilinear">{{ t('export_latex_policy_matri') }}</option>
+                <option value="oldest_branch">{{ t('export_latex_policy_oldest') }}</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Quelle C: Andere Linie / Beliebige Person -->
+          <div v-else class="source-panel">
+            <div class="field-row">
+              <label class="field-lbl">{{ t('export_latex_person_search_lbl') }}</label>
+              <input
+                type="text"
+                v-model="customPersonSearch"
+                class="export-input"
+                :placeholder="t('export_latex_person_search_ph')"
+              />
+              <select
+                :value="effectiveRootPersonId"
+                @change="e => emit('update:selectedExportRootId', (e.target as HTMLSelectElement).value)"
+                class="export-select"
+              >
+                <option v-for="p in filteredCustomPersons" :key="p.id" :value="p.id">
+                  {{ formatPersonLabel(p) }}
+                </option>
+              </select>
+            </div>
+            <div class="two-col-row">
+              <div>
+                <label class="field-lbl">{{ t('export_latex_direction_lbl') }}</label>
+                <select v-model="latexDirection" class="export-select">
+                  <option value="descendants">{{ t('export_latex_dir_descendants') }}</option>
+                  <option value="ancestors">{{ t('export_latex_dir_ancestors') }}</option>
+                </select>
+              </div>
+              <div>
+                <label class="field-lbl">{{ t('export_latex_max_gen_lbl') }}</label>
+                <input type="number" v-model.number="latexMaxGenerations" min="1" max="30" class="export-input" />
+              </div>
+            </div>
+            <div class="bridge-info-box">
+              🔗 {{ t('export_latex_bridge_info') }}
+              <strong v-if="latexExportResult">({{ latexExportResult.bridgeRefsCount }})</strong>
+            </div>
+          </div>
+
+          <div class="field-row mt-sm">
+            <label class="field-lbl">{{ t('export_language_label') }}</label>
+            <ExportLanguageSelect v-model="exportLangOverride" />
+          </div>
+        </section>
+
+        <!-- Karte 2: Stämme-Zuschnitt & Buchgliederung -->
+        <section
+          v-if="!(sourceMode === 'custom_person' && latexDirection === 'ancestors')"
+          class="export-card"
+        >
+          <div class="card-header-row">
+            <h4 class="card-title">2. {{ t('export_latex_branch_split_title') }}</h4>
+            <label class="switch-inline">
+              <input type="checkbox" v-model="enableBranchSplit" />
+              <span>{{ t('export_latex_split_active') }}</span>
+            </label>
+          </div>
+
+          <div v-if="enableBranchSplit && latexExportResult" class="branch-split-body">
+            <div class="branch-quick-actions">
+              <button
+                v-if="sourceMode === 'design_document' && selectedDesignBundle"
+                type="button"
+                class="btn-mini-action"
+                @click="adoptDesignSubtreesAsBranches"
+              >
+                🎨 {{ t('export_latex_adopt_design_subtrees') }}
+              </button>
+              <div class="gen-preselect-row">
+                <span class="mini-lbl">{{ t('export_latex_preselect_gen') }}:</span>
+                <button
+                  v-for="g in latexExportResult.detectedGenerations.filter(x => x.generation >= 2 && x.branchesWithChildrenCount > 0)"
+                  :key="g.generation"
+                  type="button"
+                  class="gen-chip-btn"
+                  :class="{ active: branchSplitGeneration === g.generation && selectedBranchIds.length === 0 }"
+                  @click="preselectBranchesByGeneration(g.generation)"
+                >
+                  Gen. {{ g.generation }} ({{ g.branchesWithChildrenCount }})
+                </button>
+              </div>
             </div>
 
-            <div class="detected-branches-list">
-              <div class="branch-file-item master-file-item">
-                <span class="branch-file-badge master-badge">{{ t('export_latex_master_badge') }}</span>
-                <strong>{{ latexExportResult.masterFileName }}</strong>
-              </div>
-              <div class="branch-file-item main-file-item">
-                <span class="branch-file-badge">{{ t('export_latex_main_badge') }}</span>
-                <strong>{{ latexExportResult.baseSurname }}.tex</strong>
-                <span class="branch-meta">Proband + Vorlauf</span>
-              </div>
+            <input
+              type="text"
+              v-model="branchFilterQuery"
+              class="export-input compact mt-xs"
+              :placeholder="t('export_latex_branch_filter_ph')"
+            />
+
+            <div class="branch-checklist">
               <label
-                v-for="b in latexExportResult.detectedBranchesAtSelectedGen"
-                :key="'br-' + b.personId"
-                class="branch-file-item"
+                v-for="b in filteredAvailableBranches"
+                :key="b.personId"
+                class="branch-check-item"
               >
                 <input
                   type="checkbox"
-                  :checked="latexSelectedBranchIds.includes(b.personId)"
+                  :checked="
+                    selectedBranchIds.length > 0
+                      ? selectedBranchIds.includes(b.personId)
+                      : b.isDesignSubtree || b.generation === branchSplitGeneration
+                  "
                   @change="toggleBranchSelection(b.personId)"
                 />
-                <div class="branch-item-details">
-                  <div class="branch-item-top">
-                    <span class="branch-code-pill">[{{ b.henryCode }}]</span>
-                    <strong>{{ b.name }}</strong>
-                  </div>
-                  <div class="branch-item-sub">
-                    <code>{{ b.fileName }}</code>
-                    <span>({{ b.descendantCount + 1 }} Pers.)</span>
-                  </div>
-                </div>
+                <span class="branch-code-badge">[{{ b.code }}]</span>
+                <span class="branch-name-txt">{{ b.name }}</span>
+                <span class="branch-meta-txt">G{{ b.generation }} · {{ b.descendantCount }}</span>
               </label>
+              <div v-if="filteredAvailableBranches.length === 0" class="hint-text">
+                {{ t('export_latex_no_branches') }}
+              </div>
             </div>
+          </div>
+        </section>
 
-            <label class="cfg-checkbox-label" style="margin-top: 6px">
-              <input type="checkbox" v-model="latexIncludeBranchInputs" />
-              <span class="cfg-label-text">{{ t('export_latex_branches_include_input') }}</span>
+        <!-- Karte 3: Buchverzeichnis-Sync ("Living Book") -->
+        <section class="export-card">
+          <h4 class="card-title">3. {{ t('export_latex_book_sync_title') }}</h4>
+
+          <div class="field-row">
+            <label class="field-lbl">{{ t('export_latex_base_filename_lbl') }}</label>
+            <input type="text" v-model="baseFileName" class="export-input" placeholder="Chronik_Froning" />
+          </div>
+
+          <div class="two-col-row equal-cols">
+            <div class="field-row">
+              <label class="field-lbl">{{ t('export_latex_tree_subdir_lbl') }}</label>
+              <input type="text" v-model="treeSubdir" class="export-input" placeholder="Stammbaum" />
+            </div>
+            <div class="field-row">
+              <label class="field-lbl">{{ t('export_latex_texts_subdir_lbl') }}</label>
+              <input type="text" v-model="textsSubdir" class="export-input" placeholder="Texte" />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <label class="field-lbl">{{ t('export_latex_target_dir_lbl') }}</label>
+            <div class="dir-picker-row">
+              <input
+                type="text"
+                :value="bookTargetDir"
+                readonly
+                class="export-input dir-readonly"
+                :placeholder="t('export_latex_target_dir_ph')"
+              />
+              <button type="button" class="btn-pick-dir" @click="pickBookTargetDirectory">
+                📂 {{ t('export_latex_pick_dir_btn') }}
+              </button>
+            </div>
+          </div>
+
+          <div v-if="directoryInspection" class="sync-status-box">
+            <div class="sync-status-title">{{ t('export_latex_sync_plan_title') }}:</div>
+            <ul class="sync-file-list">
+              <li v-for="f in directoryInspection.files" :key="f.file_name" class="sync-file-row">
+                <span class="sync-badge" :class="`badge-${f.action}`">
+                  {{
+                    f.action === 'protect'
+                      ? '🛡️ ' + t('export_latex_act_protect')
+                      : f.action === 'update'
+                        ? '🔄 ' + t('export_latex_act_update')
+                        : '✨ ' + t('export_latex_act_create')
+                  }}
+                </span>
+                <span class="sync-fname">{{ f.file_name }}</span>
+              </li>
+            </ul>
+          </div>
+
+          <div class="sync-options-checks">
+            <label class="check-row warn-check">
+              <input type="checkbox" v-model="forceOverwriteFormat" />
+              <span>{{ t('export_latex_opt_force_format') }}</span>
+            </label>
+            <label class="check-row warn-check">
+              <input type="checkbox" v-model="forceOverwriteMaster" />
+              <span>{{ t('export_latex_opt_force_master') }}</span>
             </label>
           </div>
-        </div>
 
-        <!-- 3. Erscheinungsbild & frei gestaltbare Textmaske (Kompaktkarte & Schnellzugriff mit Modal-Trigger) -->
-        <div class="export-section">
-          <div class="export-section-header-row">
-            <label class="export-section-label">🎨 {{ t('export_latex_template_title') }}</label>
-          </div>
-
-          <!-- Schnell-Auswahl gespeicherter Speicherzustände / Vorlagen -->
-          <div class="export-form-row">
-            <label>{{ t('export_latex_template_select') }}</label>
-            <select
-              class="export-dropdown"
-              :value="selectedLatexTemplateId"
-              @change="selectLatexTemplateById(($event.target as HTMLSelectElement).value)"
-            >
-              <optgroup :label="t('export_latex_standard_templates')">
-                <option
-                  v-for="bt in BUILTIN_LATEX_TEMPLATES"
-                  :key="bt.id"
-                  :value="bt.id"
-                >
-                  📌 {{ bt.name }}
-                </option>
-              </optgroup>
-              <optgroup v-if="savedLatexTemplates.length > 0" :label="t('export_latex_saved_templates')">
-                <option
-                  v-for="st in savedLatexTemplates"
-                  :key="st.id"
-                  :value="st.id"
-                >
-                  💾 {{ st.name }} ({{ formatLayoutDate(st.created_at) }})
-                </option>
-              </optgroup>
-            </select>
-          </div>
-
-          <!-- Dokument-Titel & Untertitel (direkt greifbar für diesen Export) -->
-          <div class="export-form-row">
-            <label>{{ t('export_latex_title_label') }}</label>
-            <input
-              type="text"
-              v-model="latexCustomDocTitle"
-              class="export-input"
-              :placeholder="t('export_latex_title_placeholder')"
-            />
-          </div>
-
-          <div class="export-form-row">
-            <label>{{ t('export_latex_subtitle_label') }}</label>
-            <input
-              type="text"
-              v-model="latexCustomDocSubtitle"
-              class="export-input"
-              :placeholder="t('export_latex_subtitle_placeholder')"
-            />
-          </div>
-
-          <div class="export-form-row">
-            <ExportLanguageSelect v-model="exportLangOverride" />
-          </div>
-
-          <!-- Vorlagen-Zusammenfassung & Modal-Öffnen-Button -->
-          <div class="template-summary-card">
-            <div class="summary-pills">
-              <span class="summary-pill">📐 {{ latexActiveTemplate.documentClass }}</span>
-              <span class="summary-pill">📄 {{ latexActiveTemplate.paperSize }}</span>
-              <span class="summary-pill">🔤 {{ latexActiveTemplate.fontSize }}</span>
-              <span class="summary-pill">⇥ {{ latexActiveTemplate.indentStepEm }}em</span>
-            </div>
-            <p class="summary-hint-text">{{ t('export_latex_config_window_hint') }}</p>
+          <div class="export-actions-stack">
             <button
               type="button"
-              class="btn-open-config-window"
-              @click="showLatexConfigModal = true"
+              class="btn-primary-sync"
+              :disabled="!latexExportResult || isSyncingDir"
+              @click="syncToBookDirectory"
             >
-              ⚙️ {{ t('export_latex_btn_open_config') }}
+              {{ isSyncingDir ? '⏳ ...' : '🔄 ' + t('export_latex_sync_btn') }}
+            </button>
+            <button
+              type="button"
+              class="btn-secondary-save"
+              :disabled="!latexExportResult"
+              @click="saveSingleOrBundleAs"
+            >
+              💾 {{ t('export_latex_save_bundle_btn', { count: latexExportResult?.files.length || 0 }) }}
             </button>
           </div>
-        </div>
 
-        <!-- 4. Export-Aktionen -->
-        <div class="export-action-box">
-          <button
-            v-if="latexExportResult && latexExportResult.files.length > 1"
-            class="btn-primary-export"
-            :disabled="isSavingLatex"
-            @click="saveAllLatexFilesBundle"
-          >
-            💾 {{ t('export_latex_save_bundle_btn', { count: latexExportResult.files.length }) }}
-          </button>
-          <button
-            v-else-if="activeLatexFile"
-            class="btn-primary-export"
-            :disabled="isSavingLatex"
-            @click="saveSingleLatexFile()"
-          >
-            💾 {{ t('export_latex_save_single_btn', { name: activeLatexFile.fileName }) }}
-          </button>
+          <div v-if="saveStatusMsg" class="status-banner ok">{{ saveStatusMsg }}</div>
+          <div v-if="saveErrorMsg" class="status-banner err">{{ saveErrorMsg }}</div>
+        </section>
 
-          <div v-if="saveStatusMsg" class="save-feedback success">
-            ✅ {{ saveStatusMsg }}
+        <!-- Karte 4: Vorlage & Buchtitel -->
+        <section class="export-card">
+          <div class="card-header-row">
+            <h4 class="card-title">4. {{ t('export_latex_template_title') }}</h4>
+            <button type="button" class="btn-mini-action" @click="showLatexConfigModal = true">
+              ⚙️ {{ t('export_latex_open_config_btn') }}
+            </button>
           </div>
-          <div v-if="saveErrorMsg" class="save-feedback error">
-            ⚠️ {{ saveErrorMsg }}
+          <select
+            :value="selectedLatexTemplateId"
+            @change="e => selectLatexTemplate((e.target as HTMLSelectElement).value)"
+            class="export-select"
+          >
+            <optgroup :label="t('export_latex_builtin_templates')">
+              <option v-for="tpl in DEFAULT_LATEX_TEMPLATES" :key="tpl.id" :value="tpl.id">
+                {{ tpl.name }}
+              </option>
+            </optgroup>
+            <optgroup v-if="savedLatexTemplates.length > 0" :label="t('export_latex_saved_templates')">
+              <option v-for="st in savedLatexTemplates" :key="st.id" :value="st.id">
+                {{ st.name }}
+              </option>
+            </optgroup>
+          </select>
+          <div class="field-row mt-xs">
+            <input
+              type="text"
+              v-model="customDocumentTitle"
+              class="export-input compact"
+              :placeholder="t('export_latex_doc_title_ph')"
+            />
+            <input
+              type="text"
+              v-model="customDocumentSubtitle"
+              class="export-input compact mt-xs"
+              :placeholder="t('export_latex_doc_subtitle_ph')"
+            />
           </div>
-        </div>
+        </section>
       </div>
     </aside>
 
-    <!-- Rechter Hauptbereich: Vorschau (Druck-Vorschau & LaTeX-Quellcode) + Datei-Tabs bei Stämmen -->
-    <section class="export-preview-pane">
-      <div class="export-preview-topbar" v-if="latexExportResult && activeLatexFile">
-        <div class="preview-info-left">
-          <span class="preview-badge">📄 {{ activeLatexFile.fileName }}</span>
-          <span class="preview-meta">
-            ({{ activeLatexFile.entryCount }} {{ t('export_stat_nodes') }},
-            max. Gen. {{ activeLatexFile.maxGeneration }}
-            <template v-if="latexMode === 'custom' && latexDirection === 'ancestors' && latexExportResult.unknownBranchesStopped > 0">
-              {{ t('export_latex_unknown_stopped_meta', { count: latexExportResult.unknownBranchesStopped }) }}
-            </template>)
+    <!-- Rechter Vorschau-Bereich -->
+    <main class="latex-preview-main">
+      <div class="preview-topbar" v-if="latexExportResult && activeLatexFile">
+        <div class="preview-stats">
+          <span class="stat-pill">👥 {{ latexExportResult.totalEntries }} {{ t('export_latex_entries_lbl') }}</span>
+          <span class="stat-pill">🧬 {{ latexExportResult.maxGenerationReached }} {{ t('export_latex_gens_lbl') }}</span>
+          <span v-if="latexExportResult.activeSplitBranches.length > 0" class="stat-pill">
+            🌿 {{ latexExportResult.activeSplitBranches.length }} {{ t('export_latex_branches_lbl') }}
+          </span>
+          <span v-if="latexExportResult.bridgeRefsCount > 0" class="stat-pill bridge">
+            🔗 {{ latexExportResult.bridgeRefsCount }} {{ t('export_latex_bridges_lbl') }}
           </span>
         </div>
 
-        <!-- Umschalter: Visuelle Druck-Vorschau vs. LaTeX-Quellcode -->
-        <div class="viewport-toggle-area">
-          <div class="viewport-btn-group">
-            <button
-              class="btn-viewport"
-              :class="{ active: latexPreviewMode === 'visual' }"
-              @click="latexPreviewMode = 'visual'"
-            >
-              🖨️ {{ t('export_latex_view_visual') }}
-            </button>
-            <button
-              class="btn-viewport"
-              :class="{ active: latexPreviewMode === 'source' }"
-              @click="latexPreviewMode = 'source'"
-            >
-              📝 {{ t('export_latex_view_source') }}
-            </button>
-          </div>
-        </div>
-
-        <div class="preview-info-right">
+        <div class="preview-mode-controls">
           <button
-            class="btn-zoom-action"
-            @click="copyLatexSourceToClipboard"
-            :title="t('export_latex_copy_code_btn')"
+            type="button"
+            class="btn-viewport"
+            :class="{ active: latexViewMode === 'visual' }"
+            @click="latexViewMode = 'visual'"
           >
-            📋 {{ t('export_latex_copy_code_btn') }}
+            🖨️ {{ t('export_latex_view_visual') }}
           </button>
           <button
-            v-if="latexExportResult.files.length > 1"
-            class="btn-topbar-save"
-            @click="saveAllLatexFilesBundle"
+            type="button"
+            class="btn-viewport"
+            :class="{ active: latexViewMode === 'source' }"
+            @click="latexViewMode = 'source'"
           >
-            💾 {{ t('export_latex_save_all_btn', { count: latexExportResult.files.length }) }}
+            💻 {{ t('export_latex_view_source') }}
           </button>
-          <button
-            class="btn-topbar-save"
-            @click="saveSingleLatexFile()"
-          >
-            💾 {{ activeLatexFile.fileName }}
+          <button type="button" class="btn-copy-code" @click="copyActiveLatexSource">
+            {{ latexCopySuccess ? '✓ ' + t('export_latex_copied') : '📋 ' + t('export_latex_copy_code') }}
           </button>
         </div>
       </div>
 
-      <!-- Datei-Umschalter-Leiste, wenn Stämme in eigene Dateien aufgeteilt werden -->
-      <div
-        v-if="latexExportResult && latexExportResult.files.length > 1"
-        class="latex-files-tabbar"
-      >
+      <!-- Datei-Tabs (Master, Gliederung, Vorlauf, Stämme) -->
+      <div v-if="latexExportResult && latexExportResult.files.length > 0" class="file-tabs-strip">
         <button
-          v-for="(f, fIdx) in latexExportResult.files"
+          v-for="(f, idx) in latexExportResult.files"
           :key="f.fileName"
           type="button"
-          class="latex-file-tab"
-          :class="{
-            active: latexActiveFileIdx === fIdx,
-            'is-master': f.isMasterFile,
-            'is-main': f.isMainFile
-          }"
-          @click="latexActiveFileIdx = fIdx"
+          class="file-tab-btn"
+          :class="{ active: activeLatexFileIndex === idx, [`role-${f.role}`]: true }"
+          @click="activeLatexFileIndex = idx"
         >
-          <span>{{ f.isMasterFile ? '📕' : (f.isMainFile ? '📘' : '🌿') }}</span>
-          <strong>{{ f.fileName }}</strong>
-          <span class="file-tab-badge" v-if="f.isMasterFile">{{ t('export_latex_master_badge') }}</span>
-          <span class="file-tab-count">{{ f.entryCount }}</span>
+          <span v-if="f.role === 'master'">📘</span>
+          <span v-else-if="f.role === 'format'">🎨</span>
+          <span v-else-if="f.role === 'structure'">📑</span>
+          <span v-else-if="f.role === 'intro'">✍️</span>
+          <span v-else-if="f.isMainFile">🌳</span>
+          <span v-else>🌿</span>
+          <span>{{ f.label }}</span>
         </button>
       </div>
 
       <!-- Vorschau-Inhalt -->
-      <div v-if="activeLatexFile" class="latex-preview-workspace">
-        <!-- Visuelle Druck-Vorschau (A4 Blatt) -->
+      <div v-if="activeLatexFile" class="preview-viewport">
         <div
-          v-if="latexPreviewMode === 'visual'"
-          class="latex-visual-scroll"
+          v-if="latexViewMode === 'visual'"
+          class="latex-sheet-paper"
+          :style="previewSheetStyle"
+          @click="handlePreviewClick"
           v-html="activeLatexFile.previewHtml"
         ></div>
-
-        <!-- LaTeX-Quellcode (.tex) -->
-        <div v-else class="latex-source-scroll">
-          <pre class="latex-source-pre"><code>{{ activeLatexFile.texContent }}</code></pre>
+        <div v-else class="latex-source-container">
+          <pre class="latex-source-code"><code>{{ activeLatexFile.texContent }}</code></pre>
         </div>
       </div>
-
-      <div v-else class="export-empty-state">
-        <div class="empty-card">
-          <h3>📄 {{ t('export_latex_panel_title') }}</h3>
-          <p>{{ t('export_empty_hint') }}</p>
-        </div>
+      <div v-else class="preview-empty-state">
+        <p>{{ t('export_latex_empty_preview') }}</p>
       </div>
-    </section>
+    </main>
 
-    <!-- Dediziertes Konfigurationsfenster: Erscheinungsbild & Textmaske (LaTeX) -->
+    <!-- Konfigurations-Modal -->
     <LatexConfigModal
       :show="showLatexConfigModal"
-      :template="latexActiveTemplate"
+      :template="activeLatexTemplate"
       :selected-template-id="selectedLatexTemplateId"
       :saved-templates="savedLatexTemplates"
-      :builtin-templates="BUILTIN_LATEX_TEMPLATES"
+      :builtin-templates="DEFAULT_LATEX_TEMPLATES"
       @close="showLatexConfigModal = false"
-      @select-template="selectLatexTemplateById"
-      @save-template="(asNew, name) => { latexTemplateSaveName = name; saveCurrentLatexTemplate(asNew); }"
-      @delete-template="deleteSelectedLatexTemplate"
+      @select-template="selectLatexTemplate"
+      @save-template="handleSaveLatexTemplate"
+      @delete-template="handleDeleteLatexTemplate"
     />
   </div>
 </template>
 
 <style scoped>
-.export-workspace {
+.latex-export-workspace {
   display: flex;
   flex: 1;
   min-height: 0;
-  height: 100%;
-  position: relative;
-  overflow: hidden;
+  background: #f1f5f9;
 }
 
-/* Linke Seitenleiste */
-.export-sidebar {
+.latex-sidebar {
   width: 380px;
-  min-width: 380px;
-  max-width: 460px;
-  height: 100%;
+  min-width: 340px;
   background: #ffffff;
-  border-right: 1px solid #e2e8f0;
+  border-right: 1px solid #cbd5e1;
   display: flex;
   flex-direction: column;
-  position: relative;
-  transition: width 0.2s ease, min-width 0.2s ease;
-  z-index: 10;
+  min-height: 0;
+  transition: width 0.2s ease;
 }
 
-.export-sidebar.collapsed {
-  width: 36px;
-  min-width: 36px;
+.latex-sidebar.collapsed {
+  width: 44px;
+  min-width: 44px;
 }
 
-.sidebar-collapse-toggle {
-  position: absolute;
-  top: 10px;
-  right: -14px;
-  width: 24px;
-  height: 24px;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 50%;
+.sidebar-top-bar {
   display: flex;
   align-items: center;
-  justify-content: center;
-  font-size: 0.65rem;
-  color: #64748b;
-  cursor: pointer;
-  z-index: 20;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.08);
-  transition: all 0.15s ease;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid #e2e8f0;
+  background: #f8fafc;
 }
 
-.sidebar-collapse-toggle:hover {
-  background: #f1f5f9;
-  color: #1e293b;
-  border-color: #94a3b8;
-}
-
-.export-sidebar-inner {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow-y: auto;
-  padding: 16px;
-  gap: 16px;
-}
-
-.export-panel-header h2 {
-  font-size: 1.15rem;
+.sidebar-title {
+  font-size: 0.86rem;
   font-weight: 700;
   color: #0f172a;
-  margin: 0 0 4px 0;
 }
 
-.export-panel-subtitle {
-  font-size: 0.8rem;
-  color: #64748b;
-  margin: 0;
-  line-height: 1.35;
+.btn-collapse-sidebar {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  border-radius: 4px;
+  padding: 2px 7px;
+  cursor: pointer;
+  font-size: 0.75rem;
 }
 
-.export-section {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+.sidebar-scroll-content {
+  flex: 1;
+  overflow-y: auto;
   padding: 12px;
-}
-
-.export-section-header-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.export-section-label {
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: #334155;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.export-dropdown {
-  width: 100%;
-  padding: 7px 10px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background: #ffffff;
-  font-size: 0.84rem;
-  color: #1e293b;
-  cursor: pointer;
-}
-
-.export-dropdown:focus {
-  outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
-}
-
-.export-input {
-  width: 100%;
-  padding: 6px 10px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  font-size: 0.84rem;
-  color: #1e293b;
-  background: #ffffff;
-  box-sizing: border-box;
-}
-
-.export-input:focus {
-  outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
-}
-
-.export-form-row {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 12px;
 }
 
-.export-form-row label {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #475569;
-}
-
-.code-inp {
-  max-width: 110px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 700;
-}
-
-.cfg-sub-hint {
-  font-size: 0.74rem;
-  color: #64748b;
-  line-height: 1.35;
-}
-
-.cfg-checkbox-label {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
-}
-
-.cfg-label-text {
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: #334155;
-}
-
-/* Person Picker */
-.person-picker-list {
-  max-height: 180px;
-  overflow-y: auto;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
+.export-card {
   background: #ffffff;
-  margin-top: 6px;
-}
-
-.compact-picker {
-  max-height: 140px;
-}
-
-.person-picker-item {
-  padding: 6px 10px;
-  border-bottom: 1px solid #f1f5f9;
-  cursor: pointer;
-  transition: background 0.1s ease;
-}
-
-.person-picker-item:last-child {
-  border-bottom: none;
-}
-
-.person-picker-item:hover {
-  background: #f8fafc;
-}
-
-.person-picker-item.selected {
-  background: #eff6ff;
-  border-left: 3px solid #3b82f6;
-}
-
-.picker-item-main {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.82rem;
-}
-
-.picker-item-id {
-  font-size: 0.72rem;
-  font-family: monospace;
-  color: #64748b;
-}
-
-.picker-item-meta {
-  font-size: 0.72rem;
-  color: #94a3b8;
-  margin-top: 2px;
-}
-
-/* LaTeX Mode Pills */
-.latex-mode-pills {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.latex-mode-pill {
-  flex: 1;
-  padding: 6px 10px;
-  border: 1px solid #cbd5e1;
-  background: #ffffff;
-  border-radius: 6px;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #475569;
-  cursor: pointer;
-  transition: all 0.15s ease;
-  text-align: center;
-}
-
-.latex-mode-pill:hover {
-  background: #f1f5f9;
-  border-color: #94a3b8;
-}
-
-.latex-mode-pill.active {
-  background: #eff6ff;
-  border-color: #3b82f6;
-  color: #1d4ed8;
-}
-
-.latex-sub-box {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 10px;
-}
-
-.sub-field-label {
-  font-size: 0.76rem;
-  font-weight: 700;
-  color: #475569;
-}
-
-.gen-number-control {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.num-inp {
-  max-width: 90px;
-  font-weight: 600;
-}
-
-.gen-unit {
-  font-size: 0.8rem;
-  color: #64748b;
-}
-
-.custom-unknown-inputs {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 4px;
-  background: #f8fafc;
-  padding: 8px;
-  border-radius: 6px;
-  border: 1px dashed #cbd5e1;
-}
-
-/* Branch split panel */
-.branch-split-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 10px;
-  margin-top: 4px;
-}
-
-.detected-branches-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 0.76rem;
-  font-weight: 700;
-  color: #475569;
-}
-
-.btn-mini-link {
-  background: none;
-  border: none;
-  font-size: 0.72rem;
-  color: #3b82f6;
-  font-weight: 600;
-  cursor: pointer;
-  text-decoration: underline;
-  padding: 0;
-}
-
-.detected-branches-list {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  max-height: 180px;
-  overflow-y: auto;
-  border: 1px solid #f1f5f9;
-  border-radius: 4px;
-  padding: 4px;
-}
-
-.branch-file-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: 4px;
-  font-size: 0.78rem;
-  background: #f8fafc;
-  cursor: pointer;
-}
-
-.branch-file-item:hover {
-  background: #f1f5f9;
-}
-
-.master-file-item,
-.main-file-item {
-  cursor: default;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-}
-
-.branch-file-badge {
-  font-size: 0.65rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  padding: 1px 4px;
-  border-radius: 3px;
-  background: #dbeafe;
-  color: #1e40af;
-}
-
-.master-badge {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.branch-item-details {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-}
-
-.branch-item-top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.branch-code-pill {
-  font-size: 0.68rem;
-  font-family: monospace;
-  color: #2563eb;
-  font-weight: 700;
-}
-
-.branch-item-sub {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.7rem;
-  color: #64748b;
-}
-
-.branch-meta {
-  font-size: 0.7rem;
-  color: #64748b;
-  margin-left: auto;
-}
-
-/* Template summary card */
-.template-summary-card {
-  background: #f8fafc;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   padding: 10px 12px;
-  margin-top: 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 
-.summary-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 5px;
-}
-
-.summary-pill {
-  font-size: 0.72rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 600;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  padding: 2px 6px;
-  color: #475569;
-}
-
-.summary-hint-text {
-  font-size: 0.76rem;
-  color: #64748b;
-  margin: 0;
-  line-height: 1.35;
-}
-
-.btn-open-config-window {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  padding: 8px 12px;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 6px;
-  font-size: 0.82rem;
-  font-weight: 600;
-  color: #1d4ed8;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.btn-open-config-window:hover {
-  background: #dbeafe;
-  border-color: #93c5fd;
-  transform: translateY(-1px);
-}
-
-/* Action Box */
-.export-action-box {
-  margin-top: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 12px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.btn-primary-export {
-  width: 100%;
-  padding: 10px 14px;
-  background: #10b981;
-  border: none;
-  border-radius: 6px;
-  color: #ffffff;
-  font-size: 0.88rem;
-  font-weight: 700;
-  cursor: pointer;
-  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.3);
-  transition: all 0.15s ease;
-}
-
-.btn-primary-export:hover:not(:disabled) {
-  background: #059669;
-  transform: translateY(-1px);
-}
-
-.btn-primary-export:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
-
-.save-feedback {
-  font-size: 0.78rem;
-  padding: 6px 10px;
-  border-radius: 6px;
-  line-height: 1.35;
-}
-
-.save-feedback.success {
-  background: #ecfdf5;
-  border: 1px solid #a7f3d0;
-  color: #065f46;
-}
-
-.save-feedback.error {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #991b1b;
-}
-
-/* Rechter Vorschau-Bereich */
-.export-preview-pane {
-  flex: 1;
-  min-width: 0;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: #f1f5f9;
-  position: relative;
-  overflow: hidden;
-}
-
-.export-preview-topbar {
-  height: 48px;
-  min-height: 48px;
-  background: #ffffff;
-  border-bottom: 1px solid #e2e8f0;
+.card-header-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 16px;
-  gap: 12px;
-  z-index: 5;
-}
-
-.preview-info-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  font-size: 0.86rem;
-  color: #0f172a;
-}
-
-.preview-badge {
-  font-size: 0.72rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
-  padding: 3px 8px;
-  border-radius: 4px;
-  color: #334155;
-}
-
-.preview-meta {
-  font-size: 0.78rem;
-  color: #64748b;
-}
-
-.viewport-toggle-area {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
-.viewport-btn-group {
-  display: flex;
-  background: #f1f5f9;
-  border-radius: 6px;
-  padding: 2px;
-  border: 1px solid #e2e8f0;
+.card-title {
+  margin: 0;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #1e293b;
 }
 
-.btn-viewport {
-  padding: 4px 10px;
+.source-mode-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 6px;
+}
+
+.source-tab-btn {
   border: none;
   background: transparent;
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: #64748b;
+  padding: 6px 4px;
   border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.btn-viewport.active {
-  background: #ffffff;
-  color: #1e293b;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-}
-
-.preview-info-right {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.btn-zoom-action {
-  padding: 5px 10px;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 600;
   color: #475569;
   cursor: pointer;
 }
 
-.btn-zoom-action:hover {
-  background: #f8fafc;
-  color: #1e293b;
+.source-tab-btn.active {
+  background: #ffffff;
+  color: #0f172a;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
 
-.btn-topbar-save {
-  padding: 6px 12px;
-  background: #10b981;
-  border: none;
-  border-radius: 6px;
+.field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-lbl,
+.mini-lbl {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #475569;
+}
+
+.export-select,
+.export-input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 5px;
   font-size: 0.8rem;
-  font-weight: 700;
-  color: #ffffff;
+  background: #ffffff;
+  color: #0f172a;
+  box-sizing: border-box;
+}
+
+.two-col-row {
+  display: grid;
+  grid-template-columns: 1fr 80px;
+  gap: 8px;
+}
+
+.two-col-row.equal-cols {
+  grid-template-columns: 1fr 1fr;
+}
+
+.info-pill-row {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.info-pill {
+  font-size: 0.72rem;
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.bridge-info-box {
+  font-size: 0.74rem;
+  color: #0369a1;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  padding: 6px 8px;
+  border-radius: 5px;
+}
+
+.switch-inline {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.75rem;
   cursor: pointer;
 }
 
-.btn-topbar-save:hover {
-  background: #059669;
-}
-
-/* File Tabbar */
-.latex-files-tabbar {
+.gen-preselect-row {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 4px;
-  padding: 6px 12px;
-  background: #e2e8f0;
-  border-bottom: 1px solid #cbd5e1;
-  overflow-x: auto;
 }
 
-.latex-file-tab {
+.gen-chip-btn {
+  border: 1px solid #cbd5e1;
+  background: #f8fafc;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 0.71rem;
+  cursor: pointer;
+}
+
+.gen-chip-btn.active {
+  background: #2563eb;
+  color: #ffffff;
+  border-color: #1d4ed8;
+}
+
+.branch-checklist {
+  max-height: 165px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 5px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.branch-check-item {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 6px 12px;
-  background: #ffffff;
+  font-size: 0.74rem;
+  padding: 3px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.branch-check-item:hover {
+  background: #f1f5f9;
+}
+
+.branch-code-badge {
+  font-family: ui-monospace, monospace;
+  font-weight: 700;
+  color: #1d4ed8;
+}
+
+.branch-name-txt {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.branch-meta-txt {
+  font-size: 0.69rem;
+  color: #64748b;
+}
+
+.dir-picker-row {
+  display: flex;
+  gap: 6px;
+}
+
+.dir-readonly {
+  flex: 1;
+  background: #f8fafc;
+  font-size: 0.73rem;
+}
+
+.btn-pick-dir,
+.btn-mini-action {
   border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  font-size: 0.78rem;
+  background: #f8fafc;
+  border-radius: 5px;
+  padding: 5px 9px;
+  font-size: 0.74rem;
+  font-weight: 600;
   cursor: pointer;
   white-space: nowrap;
-  transition: all 0.15s ease;
 }
 
-.latex-file-tab:hover {
-  background: #f8fafc;
-}
-
-.latex-file-tab.active {
-  background: #eff6ff;
-  border-color: #3b82f6;
-  color: #1d4ed8;
-  font-weight: 700;
-}
-
-.file-tab-badge {
-  font-size: 0.62rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  background: #fee2e2;
-  color: #991b1b;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-
-.file-tab-count {
-  font-size: 0.7rem;
+.btn-pick-dir:hover,
+.btn-mini-action:hover {
   background: #e2e8f0;
-  color: #475569;
-  padding: 1px 5px;
-  border-radius: 10px;
 }
 
-/* LaTeX Preview Workspace */
-.latex-preview-workspace {
+.sync-status-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 7px 9px;
+}
+
+.sync-status-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #334155;
+  margin-bottom: 4px;
+}
+
+.sync-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 130px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sync-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+}
+
+.sync-badge {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.badge-protect {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #a7f3d0;
+}
+
+.badge-update {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border: 1px solid #bfdbfe;
+}
+
+.badge-create {
+  background: #fefce8;
+  color: #a16207;
+  border: 1px solid #fde047;
+}
+
+.sync-fname {
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sync-options-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.73rem;
+  color: #334155;
+  cursor: pointer;
+}
+
+.check-row.warn-check {
+  color: #9a3412;
+}
+
+.export-actions-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.btn-primary-sync {
+  padding: 9px 12px;
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.btn-primary-sync:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.btn-primary-sync:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.btn-secondary-save {
+  padding: 7px 10px;
+  background: #f1f5f9;
+  color: #1e293b;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 0.77rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.status-banner {
+  font-size: 0.75rem;
+  padding: 6px 8px;
+  border-radius: 5px;
+}
+
+.status-banner.ok {
+  background: #ecfdf5;
+  color: #065f46;
+  border: 1px solid #a7f3d0;
+}
+
+.status-banner.err {
+  background: #fef2f2;
+  color: #991b1b;
+  border: 1px solid #fecaca;
+}
+
+.latex-preview-main {
   flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
   min-height: 0;
+}
+
+.preview-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.preview-stats {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stat-pill {
+  font-size: 0.74rem;
+  font-weight: 600;
+  background: #f1f5f9;
+  color: #334155;
+  padding: 3px 8px;
+  border-radius: 999px;
+}
+
+.stat-pill.bridge {
+  background: #f0f9ff;
+  color: #0369a1;
+}
+
+.preview-mode-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.btn-viewport,
+.btn-copy-code {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  border-radius: 5px;
+  padding: 5px 10px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-viewport.active {
+  background: #0f172a;
+  color: #ffffff;
+  border-color: #0f172a;
+}
+
+.file-tabs-strip {
+  display: flex;
+  gap: 4px;
+  padding: 6px 14px;
+  background: #e2e8f0;
+  overflow-x: auto;
+}
+
+.file-tab-btn {
+  border: 1px solid transparent;
+  background: #f8fafc;
+  border-radius: 5px;
+  padding: 5px 10px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #475569;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.file-tab-btn.active {
+  background: #ffffff;
+  color: #0f172a;
+  border-color: #94a3b8;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.preview-viewport {
+  flex: 1;
   overflow: auto;
-  padding: 24px;
+  padding: 20px;
   display: flex;
   justify-content: center;
-  align-items: flex-start;
-  background: #cbd5e1;
 }
 
-.latex-visual-scroll {
-  background: #ffffff;
-  box-shadow: 0 4px 15px rgba(0, 0, 0, 0.15);
-  border-radius: 2px;
-  width: 210mm;
-  min-height: 297mm;
-  padding: 25mm;
-  box-sizing: border-box;
-  font-family: 'Latin Modern Roman', 'Computer Modern', 'Times New Roman', serif;
-  font-size: 11pt;
-  line-height: 1.45;
-  color: #0f172a;
-}
-
-.latex-source-scroll {
+.latex-sheet-paper {
   width: 100%;
-  height: 100%;
-  background: #1e293b;
+  max-width: 820px;
+  min-height: 100%;
+  background: #ffffff;
+  border: 1px solid #cbd5e1;
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.08);
+  padding: var(--sheet-margin-mm, 22px);
+  font-size: var(--sheet-font-pt, 11pt);
+  font-family: 'Georgia', 'Times New Roman', serif;
+  color: #1e293b;
+  height: fit-content;
+}
+
+.latex-sheet-paper :deep(.preview-entry) {
+  margin-left: calc(var(--entry-indent, 0) * var(--entry-indent-em, 1.15em));
+  margin-top: var(--entry-spacing-em, 0.45em);
+  line-height: 1.45;
+}
+
+.latex-sheet-paper :deep(.preview-code),
+.latex-sheet-paper :deep(.preview-name) {
+  font-weight: 700;
+  color: #0f172a;
+  margin-right: 5px;
+}
+
+.latex-sheet-paper :deep(.preview-spouse-row) {
+  margin-left: 1.4em;
+  margin-top: 2px;
+  font-size: 0.94em;
+  color: #334155;
+}
+
+.latex-sheet-paper :deep(.preview-marriage-sym) {
+  font-weight: 700;
+  margin-right: 4px;
+}
+
+.latex-sheet-paper :deep(.preview-small) {
+  font-size: 0.85em;
+  color: #475569;
+}
+
+.latex-sheet-paper :deep(.preview-sc) {
+  font-variant: small-caps;
+}
+
+.latex-sheet-paper :deep(.preview-branch-link) {
+  color: #2563eb;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.latex-sheet-paper :deep(.preview-overview-table) {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 12px 0;
+  font-size: 0.86rem;
+}
+
+.latex-sheet-paper :deep(.preview-overview-table th),
+.latex-sheet-paper :deep(.preview-overview-table td) {
+  border-bottom: 1px solid #cbd5e1;
+  padding: 5px 8px;
+  text-align: left;
+}
+
+.latex-sheet-paper :deep(.preview-structure-item) {
+  padding: 6px 8px;
+  border-left: 3px solid #3b82f6;
+  background: #f8fafc;
+  margin: 6px 0;
+  font-size: 0.85rem;
+}
+
+.latex-sheet-paper :deep(.intro-hook) {
+  margin-left: 8px;
+  color: #047857;
+  font-size: 0.78rem;
+}
+
+.latex-source-container {
+  width: 100%;
+  max-width: 960px;
+  background: #0f172a;
+  color: #e2e8f0;
   border-radius: 8px;
   padding: 16px;
   overflow: auto;
-  box-sizing: border-box;
+  height: fit-content;
 }
 
-.latex-source-pre {
+.latex-source-code {
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.85rem;
-  color: #f8fafc;
+  font-size: 0.82rem;
   line-height: 1.5;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.export-empty-state {
+.hint-text {
+  font-size: 0.74rem;
+  color: #64748b;
+  margin: 0;
+}
+
+.mt-xs {
+  margin-top: 4px;
+}
+
+.mt-sm {
+  margin-top: 8px;
+}
+
+.preview-empty-state {
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24px;
-}
-
-.empty-card {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 32px 40px;
-  text-align: center;
-  max-width: 440px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
-}
-
-.empty-card h3 {
-  font-size: 1.1rem;
-  color: #1e293b;
-  margin: 0 0 8px 0;
-}
-
-.empty-card p {
-  font-size: 0.85rem;
   color: #64748b;
-  margin: 0;
-  line-height: 1.4;
 }
 </style>
-

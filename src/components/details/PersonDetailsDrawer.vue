@@ -419,8 +419,8 @@ function handleRemoveChild(childId: string) {
         </button>
       </div>
 
-      <!-- Schnellaktionen für ausgewählte Person: Zusammenführen & Löschen -->
-      <div class="drawer-person-actions">
+      <!-- Schnellaktionen für ausgewählte Person: Zusammenführen & Löschen (nur im Bearbeitungsmodus) -->
+      <div v-if="isEditing" class="drawer-person-actions">
         <button
           type="button"
           class="drawer-action-btn btn-action-merge"
@@ -1030,7 +1030,11 @@ function handleRemoveChild(childId: string) {
   transform: translateX(0);
 }
 
-.details-pane.is-design-mode .details-toggle-btn {
+.details-pane.is-design-mode {
+  z-index: 70;
+}
+
+.details-pane.is-tree-mode .details-toggle-btn {
   top: 50%;
   bottom: auto;
   transform: translateY(-50%);

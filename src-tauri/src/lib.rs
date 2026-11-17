@@ -19,7 +19,6 @@ use std::process::Command;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
-use tera::{Context, Tera};
 use chrono::{Datelike, Timelike};
 
 pub fn current_gedcom_chan() -> serde_json::Value {
@@ -153,6 +152,43 @@ pub struct LatexTemplateEntry {
 pub struct LatexExportFilePayload {
     pub file_name: String,
     pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LatexBookFileCheckRequest {
+    pub file_name: String,
+    pub role: String, // "master" | "structure" | "data" | "intro"
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LatexBookFileStatusDto {
+    pub file_name: String,
+    pub role: String,
+    pub exists: bool,
+    pub action: String, // "create" | "update" | "protect"
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LatexDirectoryInspectionDto {
+    pub dir_path: String,
+    pub dir_exists: bool,
+    pub is_writable: bool,
+    pub files: Vec<LatexBookFileStatusDto>,
+    pub existing_intro_files: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LatexBookSyncPayload {
+    pub file_name: String,
+    pub content: String,
+    pub protect_if_exists: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LatexDirectorySyncResultDto {
+    pub written_files: Vec<String>,
+    pub skipped_protected_files: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -455,27 +491,6 @@ fn list_tree_names(app_dir: &Path, exclude: Option<&str>) -> Vec<String> {
     trees.sort();
     trees.dedup();
     trees
-}
-
-/// Escapes LaTeX special characters to prevent markup corruption and command injection.
-fn escape_latex(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '\\' => out.push_str(r"\textbackslash{}"),
-            '{' => out.push_str(r"\{"),
-            '}' => out.push_str(r"\}"),
-            '$' => out.push_str(r"\$"),
-            '&' => out.push_str(r"\&"),
-            '#' => out.push_str(r"\#"),
-            '^' => out.push_str(r"\textasciicircum{}"),
-            '_' => out.push_str(r"\_"),
-            '~' => out.push_str(r"\textasciitilde{}"),
-            '%' => out.push_str(r"\%"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[tauri::command]
@@ -3704,72 +3719,6 @@ fn find_relationship_path(
 }
 
 #[tauri::command]
-async fn export_latex_pdf(state: State<'_, AppState>, output_dir: String) -> Result<String, String> {
-    let trimmed_dir = output_dir.trim().to_string();
-    if trimmed_dir.is_empty() || trimmed_dir.contains('\0') {
-        return Err("Ungültiges Ausgabeverzeichnis.".into());
-    }
-
-    let persons = get_all_persons(state)?;
-
-    tauri::async_runtime::spawn_blocking(move || {
-        #[derive(Serialize)]
-        struct SafeLatexPerson {
-            surname: String,
-            given_name: String,
-        }
-
-        let safe_persons: Vec<SafeLatexPerson> = persons
-            .into_iter()
-            .map(|p| SafeLatexPerson {
-                surname: escape_latex(p.surname.as_deref().unwrap_or("")),
-                given_name: escape_latex(p.given_name.as_deref().unwrap_or("N.N.")),
-            })
-            .collect();
-
-        let mut tera = Tera::default();
-        tera.add_raw_template(
-            "chronik.tex",
-            r#"\documentclass[a4paper,11pt]{scrbook}\usepackage[utf8]{inputenc}\begin{document}\chapter{Familienverzeichnis}{% for p in persons %}\textbf{ {{ p.surname }}, {{ p.given_name }} }\\{% endfor %}\end{document}"#,
-        )
-        .map_err(|e| e.to_string())?;
-
-        let mut context = Context::new();
-        context.insert("persons", &safe_persons);
-        let rendered_tex = tera
-            .render("chronik.tex", &context)
-            .map_err(|e| e.to_string())?;
-
-        let out_path = PathBuf::from(&trimmed_dir);
-        let tex_path = out_path.join("chronik.tex");
-        fs::write(&tex_path, rendered_tex).map_err(|e| e.to_string())?;
-
-        let mut cmd = Command::new("pdflatex");
-        cmd.arg("-no-shell-escape")
-            .arg("-interaction=nonstopmode")
-            .arg("-output-directory")
-            .arg(&out_path)
-            .arg(&tex_path);
-        #[cfg(target_os = "windows")]
-        cmd.creation_flags(0x08000000);
-
-        let output = cmd
-            .output()
-            .map_err(|e| format!("Fehler beim Start von pdflatex: {}", e))?;
-        if output.status.success() {
-            Ok(out_path.join("chronik.pdf").to_string_lossy().into_owned())
-        } else {
-            Err(format!(
-                "LaTeX-Fehler:\n{}",
-                String::from_utf8_lossy(&output.stdout)
-            ))
-        }
-    })
-    .await
-    .map_err(|e| format!("Hintergrund-Task fehlgeschlagen: {}", e))?
-}
-
-#[tauri::command]
 fn save_design_layout(
     state: State<'_, AppState>,
     proband_id: String,
@@ -4180,22 +4129,17 @@ async fn save_latex_export_bundle(
     }
 
     for item in &files {
-        let fname = item.file_name.trim();
-        if fname.is_empty()
-            || fname.contains('/')
-            || fname.contains('\\')
-            || fname.contains("..")
-            || fname.contains('\0')
-        {
-            return Err(format!("Ungültiger Dateiname '{}'.", item.file_name));
-        }
-        validate_user_file_path(fname, &["tex"])?;
+        validate_latex_relative_subpath(&item.file_name)?;
     }
 
     tauri::async_runtime::spawn_blocking(move || {
         let mut written_paths = Vec::with_capacity(files.len());
         for item in files {
-            let target = parent_dir.join(item.file_name.trim());
+            let rel_path = validate_latex_relative_subpath(&item.file_name)?;
+            let target = parent_dir.join(&rel_path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
             fs::write(&target, item.content).map_err(|e| e.to_string())?;
             written_paths.push(target.to_string_lossy().into_owned());
         }
@@ -4203,6 +4147,181 @@ async fn save_latex_export_bundle(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+fn validate_latex_relative_subpath(rel_path: &str) -> Result<PathBuf, String> {
+    let trimmed = rel_path.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.contains('\0')
+        || trimmed.starts_with('/')
+    {
+        return Err(format!("Ungültiger relativer Dateipfad '{}'.", rel_path));
+    }
+
+    let mut clean = PathBuf::new();
+    for seg in trimmed.split('/') {
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return Err(format!("Ungültiges Pfadsegment in '{}'.", rel_path));
+        }
+        clean.push(seg);
+    }
+
+    let ext_ok = clean
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("tex"))
+        .unwrap_or(false);
+    if !ext_ok {
+        return Err(format!("Nur .tex-Dateien sind erlaubt ('{}').", rel_path));
+    }
+
+    Ok(clean)
+}
+
+#[tauri::command]
+async fn inspect_latex_book_directory(
+    dir_path: String,
+    expected_files: Vec<LatexBookFileCheckRequest>,
+) -> Result<LatexDirectoryInspectionDto, String> {
+    let trimmed_dir = dir_path.trim().to_string();
+    if trimmed_dir.is_empty() || trimmed_dir.contains('\0') {
+        return Err("Ungültiger Verzeichnispfad.".into());
+    }
+    for item in &expected_files {
+        validate_latex_relative_subpath(&item.file_name)?;
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = PathBuf::from(&trimmed_dir);
+        let dir_exists = dir.exists() && dir.is_dir();
+        let (is_writable, error) = match probe_writable_without_creating(&dir) {
+            Ok(()) => (true, None),
+            Err(err) => (false, Some(err)),
+        };
+
+        let mut files = Vec::with_capacity(expected_files.len());
+        for req in expected_files {
+            let fname = req.file_name.trim().to_string();
+            let rel = validate_latex_relative_subpath(&fname)?;
+            let exists = dir_exists && dir.join(&rel).exists();
+            let action = if (req.role == "master" || req.role == "format" || req.role == "intro") && exists {
+                "protect".to_string()
+            } else if exists {
+                "update".to_string()
+            } else {
+                "create".to_string()
+            };
+            files.push(LatexBookFileStatusDto {
+                file_name: fname,
+                role: req.role,
+                exists,
+                action,
+            });
+        }
+
+        let mut existing_intro_files = Vec::new();
+        if dir_exists {
+            if let Ok(entries) = fs::read_dir(&dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if let Some(sub_name) = entry.file_name().to_str() {
+                            if let Ok(sub_entries) = fs::read_dir(&path) {
+                                for sub_entry in sub_entries.flatten() {
+                                    if let Some(name) = sub_entry.file_name().to_str() {
+                                        if name.ends_with("_intro.tex") {
+                                            existing_intro_files.push(format!("{}/{}", sub_name, name));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else if let Some(name) = entry.file_name().to_str() {
+                        if name.ends_with("_intro.tex") {
+                            existing_intro_files.push(name.to_string());
+                        }
+                    }
+                }
+            }
+            existing_intro_files.sort();
+        }
+
+        Ok(LatexDirectoryInspectionDto {
+            dir_path: trimmed_dir,
+            dir_exists,
+            is_writable,
+            files,
+            existing_intro_files,
+            error,
+        })
+    })
+    .await
+    .map_err(|e| format!("Hintergrund-Task fehlgeschlagen: {}", e))?
+}
+
+#[tauri::command]
+async fn sync_latex_book_directory(
+    dir_path: String,
+    files: Vec<LatexBookSyncPayload>,
+    force_overwrite_master: bool,
+    force_overwrite_format: Option<bool>,
+) -> Result<LatexDirectorySyncResultDto, String> {
+    let force_format = force_overwrite_format.unwrap_or(false);
+    let trimmed_dir = dir_path.trim().to_string();
+    if trimmed_dir.is_empty() || trimmed_dir.contains('\0') {
+        return Err("Ungültiger Verzeichnispfad.".into());
+    }
+    if files.is_empty() {
+        return Err("Keine Exportdateien übergeben.".into());
+    }
+    for item in &files {
+        validate_latex_relative_subpath(&item.file_name)?;
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = PathBuf::from(&trimmed_dir);
+        verify_directory_writable(&dir)?;
+
+        let mut written_files = Vec::new();
+        let mut skipped_protected_files = Vec::new();
+
+        for item in files {
+            let fname = item.file_name.trim().to_string();
+            let rel = validate_latex_relative_subpath(&fname)?;
+            let target = dir.join(&rel);
+            let is_master = fname.ends_with("_gesamt.tex");
+            let is_format = fname.eq_ignore_ascii_case("Buchformat.tex");
+            let should_skip = item.protect_if_exists
+                && target.exists()
+                && !(force_overwrite_master && is_master)
+                && !(force_format && is_format);
+
+            if should_skip {
+                skipped_protected_files.push(fname);
+                continue;
+            }
+
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(|e| {
+                    format!("Konnte Unterverzeichnis '{}' nicht anlegen: {}", parent.display(), e)
+                })?;
+            }
+
+            fs::write(&target, item.content).map_err(|e| {
+                format!("Konnte Datei '{}' nicht schreiben: {}", target.display(), e)
+            })?;
+            written_files.push(target.to_string_lossy().into_owned());
+        }
+
+        Ok(LatexDirectorySyncResultDto {
+            written_files,
+            skipped_protected_files,
+        })
+    })
+    .await
+    .map_err(|e| format!("Hintergrund-Task fehlgeschlagen: {}", e))?
 }
 
 #[tauri::command]
@@ -4591,7 +4710,6 @@ pub fn run() {
             get_all_persons,
             get_person_details,
             find_relationship_path,
-            export_latex_pdf,
             import_gedcom_file,
             update_person,
             update_persons_batch,
@@ -4623,6 +4741,8 @@ pub fn run() {
             delete_latex_template,
             save_design_file,
             save_latex_export_bundle,
+            inspect_latex_book_directory,
+            sync_latex_book_directory,
             read_design_file,
             save_binary_file,
             preview_gedcom_export,
@@ -5915,16 +6035,18 @@ mod tests {
         let conn = db::init_in_memory_database().unwrap();
         conn.execute("INSERT INTO individuals (id, xref_id, given_name, surname, sex, json_data) VALUES ('I1', 'I1', 'Secret', 'Person', 'M', '{}')", []).unwrap();
 
+        let test_pw = format!("pw-{}", uuid::Uuid::new_v4());
+        let wrong_pw = format!("wrong-{}", uuid::Uuid::new_v4());
         let temp_proj = std::env::temp_dir().join(format!("test_enc_{}.lgproj", uuid::Uuid::new_v4().simple()));
-        design_repo::export_encrypted_project(&conn, &temp_proj, "StarkesPasswort123!").unwrap();
+        design_repo::export_encrypted_project(&conn, &temp_proj, &test_pw).unwrap();
         assert!(temp_proj.exists());
 
         // Wrong password must fail
-        let bad = design_repo::decrypt_project_to_temp_db(&temp_proj, "Falsch");
+        let bad = design_repo::decrypt_project_to_temp_db(&temp_proj, &wrong_pw);
         assert!(bad.is_err());
 
         // Correct password decrypts a valid SQLite DB
-        let decrypted_bytes = design_repo::decrypt_project_to_temp_db(&temp_proj, "StarkesPasswort123!").unwrap();
+        let decrypted_bytes = design_repo::decrypt_project_to_temp_db(&temp_proj, &test_pw).unwrap();
         assert!(&decrypted_bytes[0..16] == b"SQLite format 3\0");
 
         let _ = fs::remove_file(&temp_proj);
@@ -6442,5 +6564,27 @@ mod tests {
         drop(conn_a);
         drop(conn_b);
         let _ = fs::remove_dir_all(&base_temp);
+    }
+
+    #[test]
+    fn test_validate_latex_relative_subpath() {
+        assert_eq!(
+            validate_latex_relative_subpath("Chronik_gesamt.tex").unwrap(),
+            PathBuf::from("Chronik_gesamt.tex")
+        );
+        assert_eq!(
+            validate_latex_relative_subpath("Stammbaum/Chronik-13.tex").unwrap(),
+            PathBuf::from("Stammbaum").join("Chronik-13.tex")
+        );
+        assert_eq!(
+            validate_latex_relative_subpath("Texte/Chronik-13_intro.tex").unwrap(),
+            PathBuf::from("Texte").join("Chronik-13_intro.tex")
+        );
+        assert!(validate_latex_relative_subpath("../evil.tex").is_err());
+        assert!(validate_latex_relative_subpath("Stammbaum/../evil.tex").is_err());
+        assert!(validate_latex_relative_subpath("/abs.tex").is_err());
+        assert!(validate_latex_relative_subpath("C:/evil.tex").is_err());
+        assert!(validate_latex_relative_subpath("Stammbaum\\evil.tex").is_err());
+        assert!(validate_latex_relative_subpath("Stammbaum/evil.txt").is_err());
     }
 }
