@@ -63,22 +63,27 @@ export const KNOWN_LATEX_VAR_NAMES = new Set<string>([
   'hat_kinder',
 ]);
 
+const LATEX_ESCAPE_MAP: Record<string, string> = {
+  '\\': '\\textbackslash{}',
+  '{': '\\{',
+  '}': '\\}',
+  '$': '\\$',
+  '&': '\\&',
+  '#': '\\#',
+  '^': '\\textasciicircum{}',
+  _: '\\_',
+  '~': '\\textasciitilde{}',
+  '%': '\\%',
+  '\u26AD': '\\ensuremath{\\infty}',
+  '\u26AE': '\\ensuremath{\\not\\infty}',
+  '\u2192': '\\textrightarrow{}',
+};
+
+const LATEX_ESCAPE_RE = /[\\{}$&#^_~%\u26AD\u26AE\u2192]/g;
+
 export function escapeLatexText(input: string): string {
   if (!input) return '';
-  return input
-    .replace(/\\/g, '\\textbackslash{}')
-    .replace(/\{/g, '\\{')
-    .replace(/\}/g, '\\}')
-    .replace(/\$/g, '\\$')
-    .replace(/&/g, '\\&')
-    .replace(/#/g, '\\#')
-    .replace(/\^/g, '\\textasciicircum{}')
-    .replace(/_/g, '\\_')
-    .replace(/~/g, '\\textasciitilde{}')
-    .replace(/%/g, '\\%')
-    .replace(/\u26AD/g, '\\ensuremath{\\infty}')
-    .replace(/\u26AE/g, '\\ensuremath{\\not\\infty}')
-    .replace(/\u2192/g, '\\textrightarrow{}');
+  return input.replace(LATEX_ESCAPE_RE, (ch) => LATEX_ESCAPE_MAP[ch]);
 }
 
 export function escapeHtmlText(input: string): string {
